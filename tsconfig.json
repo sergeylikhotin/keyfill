@@ -9,5 +9,5 @@
     "noEmit": true,
     "skipLibCheck": false
   },
-  "include": ["spec/**/*", "examples/**/*"]
+  "include": ["spec/**/*", "examples/**/*", "packages/core/src/**/*"]
 }

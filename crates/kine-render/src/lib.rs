@@ -106,8 +106,17 @@ fn draw(ctx: &mut RenderContext, res: &mut Resources, frame: &Frame, node: &Fram
         ctx.stroke_path(&rounded(inner, v.radius.map(|x| (x - half).max(0.0))));
     }
 
-    if let Some((index, origin)) = node.text {
-        draw_text(ctx, res, frame, index, origin, tr);
+    if let Some((index, content)) = node.text {
+        let clip = frame.texts[index].clip;
+        if clip {
+            ctx.set_transform(tr);
+            ctx.push_clip_layer(&kurbo_rect(content).to_path(0.1));
+        }
+        draw_text(ctx, res, frame, index, [content.x, content.y], tr);
+        if clip {
+            ctx.set_transform(tr);
+            ctx.pop_layer();
+        }
     }
     for child in &node.children {
         draw(ctx, res, frame, child, tr);

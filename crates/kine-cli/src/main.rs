@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
 use kine_core::diag::Level;
+use kine_core::{EvalOptions, Mode};
 use kine_core::look::parse_color;
 use kine_js::RunOptions;
 use kine_render::RenderOptions;
@@ -10,12 +11,16 @@ use kine_render::RenderOptions;
 const USAGE: &str = "\
 kine — рендер TSX-сцен без браузера
 
-  kine render <scene.tsx> [-o out.png] [--scale N] [--bg #RRGGBB] [--dump]
+  kine render <scene.tsx> [-o out.png] [--scale N] [--dump]
   kine dump <scene.tsx>               текстовое дерево сцены с геометрией и диагностиками
   kine inspect <scene.tsx> <path>     один узел: значения, их происхождение, исходник
   kine check <scene.tsx> [--json]     только диагностики; код выхода 1 при ошибках
 
-Общие флаги: --seed N (Math.random), --now MS (Date.now)";
+Общие флаги:
+  --mode dev|air   dev (по умолчанию): нарушение must — ошибка; air: применяются шаги else
+  --bg #RRGGBB     подложка: рисуется под сценой и учитывается в проверке контраста
+  --seed N         сид Math.random
+  --now MS         значение Date.now";
 
 struct Args {
     rest: Vec<String>,
@@ -24,7 +29,7 @@ struct Args {
 
 impl Args {
     fn parse(raw: Vec<String>) -> Self {
-        let valued = ["-o", "--scale", "--bg", "--seed", "--now"];
+        let valued = ["-o", "--scale", "--bg", "--seed", "--now", "--mode"];
         let mut rest = Vec::new();
         let mut flags = Vec::new();
         let mut it = raw.into_iter();
@@ -97,7 +102,13 @@ fn run(args: &Args) -> Result<ExitCode> {
     }
 
     let entry = args.entry()?;
-    let rendered = kine_cli::frame(&entry, &run_options(args)?)?;
+    let background = args.value("--bg").map(parse_hex).transpose()?;
+    let mode = match args.value("--mode") {
+        None | Some("dev") => Mode::Dev,
+        Some("air") => Mode::Air,
+        Some(other) => bail!("--mode: ожидается dev или air, получено {other}"),
+    };
+    let rendered = kine_cli::frame(&entry, &run_options(args)?, EvalOptions { mode, background })?;
     for log in &rendered.logs {
         eprintln!("js {}: {}", log.level, log.message);
     }
@@ -108,7 +119,7 @@ fn run(args: &Args) -> Result<ExitCode> {
             let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("png"));
             let opts = RenderOptions {
                 scale: args.value("--scale").map(str::parse).transpose().context("--scale: ожидается число")?.unwrap_or(1.0),
-                background: args.value("--bg").map(parse_hex).transpose()?,
+                background,
             };
             let png = kine_render::render_png(frame, &opts)?;
             std::fs::write(&out, png).with_context(|| format!("не удалось записать {}", out.display()))?;

@@ -6,6 +6,8 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::diag::Diagnostic;
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Cmd {
@@ -26,7 +28,7 @@ pub enum Cmd {
     },
     Text {
         id: u32,
-        value: String,
+        runs: Vec<Run>,
     },
     Theme {
         values: BTreeMap<String, Value>,
@@ -38,7 +40,23 @@ pub enum Cmd {
         #[serde(default)]
         safe: Option<SafeConfig>,
         fps: f32,
+        #[serde(default)]
+        fonts: Vec<String>,
+        #[serde(default, rename = "systemFonts")]
+        system_fonts: Option<bool>,
     },
+    /// Диагностика, которую обнаружил JS-рантайм (например, чтение сигнала вне трекинга).
+    Diag(Diagnostic),
+}
+
+/// Кусок текста внутри `Text`: либо прямой текст, либо `Span` со своим `look`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Run {
+    pub text: String,
+    #[serde(default)]
+    pub look: Option<Value>,
+    #[serde(default)]
+    pub src: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -87,7 +105,9 @@ pub struct Node {
     pub parent: Option<u32>,
     pub children: Vec<u32>,
     pub props: BTreeMap<String, Value>,
+    /// Весь текст узла `Text` (склейка runs).
     pub text: String,
+    pub runs: Vec<Run>,
 }
 
 impl Node {
@@ -114,6 +134,9 @@ pub struct Stage {
     pub action: f32,
     pub title: f32,
     pub fps: f32,
+    /// Пути к файлам шрифтов, относительно каталога файла сцены.
+    pub fonts: Vec<String>,
+    pub system_fonts: bool,
 }
 
 #[derive(Debug, Default)]
@@ -121,6 +144,7 @@ pub struct Scene {
     pub nodes: BTreeMap<u32, Node>,
     pub stage: Option<Stage>,
     pub theme: BTreeMap<String, Value>,
+    pub js_diagnostics: Vec<Diagnostic>,
 }
 
 impl Scene {
@@ -143,6 +167,7 @@ impl Scene {
                     children: Vec::new(),
                     props: BTreeMap::new(),
                     text: String::new(),
+                    runs: Vec::new(),
                 };
                 self.nodes.insert(id, node);
             }
@@ -156,13 +181,16 @@ impl Scene {
                 self.node_mut(parent)?.children.push(child);
                 self.node_mut(child)?.parent = Some(parent);
             }
-            Cmd::Text { id, value } => {
-                self.node_mut(id)?.text = value;
+            Cmd::Text { id, runs } => {
+                let node = self.node_mut(id)?;
+                node.text = runs.iter().map(|r| r.text.as_str()).collect();
+                node.runs = runs;
             }
+            Cmd::Diag(d) => self.js_diagnostics.push(d),
             Cmd::Theme { values } => {
                 self.theme.extend(values);
             }
-            Cmd::Stage { id, reference, safe, fps } => {
+            Cmd::Stage { id, reference, safe, fps, fonts, system_fonts } => {
                 let safe = safe.unwrap_or_default();
                 self.stage = Some(Stage {
                     id,
@@ -170,6 +198,8 @@ impl Scene {
                     action: safe.action.unwrap_or(0.93),
                     title: safe.title.unwrap_or(0.90),
                     fps,
+                    fonts,
+                    system_fonts: system_fonts.unwrap_or(true),
                 });
             }
         }

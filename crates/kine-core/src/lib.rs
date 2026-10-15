@@ -5,9 +5,11 @@ pub mod diag;
 pub mod dump;
 pub mod layout;
 pub mod look;
+pub mod must;
 pub mod scene;
 pub mod text;
 
-pub use layout::{Frame, FrameNode, Rect, build_frame};
+pub use layout::{Frame, FrameNode, Rect, build_frame, build_frame_with};
+pub use must::{EvalOptions, Mode, evaluate};
 pub use scene::Scene;
 pub use text::TextEngine;

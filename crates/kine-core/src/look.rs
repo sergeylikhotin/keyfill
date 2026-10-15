@@ -43,41 +43,74 @@ impl Look {
     }
 }
 
-pub fn resolve(scene: &Scene, node: &Node, diags: &mut Diagnostics) -> Look {
-    let mut look = Look::default();
-    let Some(layers) = node.props.get("look").and_then(Value::as_array) else {
-        return look;
-    };
-    let path = scene.path(node.id);
-    let src = node.src.as_deref();
-    let text_allowed = matches!(node.kind, Kind::Text);
+/// Что стилизуется: от этого зависит набор допустимых свойств.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Box,
+    Text,
+    Span,
+}
 
+const SPAN_KEYS: &[&str] = &["font", "size", "weight", "color", "tracking", "case"];
+
+/// Слои `look` узла плюс дополнительные (из шагов `else`), по порядку.
+pub fn resolve(scene: &Scene, node: &Node, extra: &[Value], diags: &mut Diagnostics) -> Look {
+    let own = node.props.get("look").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    let target = if node.kind == Kind::Text { Target::Text } else { Target::Box };
+    let path = scene.path(node.id);
+    resolve_layers(scene, own.iter().chain(extra), target, node.kind.name(), &path, node.src.as_deref(), diags)
+}
+
+pub fn resolve_layers<'a>(
+    scene: &Scene,
+    layers: impl Iterator<Item = &'a Value>,
+    target: Target,
+    kind: &str,
+    path: &str,
+    src: Option<&str>,
+    diags: &mut Diagnostics,
+) -> Look {
+    let mut look = Look::default();
     for layer in layers {
         let label = layer.get("label").and_then(Value::as_str).unwrap_or("look").to_string();
         let Some(props) = layer.get("props").and_then(Value::as_object) else { continue };
         for (key, raw) in props {
             let known_box = BOX_KEYS.contains(&key.as_str());
             let known_text = TEXT_KEYS.contains(&key.as_str());
-            if known_text && !text_allowed {
-                diags.push(
-                    Level::Warn,
-                    "look.text-on-box",
-                    &path,
-                    src,
-                    format!("свойство {key} в {label} не действует на {}", node.kind.name()),
-                    Some("наследования нет: текстовые свойства задаются на самом <Text>"),
-                );
-                continue;
+            match target {
+                Target::Box if known_text => {
+                    diags.push(
+                        Level::Warn,
+                        "look.text-on-box",
+                        path,
+                        src,
+                        format!("свойство {key} в {label} не действует на {kind}"),
+                        Some("наследования нет: текстовые свойства задаются на самом <Text>"),
+                    );
+                    continue;
+                }
+                Target::Span if !SPAN_KEYS.contains(&key.as_str()) => {
+                    diags.push(
+                        Level::Warn,
+                        "look.span-unsupported",
+                        path,
+                        src,
+                        format!("свойство {key} в {label} не действует на Span"),
+                        Some("у Span есть только font, size, weight, color, tracking, case"),
+                    );
+                    continue;
+                }
+                _ => {}
             }
             if !known_box && !known_text {
-                diags.push(Level::Warn, "look.unknown", &path, src, format!("неизвестное свойство {key} в {label}"), None);
+                diags.push(Level::Warn, "look.unknown", path, src, format!("неизвестное свойство {key} в {label}"), None);
                 continue;
             }
             let mut tokens = Vec::new();
             let mut missing = Vec::new();
             let value = substitute(raw, &scene.theme, &mut tokens, &mut missing);
             for m in missing {
-                diags.push(Level::Error, "theme.missing-token", &path, src, format!("токен {m} не найден в теме"), None);
+                diags.push(Level::Error, "theme.missing-token", path, src, format!("токен {m} не найден в теме"), None);
             }
             look.props.insert(key.clone(), Resolved { value, prov: Prov { layer: label.clone(), tokens } });
         }
@@ -411,14 +444,29 @@ pub fn text_look(look: &Look, path: &str, src: Option<&str>, diags: &mut Diagnos
                 _ => Err(format!("ожидается start | center | end, получено {a}")),
             })
             .unwrap_or(TextAlign::Start),
-        case: r
-            .read("case", |c| match c.as_str() {
-                Some("none") => Ok(TextCase::None),
-                Some("upper") => Ok(TextCase::Upper),
-                Some("lower") => Ok(TextCase::Lower),
-                _ => Err(format!("ожидается none | upper | lower, получено {c}")),
-            })
-            .unwrap_or(TextCase::None),
+        case: r.read("case", parse_case).unwrap_or(TextCase::None),
+    }
+}
+
+fn parse_case(c: &Value) -> Result<TextCase, String> {
+    match c.as_str() {
+        Some("none") => Ok(TextCase::None),
+        Some("upper") => Ok(TextCase::Upper),
+        Some("lower") => Ok(TextCase::Lower),
+        _ => Err(format!("ожидается none | upper | lower, получено {c}")),
+    }
+}
+
+/// Стиль Span: только явно заданные свойства, остальное берётся у Text.
+pub fn span_style(look: &Look, path: &str, src: Option<&str>, diags: &mut Diagnostics) -> crate::text::SpanStyle {
+    let mut r = Reader { look, path, src, diags };
+    crate::text::SpanStyle {
+        family: r.read("font", |f| f.get("family").and_then(Value::as_str).map(String::from).ok_or_else(|| format!("font без family: {f}"))),
+        size: r.read("size", parse_len),
+        weight: r.read("weight", parse_len),
+        color: r.read("color", |c| parse_paint(c).map(|(c, _)| c)),
+        tracking: r.read("tracking", parse_len),
+        case: r.read("case", parse_case),
     }
 }
 

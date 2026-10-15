@@ -21,10 +21,12 @@ cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-t
 
 | Команда | Что делает |
 |---|---|
-| `kine render <scene.tsx> [-o out.png] [--scale N] [--bg #RRGGBB] [--dump]` | PNG кадра; без `--bg` — с прозрачностью |
+| `kine render <scene.tsx> [-o out.png] [--scale N] [--dump]` | PNG кадра; без `--bg` — с прозрачностью |
 | `kine dump <scene.tsx>` | Дерево сцены: адреса узлов, геометрия, стили, диагностики |
 | `kine inspect <scene.tsx> <path>` | Один узел: значения, токены и слои, откуда они пришли, исходник |
 | `kine check <scene.tsx> [--json]` | Только диагностики; код выхода 1 при ошибках |
+
+Общие флаги: `--mode dev|air` (dev — нарушение `must` это ошибка, air — применяются шаги `else`), `--bg #RRGGBB` (подложка: рисуется и учитывается в контрасте), `--seed N`, `--now MS`.
 
 ## Проверки
 
@@ -48,4 +50,6 @@ npm run typecheck
 | `crates/kine-render` | Рендер кадра через vello_cpu, PNG |
 | `crates/kine-cli` | Конвейер TSX → кадр и команды `kine` |
 | `spec` | Типы публичного API и контракт-тест для tsc |
-| `examples/lower-third` | Эталонная плашка: компонент, таймлайн, тема, сцена, золотой дамп |
+| `examples/lower-third` | Плашка: компонент, таймлайн, тема, сцена, золотой дамп |
+| `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, сцена с переполнением |
+| `assets/fonts` | Шрифты для примеров и тестов (Inter, OFL) |

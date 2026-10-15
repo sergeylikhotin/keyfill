@@ -4,9 +4,18 @@ export type Cmd =
   | { op: 'create'; id: number; kind: string; src?: string }
   | { op: 'set'; id: number; key: string; value: unknown }
   | { op: 'insert'; parent: number; child: number }
-  | { op: 'text'; id: number; value: string }
+  | { op: 'text'; id: number; runs: { text: string; look?: unknown; src?: string }[] }
   | { op: 'theme'; values: Record<string, unknown> }
-  | { op: 'stage'; id: number; ref: [number, number]; safe?: { action?: number; title?: number }; fps: number };
+  | {
+      op: 'stage';
+      id: number;
+      ref: [number, number];
+      safe?: { action?: number; title?: number };
+      fps: number;
+      fonts?: string[];
+      systemFonts?: boolean;
+    }
+  | { op: 'diag'; level: 'info' | 'warn' | 'error'; rule: string; node: string; source?: string; message: string; hint?: string };
 
 declare const __kine_emit: (json: string) => void;
 
@@ -25,8 +34,8 @@ export const host = {
   insert(parent: number, child: number) {
     queue.push({ op: 'insert', parent, child });
   },
-  text(id: number, value: string) {
-    queue.push({ op: 'text', id, value });
+  runs(id: number, runs: { text: string; look?: unknown; src?: string }[]) {
+    queue.push({ op: 'text', id, runs });
   },
   emit(cmd: Cmd) {
     queue.push(cmd);

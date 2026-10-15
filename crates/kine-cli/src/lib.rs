@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, bail};
-use kine_core::{Frame, Scene, TextEngine};
+use kine_core::{EvalOptions, Frame, Scene, TextEngine};
 use kine_js::{LogLine, RunOptions};
 
 /// Корень репозитория kine: там лежат `packages/core` и `node_modules/esbuild`.
@@ -84,9 +84,11 @@ pub struct Rendered {
     pub logs: Vec<LogLine>,
 }
 
-pub fn frame(entry: &Path, opts: &RunOptions) -> Result<Rendered> {
+/// Полный кадр: шрифты сцены (пути от каталога файла сцены), раскладка, `must` и `else`.
+pub fn frame(entry: &Path, opts: &RunOptions, eval: EvalOptions) -> Result<Rendered> {
     let Loaded { scene, logs } = load(entry, opts)?;
-    let mut engine = TextEngine::default();
-    let frame = kine_core::build_frame(&scene, &mut engine)?;
+    let dir = std::path::absolute(entry)?.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut engine = TextEngine::for_scene(&scene, &dir);
+    let frame = kine_core::evaluate(&scene, &mut engine, eval)?;
     Ok(Rendered { scene, frame, logs })
 }

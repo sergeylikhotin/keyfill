@@ -33,6 +33,13 @@ pub fn dump(scene: &Scene, frame: &Frame) -> String {
         plain_rect(&frame.action_safe),
         plain_rect(&frame.title_safe)
     );
+    let fonts: Vec<String> = frame.fonts.iter().map(|f| format!("{} ({})", f.families.join(", "), f.file)).collect();
+    let _ = writeln!(
+        out,
+        "fonts: {}{}",
+        if fonts.is_empty() { "—".to_string() } else { fonts.join(" · ") },
+        if frame.system_fonts { " + системные" } else { " · системные выключены" }
+    );
     if let Some(stage) = &scene.stage {
         let children = &scene.node(stage.id).children;
         for (i, &c) in children.iter().enumerate() {
@@ -73,6 +80,9 @@ fn node_lines(scene: &Scene, frame: &Frame, id: u32, prefix: &str, last: bool, o
         None => line.push_str("  (hidden: when=false)"),
     }
     annotations(&node.props, &mut line);
+    if let Some(label) = fnode.and_then(|f| f.applied_else.as_deref()) {
+        let _ = write!(line, "  [применён {label}]");
+    }
     let _ = writeln!(out, "{line}");
 
     let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
@@ -88,13 +98,30 @@ fn summary(frame: &Frame, f: &FrameNode, line: &mut String) {
     if let Some((index, _)) = f.text {
         let block = &frame.texts[index];
         let family = block.resolved_family.clone().unwrap_or_else(|| "?".into());
-        let mut text = format!("{:?}  {family} {} {}px", block.content, num(block.look.weight), num(block.look.size));
-        if let Some(requested) = &block.look.family
+        let look = block.look();
+        let mut text = format!("{:?}  {family} {} {}px", block.content, num(look.weight), num(look.size));
+        if let Some(requested) = &look.family
             && !requested.eq_ignore_ascii_case(&family) {
                 let _ = write!(text, " (запрошен {requested})");
             }
+        if block.size < look.size {
+            let _ = write!(text, " (fit {}→{})", num(look.size), num(block.size));
+        }
+        if block.truncated {
+            text.push_str(" (обрезан)");
+        }
+        if block.clip {
+            text.push_str(" (clip)");
+        }
+        if block.overflow {
+            text.push_str(" (не помещается)");
+        }
+        let spans = block.source.runs.iter().filter(|r| r.style.is_some()).count();
         parts.push(text);
-        parts.push(color_ref(&f.look, "color", block.look.color.to_string()));
+        parts.push(color_ref(&f.look, "color", look.color.to_string()));
+        if spans > 0 {
+            parts.push(format!("span×{spans}"));
+        }
         if block.line_count() > 1 {
             parts.push(format!("строк: {}", block.line_count()));
         }
@@ -134,21 +161,17 @@ fn summary(frame: &Frame, f: &FrameNode, line: &mut String) {
     }
 }
 
-/// То, что объявлено, но в M0 ещё не исполняется: агент должен это видеть, а не гадать.
+/// Объявленные утверждения и то, что ещё не исполняется: агент должен видеть это в строке узла.
 fn annotations(props: &std::collections::BTreeMap<String, Value>, line: &mut String) {
-    if let Some(p) = props.get("presence").and_then(Value::as_object) {
-        let keys: Vec<&str> = p.keys().map(String::as_str).collect();
-        let _ = write!(line, "  [presence {} — с M2]", keys.join(","));
+    let keys = |v: &Value| v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+    if let Some(p) = props.get("presence") {
+        let _ = write!(line, "  [presence {} — с M2]", keys(p));
     }
-    if let Some(m) = props.get("must").and_then(Value::as_object) {
-        let keys: Vec<&str> = m.keys().map(String::as_str).collect();
-        let _ = write!(line, "  [must {} — с M1]", keys.join(","));
+    if let Some(m) = props.get("must") {
+        let _ = write!(line, "  [must {}]", keys(m));
     }
-    if props.contains_key("else") {
-        line.push_str("  [else — с M1]");
-    }
-    if props.contains_key("fit") {
-        line.push_str("  [fit — с M1]");
+    if let Some(e) = props.get("else").and_then(Value::as_array) {
+        let _ = write!(line, "  [else×{}]", e.len());
     }
 }
 
@@ -169,20 +192,68 @@ pub fn inspect(scene: &Scene, frame: &Frame, path: &str) -> Option<String> {
     };
     let _ = writeln!(out, "rect      {}", plain_rect(&f.rect));
 
-    if let Some((index, origin)) = f.text {
+    if let Some(label) = &f.applied_else {
+        let _ = writeln!(out, "else      применён {label}");
+    }
+    if let Some((index, content)) = f.text {
         let block = &frame.texts[index];
+        let look = block.look();
         let _ = writeln!(out, "content   {:?}", block.content);
         let _ = writeln!(
             out,
-            "font      {} (запрошен {}), строк: {}, {}×{} at {},{}",
+            "font      {} (запрошен {}), {}px{}, строк: {}, текст {}×{} в блоке {}",
             block.resolved_family.as_deref().unwrap_or("?"),
-            block.look.family.as_deref().unwrap_or("sans-serif"),
+            look.family.as_deref().unwrap_or("sans-serif"),
+            num(block.size),
+            if block.size < look.size { format!(" (fit из {})", num(look.size)) } else { String::new() },
             block.line_count(),
             num(block.layout.width()),
             num(block.layout.height()),
-            num(origin[0]),
-            num(origin[1])
+            plain_rect(&content)
         );
+        if block.truncated || block.overflow || block.clip {
+            let state = [(block.truncated, "обрезан с многоточием"), (block.overflow, "не помещается"), (block.clip, "обрезан по блоку")]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, s)| *s)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(out, "fit       {state}");
+        }
+        if node.runs.iter().any(|r| r.look.is_some()) {
+            let _ = writeln!(out, "runs");
+            for (i, run) in node.runs.iter().enumerate() {
+                let style = block.source.runs.get(i).and_then(|r| r.style.as_ref());
+                let src = run.src.as_deref().map(|s| format!(" @ {s}")).unwrap_or_default();
+                match style {
+                    Some(st) => {
+                        let mut parts = Vec::new();
+                        if let Some(c) = st.color {
+                            parts.push(format!("color {c}"));
+                        }
+                        if let Some(v) = st.size {
+                            parts.push(format!("size {}", num(v)));
+                        }
+                        if let Some(v) = st.weight {
+                            parts.push(format!("weight {}", num(v)));
+                        }
+                        if let Some(v) = &st.family {
+                            parts.push(format!("font {v}"));
+                        }
+                        if let Some(v) = st.tracking {
+                            parts.push(format!("tracking {}", num(v)));
+                        }
+                        if st.case.is_some() {
+                            parts.push("case".into());
+                        }
+                        let _ = writeln!(out, "  span {:?}  {}{src}", run.text, parts.join(" · "));
+                    }
+                    None => {
+                        let _ = writeln!(out, "  text {:?}", run.text);
+                    }
+                }
+            }
+        }
     }
 
     if !f.look.props.is_empty() {

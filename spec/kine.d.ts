@@ -2,6 +2,9 @@
 // типы фиксируют контракт, который агент читает и который проверяет tsc.
 
 declare module '@kine/core' {
+  // Только явные export видны снаружи; бренды ниже — внутренние.
+  export {};
+
   // ─── Сигналы ──────────────────────────────────────────────────────────────
 
   export type Accessor<T> = () => T;
@@ -13,6 +16,8 @@ declare module '@kine/core' {
   export function computed<T>(fn: () => T): Accessor<T>;
   export function effect(fn: () => void | (() => void)): void;
   export function batch(fn: () => void): void;
+  /** Явное чтение без подписки; глушит предупреждение signal.untracked. */
+  export function untrack<T>(fn: () => T): T;
 
   // ─── Время ────────────────────────────────────────────────────────────────
 
@@ -48,7 +53,8 @@ declare module '@kine/core' {
     | { readonly linear: { readonly angle: number; readonly stops: readonly GradientStop[] } }
     | { readonly radial: { readonly center?: Vec2; readonly radius?: Len; readonly stops: readonly GradientStop[] } };
 
-  export type FontRef = Token<'font'> | { readonly family: string; readonly file?: string };
+  /** Семейство по имени: из файлов сцены (defineScene.fonts) или системное. */
+  export type FontRef = Token<'font'> | { readonly family: string };
 
   // ─── look: стиль узла ─────────────────────────────────────────────────────
 
@@ -132,7 +138,8 @@ declare module '@kine/core' {
   export type AnchorTarget = 'stage' | 'actionSafe' | 'titleSafe' | 'parent' | PartRef;
 
   export interface Anchor {
-    readonly to: AnchorTarget;
+    /** По умолчанию `parent`. */
+    readonly to?: AnchorTarget;
     /** Точка цели. */
     readonly at: AnchorPoint;
     /** Точка самого узла, по умолчанию совпадает с `at`. */
@@ -158,7 +165,10 @@ declare module '@kine/core' {
     readonly visible?: true;
   }
 
-  /** Варианты деградации, перебираются по порядку, пока must не выполнится. */
+  /**
+   * Шаги деградации. Накопительные: шаг k включает шаги 0..k-1. В dev нарушение must — ошибка
+   * с подсказкой, какой шаг её исправит; в эфире применяется первый помогающий шаг.
+   */
   export interface ElseStep<L> {
     readonly shrinkTo?: Len;
     readonly lines?: number;
@@ -306,6 +316,8 @@ declare module '@kine/core' {
     readonly grow?: number;
     readonly shrink?: number;
     readonly aspect?: number;
+    /** Ячейка в родительском grid, 1-based. Без неё — авторазмещение по порядку. */
+    readonly cell?: { readonly col?: number; readonly row?: number; readonly colSpan?: number; readonly rowSpan?: number };
     /** Монтирование с учётом presence: при false узел уходит через out. */
     readonly when?: Reactive<boolean>;
   }
@@ -344,6 +356,10 @@ declare module '@kine/core' {
     readonly stage: StageConfig;
     readonly fps: number;
     readonly root: () => KineElement;
+    /** Файлы шрифтов, пути от каталога файла сцены. Семейства берутся из самих файлов. */
+    readonly fonts?: readonly string[];
+    /** Системные шрифты; для детерминированного рендера выключай и подключай файлы. По умолчанию true. */
+    readonly systemFonts?: boolean;
   }
   export function defineScene(def: SceneDef): SceneDef;
 

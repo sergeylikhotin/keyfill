@@ -3,6 +3,9 @@
 type Computation = { run(): void; deps: Set<Set<Computation>>; disposed: boolean };
 
 let current: Computation | null = null;
+// Пока исполняется тело view, чтение сигнала вне реактивного контекста — почти наверняка ошибка:
+// значение прочитается один раз и больше не обновится.
+let viewGuard: { report: () => void } | null = null;
 let batchDepth = 0;
 const pending = new Set<Computation>();
 
@@ -13,6 +16,8 @@ function track(subs: Set<Computation>) {
   if (current) {
     subs.add(current);
     current.deps.add(subs);
+  } else if (viewGuard) {
+    viewGuard.report();
   }
 }
 
@@ -88,10 +93,35 @@ export function batch(fn: () => void): void {
 
 export function untrack<T>(fn: () => T): T {
   const prev = current;
+  const guard = viewGuard;
   current = null;
+  viewGuard = null;
   try {
     return fn();
   } finally {
     current = prev;
+    viewGuard = guard;
+  }
+}
+
+/** Исполняет тело view: без трекинга, но с сигналом о чтении сигналов вне аксессоров. */
+export function runView<T>(onUntrackedRead: () => void, fn: () => T): T {
+  const prev = current;
+  const guard = viewGuard;
+  let reported = false;
+  current = null;
+  viewGuard = {
+    report() {
+      if (!reported) {
+        reported = true;
+        onUntrackedRead();
+      }
+    },
+  };
+  try {
+    return fn();
+  } finally {
+    current = prev;
+    viewGuard = guard;
   }
 }
