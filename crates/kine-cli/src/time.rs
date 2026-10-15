@@ -1,0 +1,149 @@
+//! Грамматика времени — одна для `--t`, `--cue` и (позже) MCP:
+//!
+//! - `1.2` — секунды, `60f` — кадры;
+//! - `settled` — кадр «в эфире», когда закончились все `in` первого play;
+//! - `out`, `out+0.2`, `stats-5f` — маркер таймлайна со смещением (маркеры появятся в M2b);
+//! - `0..4`, `settled..out+0.5` — диапазон (раскадровка, позже `check`).
+//!
+//! Разбор отделён от вычисления: момент `settled` и маркеры известны только сессии.
+
+use anyhow::{Result, bail};
+
+use crate::Session;
+
+/// Длительность: секунды или кадры.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Offset {
+    Seconds(f64),
+    Frames(i64),
+}
+
+impl Offset {
+    fn seconds(self, fps: f64) -> f64 {
+        match self {
+            Offset::Seconds(s) => s,
+            Offset::Frames(f) => f as f64 / fps,
+        }
+    }
+}
+
+/// Один момент.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Moment {
+    At(Offset),
+    Settled(Offset),
+    Marker(String, Offset),
+}
+
+/// Момент или диапазон.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimeSpec {
+    Moment(Moment),
+    Range(Moment, Moment),
+}
+
+fn offset(s: &str) -> Result<Offset> {
+    if let Some(f) = s.strip_suffix('f') {
+        let n: i64 = f.parse().map_err(|_| anyhow::anyhow!("{s:?}: ожидается число кадров, например 60f"))?;
+        return Ok(Offset::Frames(n));
+    }
+    let v: f64 = s.parse().map_err(|_| anyhow::anyhow!("{s:?}: ожидаются секунды (1.2) или кадры (60f)"))?;
+    if !v.is_finite() {
+        bail!("{s:?}: время должно быть конечным");
+    }
+    Ok(Offset::Seconds(v))
+}
+
+pub fn parse_moment(s: &str) -> Result<Moment> {
+    let s = s.trim();
+    if s.is_empty() {
+        bail!("пустое время");
+    }
+    if s.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        let o = offset(s)?;
+        if matches!(o, Offset::Seconds(v) if v < 0.0) || matches!(o, Offset::Frames(f) if f < 0) {
+            bail!("{s:?}: время не может быть отрицательным");
+        }
+        return Ok(Moment::At(o));
+    }
+    // Имя с необязательным смещением: settled, out+0.2, stats-5f.
+    let split = s.find(['+', '-']);
+    let (name, shift) = match split {
+        Some(i) => {
+            let sign = if &s[i..i + 1] == "-" { -1.0 } else { 1.0 };
+            let o = match offset(&s[i + 1..])? {
+                Offset::Seconds(v) => Offset::Seconds(sign * v),
+                Offset::Frames(f) => Offset::Frames(sign as i64 * f),
+            };
+            (&s[..i], o)
+        }
+        None => (s, Offset::Seconds(0.0)),
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        bail!("{s:?}: ожидается секунды (1.2), кадры (60f), settled или маркер со смещением (out+0.2)");
+    }
+    Ok(match name {
+        "settled" => Moment::Settled(shift),
+        _ => Moment::Marker(name.to_string(), shift),
+    })
+}
+
+pub fn parse(s: &str) -> Result<TimeSpec> {
+    match s.split_once("..") {
+        Some((a, b)) => Ok(TimeSpec::Range(parse_moment(a)?, parse_moment(b)?)),
+        None => Ok(TimeSpec::Moment(parse_moment(s)?)),
+    }
+}
+
+/// Момент в секундах. `settled` продвигает сессию до первого play, поэтому моменты
+/// разрешаются до рендера кадров.
+pub fn resolve(m: &Moment, session: &mut Session) -> Result<f64> {
+    let fps = session.fps;
+    let t = match m {
+        Moment::At(o) => o.seconds(fps),
+        Moment::Settled(o) => session.settled_time()? + o.seconds(fps),
+        Moment::Marker(name, _) => bail!("маркер {name:?}: маркеры таймлайна появятся в M2b; пока есть секунды, кадры (60f) и settled"),
+    };
+    if t < 0.0 {
+        bail!("момент {t:.3} с раньше начала сцены");
+    }
+    Ok(t)
+}
+
+/// Время команды сценария: только абсолютное, секунды или кадры. Кадры переводятся
+/// в секунды, когда сессия знает fps.
+pub fn cue_time(s: &str) -> Result<Offset> {
+    match parse_moment(s)? {
+        Moment::At(o) => Ok(o),
+        _ => bail!("{s:?}: время команды — секунды (2.5) или кадры (125f)"),
+    }
+}
+
+impl Offset {
+    pub fn to_seconds(self, fps: f64) -> f64 {
+        self.seconds(fps)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grammar() {
+        assert_eq!(parse("1.2").unwrap(), TimeSpec::Moment(Moment::At(Offset::Seconds(1.2))));
+        assert_eq!(parse("60f").unwrap(), TimeSpec::Moment(Moment::At(Offset::Frames(60))));
+        assert_eq!(parse("settled").unwrap(), TimeSpec::Moment(Moment::Settled(Offset::Seconds(0.0))));
+        assert_eq!(parse("out+0.2").unwrap(), TimeSpec::Moment(Moment::Marker("out".into(), Offset::Seconds(0.2))));
+        assert_eq!(parse("stats-5f").unwrap(), TimeSpec::Moment(Moment::Marker("stats".into(), Offset::Frames(-5))));
+        assert_eq!(
+            parse("0..settled+1").unwrap(),
+            TimeSpec::Range(Moment::At(Offset::Seconds(0.0)), Moment::Settled(Offset::Seconds(1.0)))
+        );
+        assert!(parse("-1").is_err());
+        assert!(parse("1.2x").is_err());
+        assert!(parse("out*2").is_err());
+        assert!(cue_time("settled").is_err());
+        assert_eq!(cue_time("125f").unwrap(), Offset::Frames(125));
+    }
+}

@@ -1,0 +1,1197 @@
+//! Движение: кривые и пружины, программы `presence`, переходы `transition` и состояние
+//! анимаций сцены.
+//!
+//! Всё считается аналитически: значение в момент `t` не требует проигрывать кадры до него,
+//! нужно только обработать события до `t` (команды сценария, окончания фаз). Пружины решаются
+//! в замкнутой форме (затухающий осциллятор), поэтому кадр детерминирован и не зависит от того,
+//! какие кадры рендерились перед ним.
+//!
+//! Два слоя значений:
+//! - **presence** (`in`, `loop`, `out`) работает поверх `look`: `x`, `y`, `rotate` — сдвиг,
+//!   `scale`, `opacity` — множитель, `reveal` — доля видимых символов; остальные каналы
+//!   перекрывают значение `look`. Этот слой не участвует в `must`: проверяется состояние
+//!   графики в покое, а не промежуточный кадр появления.
+//! - **transition** анимирует само значение `look`, когда данные изменились.
+
+use std::collections::BTreeMap;
+
+use serde_json::Value;
+
+use crate::diag::{Diagnostics, Level};
+use crate::look::{self, Rgba, num};
+use crate::scene::{Kind, Scene};
+
+// ─── Каналы и значения ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Channel {
+    X,
+    Y,
+    Scale,
+    Rotate,
+    Opacity,
+    Width,
+    Height,
+    Radius,
+    Background,
+    Color,
+    Reveal,
+}
+
+impl Channel {
+    pub fn parse(key: &str) -> Option<Channel> {
+        Some(match key {
+            "x" => Channel::X,
+            "y" => Channel::Y,
+            "scale" => Channel::Scale,
+            "rotate" => Channel::Rotate,
+            "opacity" => Channel::Opacity,
+            "width" => Channel::Width,
+            "height" => Channel::Height,
+            "radius" => Channel::Radius,
+            "background" => Channel::Background,
+            "color" => Channel::Color,
+            "reveal" => Channel::Reveal,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Channel::X => "x",
+            Channel::Y => "y",
+            Channel::Scale => "scale",
+            Channel::Rotate => "rotate",
+            Channel::Opacity => "opacity",
+            Channel::Width => "width",
+            Channel::Height => "height",
+            Channel::Radius => "radius",
+            Channel::Background => "background",
+            Channel::Color => "color",
+            Channel::Reveal => "reveal",
+        }
+    }
+
+    /// Нейтральное значение канала в слое presence: сдвиг 0 или множитель 1.
+    /// `None` — канал перекрывает значение `look`.
+    pub fn identity(self) -> Option<f64> {
+        match self {
+            Channel::X | Channel::Y | Channel::Rotate => Some(0.0),
+            Channel::Scale | Channel::Opacity | Channel::Reveal => Some(1.0),
+            _ => None,
+        }
+    }
+
+    fn is_color(self) -> bool {
+        matches!(self, Channel::Background | Channel::Color)
+    }
+}
+
+/// Значение канала: число или цвет (sRGB, каналы 0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum V {
+    N(f64),
+    C([f64; 4]),
+}
+
+impl V {
+    pub fn n(self) -> f64 {
+        match self {
+            V::N(v) => v,
+            V::C(_) => 0.0,
+        }
+    }
+
+    pub fn rgba(self) -> Rgba {
+        match self {
+            V::C([r, g, b, a]) => Rgba { r: r as f32, g: g as f32, b: b as f32, a: a as f32 },
+            V::N(_) => Rgba::default(),
+        }
+    }
+
+    fn from_rgba(c: Rgba) -> V {
+        V::C([c.r as f64, c.g as f64, c.b as f64, c.a as f64])
+    }
+
+    fn lerp(a: V, b: V, p: f64) -> V {
+        match (a, b) {
+            (V::N(x), V::N(y)) => V::N(x + (y - x) * p),
+            (V::C(x), V::C(y)) => V::C(std::array::from_fn(|i| x[i] + (y[i] - x[i]) * p)),
+            (_, b) => b,
+        }
+    }
+
+    pub fn show(self) -> String {
+        match self {
+            V::N(v) => num(v as f32),
+            V::C(_) => self.rgba().to_string(),
+        }
+    }
+}
+
+// ─── Изинги ─────────────────────────────────────────────────────────────────
+
+const LINEAR: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+const EASE_IN: [f64; 4] = [0.42, 0.0, 1.0, 1.0];
+const EASE_OUT: [f64; 4] = [0.0, 0.0, 0.58, 1.0];
+const EASE_IN_OUT: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Easing {
+    /// Кривая Безье `[x1, y1, x2, y2]` за фиксированное время.
+    Tween { duration: f64, curve: [f64; 4] },
+    Spring { stiffness: f64, damping: f64, mass: f64 },
+}
+
+impl Easing {
+    pub fn parse(v: &Value) -> Result<Easing, String> {
+        let f = |k: &str| v.get(k).and_then(Value::as_f64);
+        match v.get("kind").and_then(Value::as_str) {
+            Some("tween") => {
+                let duration = f("duration").filter(|d| *d >= 0.0).ok_or("tween: ожидается duration ≥ 0")?;
+                let curve = match v.get("ease") {
+                    None => EASE_IN_OUT,
+                    Some(Value::String(s)) => match s.as_str() {
+                        "linear" => LINEAR,
+                        "in" => EASE_IN,
+                        "out" => EASE_OUT,
+                        "inOut" => EASE_IN_OUT,
+                        other => return Err(format!("tween: неизвестная кривая {other:?}")),
+                    },
+                    Some(Value::Array(c)) if c.len() == 4 => {
+                        let c: Vec<f64> = c.iter().map(|x| x.as_f64().ok_or("tween: кривая из чисел")).collect::<Result<_, _>>()?;
+                        [c[0], c[1], c[2], c[3]]
+                    }
+                    Some(other) => return Err(format!("tween: кривая {other} не разобрана")),
+                };
+                Ok(Easing::Tween { duration, curve })
+            }
+            Some("spring") => {
+                let stiffness = f("stiffness").filter(|v| *v > 0.0).ok_or("spring: ожидается stiffness > 0")?;
+                let damping = f("damping").filter(|v| *v >= 0.0).ok_or("spring: ожидается damping ≥ 0")?;
+                let mass = f("mass").unwrap_or(1.0);
+                if mass <= 0.0 {
+                    return Err("spring: ожидается mass > 0".into());
+                }
+                if damping == 0.0 {
+                    return Err("spring без затухания никогда не остановится: задай damping > 0".into());
+                }
+                Ok(Easing::Spring { stiffness, damping, mass })
+            }
+            _ => Err(format!("изинг: ожидается tween(...) или spring(...), получено {v}")),
+        }
+    }
+
+    /// Прогресс 0..1 (пружина может перелетать) через `t` секунд от старта. `v0` — начальная
+    /// скорость прогресса в долях в секунду; её передаёт прерванная пружина.
+    pub fn progress(&self, t: f64, v0: f64) -> f64 {
+        match *self {
+            Easing::Tween { duration, curve } => {
+                if duration <= 0.0 {
+                    return 1.0;
+                }
+                bezier(curve, (t / duration).clamp(0.0, 1.0))
+            }
+            Easing::Spring { stiffness, damping, mass } => spring_state(stiffness, damping, mass, v0, t).0,
+        }
+    }
+
+    /// Длительность: у tween — заданная, у пружины — время, когда она успокоилась.
+    pub fn duration(&self, v0: f64) -> f64 {
+        match *self {
+            Easing::Tween { duration, .. } => duration,
+            Easing::Spring { stiffness, damping, mass } => spring_settle(stiffness, damping, mass, v0),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match *self {
+            Easing::Tween { duration, curve } => {
+                let name = match curve {
+                    LINEAR => "linear".to_string(),
+                    EASE_IN => "in".to_string(),
+                    EASE_OUT => "out".to_string(),
+                    EASE_IN_OUT => "inOut".to_string(),
+                    c => format!("[{}]", c.map(|v| num(v as f32)).join(",")),
+                };
+                format!("tween {}s {name}", num(duration as f32))
+            }
+            Easing::Spring { stiffness, damping, mass } => {
+                let preset = match (stiffness, damping, mass) {
+                    (400.0, 30.0, 1.0) => " (snappy)",
+                    (120.0, 20.0, 1.0) => " (gentle)",
+                    (300.0, 12.0, 1.0) => " (bouncy)",
+                    _ => "",
+                };
+                format!("spring {}/{}/{}{preset}", num(stiffness as f32), num(damping as f32), num(mass as f32))
+            }
+        }
+    }
+}
+
+/// cubic-bezier(x1, y1, x2, y2) как в CSS: по доле времени `x` находит долю значения.
+fn bezier(c: [f64; 4], x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let [x1, y1, x2, y2] = c;
+    if x1 == y1 && x2 == y2 {
+        return x;
+    }
+    let curve = |a: f64, b: f64, t: f64| 3.0 * a * t * (1.0 - t).powi(2) + 3.0 * b * t * t * (1.0 - t) + t.powi(3);
+    let slope = |t: f64| 3.0 * x1 * (1.0 - t).powi(2) + 6.0 * (x2 - x1) * t * (1.0 - t) + 3.0 * (1.0 - x2) * t * t;
+    let mut t = x;
+    for _ in 0..8 {
+        let d = curve(x1, x2, t) - x;
+        let s = slope(t);
+        if d.abs() < 1e-10 || s.abs() < 1e-9 {
+            break;
+        }
+        t -= d / s;
+    }
+    if !(0.0..=1.0).contains(&t) || (curve(x1, x2, t) - x).abs() > 1e-7 {
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..60 {
+            t = (lo + hi) / 2.0;
+            if curve(x1, x2, t) < x {
+                lo = t;
+            } else {
+                hi = t;
+            }
+        }
+    }
+    curve(y1, y2, t)
+}
+
+/// Прогресс и его скорость у пружины, которая идёт от 0 к 1 с начальной скоростью `v0`.
+/// Замкнутая форма затухающего осциллятора для отклонения `x = 1 - p`.
+fn spring_state(k: f64, c: f64, m: f64, v0: f64, t: f64) -> (f64, f64) {
+    let w0 = (k / m).sqrt();
+    let z = c / (2.0 * (k * m).sqrt());
+    let (x0, xv0) = (1.0, -v0);
+    let (x, v) = if (z - 1.0).abs() < 1e-6 {
+        let b = xv0 + w0 * x0;
+        let e = (-w0 * t).exp();
+        (e * (x0 + b * t), e * (b - w0 * (x0 + b * t)))
+    } else if z < 1.0 {
+        let wd = w0 * (1.0 - z * z).sqrt();
+        let e = (-z * w0 * t).exp();
+        let (s, co) = (wd * t).sin_cos();
+        let b = (xv0 + z * w0 * x0) / wd;
+        let x = e * (x0 * co + b * s);
+        (x, -z * w0 * x + e * (-x0 * wd * s + b * wd * co))
+    } else {
+        let s = (z * z - 1.0).sqrt();
+        let (r1, r2) = (-w0 * (z - s), -w0 * (z + s));
+        let c1 = (xv0 - r2 * x0) / (r1 - r2);
+        let c2 = x0 - c1;
+        let (e1, e2) = ((r1 * t).exp(), (r2 * t).exp());
+        (c1 * e1 + c2 * e2, c1 * r1 * e1 + c2 * r2 * e2)
+    };
+    (1.0 - x, -v)
+}
+
+/// Время, после которого пружина в пределах 0.1% от цели и почти неподвижна. Шаг 1 мс, максимум 10 с.
+fn spring_settle(k: f64, c: f64, m: f64, v0: f64) -> f64 {
+    const STEPS: u32 = 10_000;
+    let mut last = 0;
+    for i in 0..=STEPS {
+        let (p, dp) = spring_state(k, c, m, v0, f64::from(i) / 1000.0);
+        if (1.0 - p).abs() > 1e-3 || dp.abs() > 1e-2 {
+            last = i;
+        }
+    }
+    f64::from(last + 1) / 1000.0
+}
+
+// ─── Сегменты и дорожки ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct Seg {
+    pub start: f64,
+    pub from: V,
+    pub to: V,
+    pub easing: Easing,
+    /// Начальная скорость прогресса (только пружины, при прерывании).
+    pub v0: f64,
+    pub dur: f64,
+    /// Бесконечное качание from → to → from (pulse).
+    pub pingpong: bool,
+}
+
+impl Seg {
+    fn new(start: f64, from: V, to: V, easing: Easing, v0: f64, pingpong: bool) -> Seg {
+        Seg { start, from, to, easing, v0, dur: easing.duration(v0), pingpong }
+    }
+
+    fn progress(&self, t: f64) -> f64 {
+        let local = (t - self.start).max(0.0);
+        if self.pingpong {
+            if self.dur <= 0.0 {
+                return 1.0;
+            }
+            let cycle = local % (2.0 * self.dur);
+            return if cycle < self.dur {
+                self.easing.progress(cycle, 0.0)
+            } else {
+                1.0 - self.easing.progress(cycle - self.dur, 0.0)
+            };
+        }
+        if local >= self.dur { 1.0 } else { self.easing.progress(local, self.v0) }
+    }
+
+    fn value(&self, t: f64) -> V {
+        V::lerp(self.from, self.to, self.progress(t))
+    }
+}
+
+/// Значения одного канала во времени: сегменты по возрастанию старта.
+#[derive(Debug, Clone)]
+pub struct Track {
+    pub segs: Vec<Seg>,
+    /// Что запустило дорожку: `in`, `loop`, `out`, `transition`.
+    pub source: &'static str,
+}
+
+impl Track {
+    fn active(&self, t: f64) -> Option<&Seg> {
+        self.segs.iter().rev().find(|s| s.start <= t)
+    }
+
+    pub fn value(&self, t: f64) -> V {
+        match self.active(t) {
+            Some(s) => s.value(t),
+            None => self.segs[0].from,
+        }
+    }
+
+    /// Скорость значения в единицах канала в секунду (для передачи импульса пружине).
+    fn velocity(&self, t: f64) -> f64 {
+        let Some(s) = self.active(t) else { return 0.0 };
+        let h = 1e-4;
+        match (s.value(t + h), s.value(t)) {
+            (V::N(a), V::N(b)) => (a - b) / h,
+            _ => 0.0,
+        }
+    }
+
+    pub fn end(&self) -> Option<f64> {
+        if self.segs.iter().any(|s| s.pingpong) {
+            return None;
+        }
+        self.segs.iter().map(|s| s.start + s.dur).reduce(f64::max)
+    }
+
+    fn running(&self, t: f64) -> bool {
+        self.end().is_none_or(|e| t < e) && self.segs.first().is_some_and(|s| s.start <= t)
+    }
+
+    fn easing_label(&self, t: f64) -> String {
+        self.active(t).or(self.segs.first()).map(|s| s.easing.label()).unwrap_or_default()
+    }
+}
+
+// ─── Программы presence ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ProgSeg {
+    pub channel: Channel,
+    pub offset: f64,
+    /// Явное начальное значение; без него движение идёт от текущего.
+    pub from: Option<V>,
+    pub to: V,
+    pub easing: Easing,
+    pub pingpong: bool,
+}
+
+/// Скомпилированное движение (`animate`, `seq`, `par`, `delay`, `pulse`): сегменты по каналам.
+#[derive(Debug, Clone, Default)]
+pub struct Program {
+    pub segs: Vec<ProgSeg>,
+    pub duration: f64,
+    pub infinite: bool,
+}
+
+impl Program {
+    fn shifted(mut self, by: f64) -> Program {
+        for s in &mut self.segs {
+            s.offset += by;
+        }
+        self.duration += by;
+        self
+    }
+}
+
+struct Compiler<'a> {
+    theme: &'a BTreeMap<String, Value>,
+    notes: Vec<(Level, &'static str, String)>,
+}
+
+impl Compiler<'_> {
+    fn value(&mut self, ch: Channel, raw: &Value) -> Result<V, String> {
+        if ch.is_color() {
+            let (mut tokens, mut missing) = (Vec::new(), Vec::new());
+            let v = look::substitute(raw, self.theme, &mut tokens, &mut missing);
+            if let Some(m) = missing.first() {
+                return Err(format!("токен {m} не найден в теме"));
+            }
+            return look::parse_color(&v).map(V::from_rgba);
+        }
+        raw.as_f64().map(V::N).ok_or_else(|| format!("{}: ожидается число, получено {raw}", ch.name()))
+    }
+
+    fn compile(&mut self, v: &Value) -> Result<Program, String> {
+        if let Some(items) = v.as_array() {
+            return self.par(items);
+        }
+        match v.get("motion").and_then(Value::as_str) {
+            Some("animate") => {
+                let easing = Easing::parse(v.get("easing").ok_or("animate без easing")?)?;
+                let targets = v.get("targets").and_then(Value::as_object).ok_or("animate без targets")?;
+                let mut segs = Vec::new();
+                for (key, raw) in targets {
+                    let Some(channel) = Channel::parse(key) else {
+                        let what = if key == "blur" { "blur пока не анимируется" } else { "неизвестный канал" };
+                        self.notes.push((Level::Warn, "motion.unsupported", format!("{key}: {what}, пропущен")));
+                        continue;
+                    };
+                    let (from, to) = match raw.as_array() {
+                        Some(pair) if pair.len() == 2 => (Some(self.value(channel, &pair[0])?), self.value(channel, &pair[1])?),
+                        _ => (None, self.value(channel, raw)?),
+                    };
+                    segs.push(ProgSeg { channel, offset: 0.0, from, to, easing, pingpong: false });
+                }
+                Ok(Program { segs, duration: easing.duration(0.0), infinite: false })
+            }
+            Some("seq") => {
+                let items = v.get("items").and_then(Value::as_array).ok_or("seq без items")?;
+                let mut out = Program::default();
+                for (i, item) in items.iter().enumerate() {
+                    if out.infinite {
+                        self.notes.push((Level::Warn, "motion.unreachable", format!("seq: шаг {i} идёт после бесконечного и не начнётся")));
+                        break;
+                    }
+                    let p = self.compile(item)?.shifted(out.duration);
+                    out.segs.extend(p.segs);
+                    out.duration = p.duration;
+                    out.infinite = p.infinite;
+                }
+                Ok(out)
+            }
+            Some("par") => self.par(v.get("items").and_then(Value::as_array).ok_or("par без items")?),
+            Some("delay") => {
+                let s = v.get("seconds").and_then(Value::as_f64).filter(|s| *s >= 0.0).ok_or("delay: ожидается seconds ≥ 0")?;
+                Ok(self.compile(v.get("item").ok_or("delay без движения")?)?.shifted(s))
+            }
+            Some("pulse") => {
+                let period = v.get("period").and_then(Value::as_f64).filter(|p| *p > 0.0).ok_or("pulse: ожидается period > 0")?;
+                let easing = Easing::Tween { duration: period / 2.0, curve: EASE_IN_OUT };
+                let mut segs = Vec::new();
+                for (key, channel) in [("opacity", Channel::Opacity), ("scale", Channel::Scale)] {
+                    if let Some(pair) = v.get(key).and_then(Value::as_array).filter(|p| p.len() == 2) {
+                        let (from, to) = (self.value(channel, &pair[0])?, self.value(channel, &pair[1])?);
+                        segs.push(ProgSeg { channel, offset: 0.0, from: Some(from), to, easing, pingpong: true });
+                    }
+                }
+                Ok(Program { segs, duration: period, infinite: true })
+            }
+            _ => Err(format!("не движение: {v}")),
+        }
+    }
+
+    fn par(&mut self, items: &[Value]) -> Result<Program, String> {
+        let mut out = Program::default();
+        for item in items {
+            let p = self.compile(item)?;
+            out.segs.extend(p.segs);
+            out.duration = out.duration.max(p.duration);
+            out.infinite |= p.infinite;
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Presence {
+    pub enter: Option<Program>,
+    pub repeat: Option<Program>,
+    pub exit: Option<Program>,
+}
+
+// ─── Состояние анимаций сцены ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum Phase {
+    /// Сцена загружена, play ещё не было: узел стоит в начальном кадре `in`.
+    Waiting,
+    In { start: f64, end: f64 },
+    Loop,
+    /// На экране, движения presence нет.
+    #[default]
+    Shown,
+    Out { start: f64, end: f64 },
+    /// Ушёл после `out`.
+    Gone,
+}
+
+#[derive(Debug, Default)]
+struct NodeState {
+    presence: Option<Presence>,
+    phase: Phase,
+    rel: BTreeMap<Channel, Track>,
+    abs: BTreeMap<Channel, Track>,
+    /// Значения из `look` и размеров: к ним ведут переходы.
+    targets: BTreeMap<Channel, V>,
+    visible: bool,
+    own_hidden: bool,
+}
+
+impl NodeState {
+    fn abs_value(&self, ch: Channel, t: f64) -> V {
+        if let Some(tr) = self.abs.get(&ch) {
+            return tr.value(t);
+        }
+        self.targets.get(&ch).copied().unwrap_or(if ch.is_color() { V::C([0.0; 4]) } else { V::N(0.0) })
+    }
+
+    fn current(&self, ch: Channel, t: f64) -> V {
+        if let Some(tr) = self.rel.get(&ch) {
+            return tr.value(t);
+        }
+        match ch.identity() {
+            Some(v) => V::N(v),
+            None => self.abs_value(ch, t),
+        }
+    }
+
+    /// Запускает программу на слое presence. `continuing` — узел на экране: первый сегмент
+    /// каждого канала идёт от текущего значения, пружина сохраняет скорость.
+    fn start(&mut self, prog: &Program, t: f64, source: &'static str, continuing: bool) {
+        let mut by_channel: BTreeMap<Channel, Vec<&ProgSeg>> = BTreeMap::new();
+        for s in &prog.segs {
+            by_channel.entry(s.channel).or_default().push(s);
+        }
+        for (ch, mut segs) in by_channel {
+            segs.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+            let current = self.current(ch, t);
+            let existing = self.rel.get(&ch).filter(|_| continuing);
+            let mut out = Vec::with_capacity(segs.len());
+            let mut prev_to = None;
+            for (i, ps) in segs.iter().enumerate() {
+                let from = if ps.pingpong {
+                    ps.from.unwrap_or(current)
+                } else if i == 0 && existing.is_some() {
+                    current
+                } else {
+                    ps.from.or(prev_to).unwrap_or(current)
+                };
+                let v0 = match (existing, ps.easing, from, ps.to) {
+                    (Some(tr), Easing::Spring { .. }, V::N(a), V::N(b)) if i == 0 && (b - a).abs() > 1e-9 => tr.velocity(t) / (b - a),
+                    _ => 0.0,
+                };
+                out.push(Seg::new(t + ps.offset, from, ps.to, ps.easing, v0, ps.pingpong));
+                prev_to = Some(ps.to);
+            }
+            self.rel.insert(ch, Track { segs: out, source });
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ScenePhase {
+    /// Загружена, ждёт play.
+    #[default]
+    Loaded,
+    Playing,
+    Stopping { until: f64 },
+    /// Снята: все `out` закончились.
+    Removed,
+}
+
+impl ScenePhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            ScenePhase::Loaded => "loaded",
+            ScenePhase::Playing => "playing",
+            ScenePhase::Stopping { .. } => "stopping",
+            ScenePhase::Removed => "removed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Event {
+    InEnd(u32),
+    OutEnd(u32),
+    Removed,
+}
+
+/// Анимационное состояние сцены. События обрабатываются строго по времени, поэтому
+/// кадр в момент `t` один и тот же, как бы мы к нему ни пришли.
+#[derive(Debug, Default)]
+pub struct MotionState {
+    nodes: BTreeMap<u32, NodeState>,
+    /// (время, порядковый номер, событие), по возрастанию.
+    events: Vec<(f64, u64, Event)>,
+    seq: u64,
+    scene: ScenePhase,
+    initialized: bool,
+    /// Журнал команд для дампа: `play@0`, `stop@2.5`.
+    pub log: Vec<String>,
+    pub diagnostics: Diagnostics,
+    /// Когда закончатся все `in`, начатые последним play: кадр «в эфире» по умолчанию.
+    pub settled_at: Option<f64>,
+    /// Последний момент, до которого что-то запланировано (для раскадровки по умолчанию).
+    pub horizon: f64,
+}
+
+/// Значения анимаций узла в момент `t`.
+#[derive(Debug, Clone, Default)]
+pub struct NodeValues {
+    /// Каналы, перекрывающие значение `look` (идущий переход или presence по такому каналу).
+    pub abs: BTreeMap<Channel, V>,
+    pub motion: RelMotion,
+    /// `Some(true)` — рисовать, хотя узел скрыт (идёт `out`); `Some(false)` — узел ушёл.
+    pub show: Option<bool>,
+    /// Короткие пометки для дампа: `in 78%`, `loop`, `transition opacity 40%`.
+    pub notes: Vec<String>,
+    /// Подробности по каналам для inspect.
+    pub channels: Vec<ChannelInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelInfo {
+    pub channel: &'static str,
+    pub layer: &'static str,
+    pub source: &'static str,
+    pub value: String,
+    pub easing: String,
+    pub progress: Option<f64>,
+}
+
+/// Слой presence: сдвиги и множители поверх `look`, не участвуют в `must`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RelMotion {
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+    pub rotate: f32,
+    pub opacity: f32,
+    /// Доля видимых символов текста.
+    pub reveal: f32,
+}
+
+impl Default for RelMotion {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotate: 0.0, opacity: 1.0, reveal: 1.0 }
+    }
+}
+
+impl RelMotion {
+    pub fn is_identity(&self) -> bool {
+        *self == RelMotion::default()
+    }
+
+    pub fn describe(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.opacity != 1.0 {
+            out.push(format!("opacity×{}", num(self.opacity)));
+        }
+        if self.dx != 0.0 || self.dy != 0.0 {
+            out.push(format!("сдвиг {},{}", num(self.dx), num(self.dy)));
+        }
+        if self.scale != 1.0 {
+            out.push(format!("scale×{}", num(self.scale)));
+        }
+        if self.rotate != 0.0 {
+            out.push(format!("rotate {}°", num(self.rotate)));
+        }
+        if self.reveal != 1.0 {
+            out.push(format!("reveal {}", num(self.reveal)));
+        }
+        out
+    }
+}
+
+/// Время кадра для дампа.
+#[derive(Debug, Clone)]
+pub struct Clock {
+    pub t: f64,
+    pub frame: u64,
+    pub scene: &'static str,
+    pub log: Vec<String>,
+}
+
+/// Всё, что движение добавляет к кадру.
+#[derive(Debug, Clone, Default)]
+pub struct Animated {
+    pub nodes: BTreeMap<u32, NodeValues>,
+    /// Сцена снята: в кадре ничего нет.
+    pub removed: bool,
+    pub clock: Option<Clock>,
+    pub diagnostics: Diagnostics,
+}
+
+impl MotionState {
+    pub fn scene_phase(&self) -> ScenePhase {
+        self.scene
+    }
+
+    fn schedule(&mut self, t: f64, ev: Event) {
+        self.seq += 1;
+        let key = (t, self.seq);
+        let pos = self.events.partition_point(|(et, s, _)| (*et, *s) < key);
+        self.events.insert(pos, (t, self.seq, ev));
+        self.horizon = self.horizon.max(t);
+    }
+
+    fn note(&mut self, level: Level, rule: &str, scene: &Scene, id: u32, message: String) {
+        let path = scene.path(id);
+        if !self.diagnostics.0.iter().any(|d| d.rule == rule && d.node == path && d.message == message) {
+            self.diagnostics.push(level, rule, &path, scene.node(id).src.as_deref(), message, None);
+        }
+    }
+
+    /// Сверяет состояние с деревом сцены после команд JS в момент `t`: запускает переходы
+    /// изменившихся значений и `in`/`out` узлов, которые появились или скрылись.
+    pub fn observe(&mut self, scene: &Scene, t: f64) {
+        let visible = effective_visibility(scene);
+        let mut enter = Vec::new();
+        let mut leave = Vec::new();
+        let ids: Vec<u32> = scene.nodes.keys().copied().collect();
+        for id in ids {
+            let node = scene.node(id);
+            if node.kind == Kind::Stage {
+                continue;
+            }
+            let is_new = !self.nodes.contains_key(&id);
+            if is_new {
+                let presence = node.props.get("presence").map(|p| self.compile_presence(scene, id, p));
+                let mut st = NodeState { presence, ..NodeState::default() };
+                if let Some(p) = st.presence.clone() {
+                    st.phase = Phase::Waiting;
+                    // Пока не было play, узел стоит в первом кадре своего in.
+                    if let Some(enter) = &p.enter {
+                        st.start(enter, f64::INFINITY, "in", false);
+                    }
+                }
+                self.nodes.insert(id, st);
+            }
+
+            let (targets, transitions) = self.targets_of(scene, id);
+            let st = self.nodes.get_mut(&id).expect("node state");
+            for (&ch, &new) in &targets {
+                let Some(&old) = st.targets.get(&ch) else { continue };
+                if old == new || is_new {
+                    continue;
+                }
+                let easing = transitions.get(ch.name()).or_else(|| transitions.get("all")).copied();
+                match easing {
+                    Some(easing) => {
+                        let from = st.abs_value(ch, t);
+                        let (from, to) = fade_colors(from, new);
+                        let v0 = match (st.abs.get(&ch), easing, from, to) {
+                            (Some(tr), Easing::Spring { .. }, V::N(a), V::N(b)) if (b - a).abs() > 1e-9 => tr.velocity(t) / (b - a),
+                            _ => 0.0,
+                        };
+                        st.abs.insert(ch, Track { segs: vec![Seg::new(t, from, to, easing, v0, false)], source: "transition" });
+                    }
+                    None => {
+                        st.abs.remove(&ch);
+                    }
+                }
+            }
+            st.targets = targets;
+
+            let vis = visible.get(&id).copied().unwrap_or(false);
+            let hidden = node.hidden();
+            if !is_new && self.scene == ScenePhase::Playing {
+                if vis && !st.visible {
+                    enter.push(id);
+                } else if hidden && !st.own_hidden {
+                    leave.push(id);
+                }
+            }
+            st.visible = vis;
+            st.own_hidden = hidden;
+        }
+        for id in enter {
+            self.enter(id, t);
+        }
+        for id in leave {
+            self.leave(id, t);
+        }
+        self.initialized = true;
+    }
+
+    fn compile_presence(&mut self, scene: &Scene, id: u32, p: &Value) -> Presence {
+        let mut out = Presence::default();
+        let mut c = Compiler { theme: &scene.theme, notes: Vec::new() };
+        let mut errors = Vec::new();
+        for (key, slot) in [("in", &mut out.enter), ("loop", &mut out.repeat), ("out", &mut out.exit)] {
+            let Some(m) = p.get(key) else { continue };
+            match c.compile(m) {
+                Ok(prog) => *slot = Some(prog),
+                Err(e) => errors.push(format!("presence.{key}: {e}")),
+            }
+        }
+        let notes = std::mem::take(&mut c.notes);
+        for (level, rule, msg) in notes {
+            self.note(level, rule, scene, id, msg);
+        }
+        for e in errors {
+            self.note(Level::Error, "motion.invalid", scene, id, e);
+        }
+        out
+    }
+
+    fn targets_of(&mut self, scene: &Scene, id: u32) -> (BTreeMap<Channel, V>, BTreeMap<String, Easing>) {
+        let node = scene.node(id);
+        let mut scratch = Diagnostics::default();
+        let resolved = look::resolve(scene, node, &[], &mut scratch);
+        let visual = look::visual(&resolved, "", None, &mut scratch);
+        let mut targets = BTreeMap::new();
+        targets.insert(Channel::Opacity, V::N(visual.opacity as f64));
+        let tr = visual.transform.clone();
+        targets.insert(Channel::X, V::N(tr.as_ref().map_or(0.0, |t| t.x) as f64));
+        targets.insert(Channel::Y, V::N(tr.as_ref().map_or(0.0, |t| t.y) as f64));
+        targets.insert(Channel::Scale, V::N(tr.as_ref().map_or(1.0, |t| t.scale[0]) as f64));
+        targets.insert(Channel::Rotate, V::N(tr.as_ref().map_or(0.0, |t| t.rotate) as f64));
+        if visual.radius.iter().all(|r| *r == visual.radius[0]) {
+            targets.insert(Channel::Radius, V::N(visual.radius[0] as f64));
+        }
+        targets.insert(Channel::Background, visual.background.map_or(V::C([0.0; 4]), V::from_rgba));
+        if node.kind == Kind::Text {
+            let text = look::text_look(&resolved, "", None, &mut scratch);
+            targets.insert(Channel::Color, V::from_rgba(text.color));
+        }
+        if let Some(size) = node.props.get("size") {
+            if let Some(w) = size.get("w").and_then(Value::as_f64) {
+                targets.insert(Channel::Width, V::N(w));
+            }
+            if let Some(h) = size.get("h").and_then(Value::as_f64) {
+                targets.insert(Channel::Height, V::N(h));
+            }
+        }
+
+        let mut transitions = BTreeMap::new();
+        if let Some(map) = resolved.get("transition").and_then(Value::as_object) {
+            for (key, e) in map {
+                if key != "all" && Channel::parse(key).is_none() {
+                    self.note(Level::Warn, "motion.unsupported", scene, id, format!("transition.{key}: канал не анимируется"));
+                    continue;
+                }
+                match Easing::parse(e) {
+                    Ok(e) => {
+                        transitions.insert(key.clone(), e);
+                    }
+                    Err(err) => self.note(Level::Error, "motion.invalid", scene, id, format!("transition.{key}: {err}")),
+                }
+            }
+        }
+        (targets, transitions)
+    }
+
+    fn enter(&mut self, id: u32, t: f64) {
+        let st = self.nodes.get_mut(&id).expect("node state");
+        let Some(p) = st.presence.clone() else {
+            st.phase = Phase::Shown;
+            return;
+        };
+        let continuing = !matches!(st.phase, Phase::Waiting | Phase::Gone);
+        if let Some(enter) = &p.enter {
+            st.start(enter, t, "in", continuing);
+            if enter.infinite {
+                st.phase = Phase::In { start: t, end: f64::INFINITY };
+                return;
+            }
+            let end = t + enter.duration;
+            st.phase = Phase::In { start: t, end };
+            self.settled_at = Some(self.settled_at.map_or(end, |s| s.max(end)));
+            self.schedule(end, Event::InEnd(id));
+        } else if let Some(repeat) = &p.repeat {
+            st.start(repeat, t, "loop", continuing);
+            st.phase = Phase::Loop;
+        } else {
+            st.phase = Phase::Shown;
+        }
+    }
+
+    /// Запускает `out`; возвращает, когда узел уйдёт.
+    fn leave(&mut self, id: u32, t: f64) -> f64 {
+        let st = self.nodes.get_mut(&id).expect("node state");
+        match st.presence.as_ref().and_then(|p| p.exit.clone()) {
+            Some(exit) => {
+                st.start(&exit, t, "out", true);
+                let end = t + exit.duration;
+                st.phase = Phase::Out { start: t, end };
+                self.schedule(end, Event::OutEnd(id));
+                end
+            }
+            None => {
+                st.phase = Phase::Gone;
+                t
+            }
+        }
+    }
+
+    /// play: узлы с presence начинают `in` (или сразу `loop`).
+    pub fn play(&mut self, t: f64) {
+        if self.scene == ScenePhase::Playing {
+            self.log.push(format!("play@{} (уже идёт)", num(t as f32)));
+            return;
+        }
+        self.scene = ScenePhase::Playing;
+        self.log.push(format!("play@{}", num(t as f32)));
+        self.settled_at = Some(t);
+        let ids: Vec<u32> = self.nodes.iter().filter(|(_, s)| s.presence.is_some() && s.visible).map(|(id, _)| *id).collect();
+        for id in ids {
+            self.enter(id, t);
+        }
+    }
+
+    /// stop: узлы с `out` начинают его; сцена снимается, когда закончится последний.
+    /// Узлы без `out` (например, только с `loop`) остаются на экране до снятия сцены.
+    pub fn stop(&mut self, t: f64) {
+        self.log.push(format!("stop@{}", num(t as f32)));
+        if self.scene != ScenePhase::Playing {
+            self.scene = ScenePhase::Removed;
+            return;
+        }
+        let ids: Vec<u32> = self
+            .nodes
+            .iter()
+            .filter(|(_, s)| {
+                s.presence.as_ref().is_some_and(|p| p.exit.is_some()) && s.visible && !matches!(s.phase, Phase::Gone | Phase::Out { .. })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let mut until = t;
+        for id in ids {
+            until = until.max(self.leave(id, t));
+        }
+        self.scene = ScenePhase::Stopping { until };
+        self.schedule(until, Event::Removed);
+    }
+
+    /// Обрабатывает запланированные события до момента `t` включительно.
+    pub fn advance_to(&mut self, t: f64) {
+        while let Some(&(et, _, ev)) = self.events.first() {
+            if et > t {
+                break;
+            }
+            self.events.remove(0);
+            match ev {
+                Event::InEnd(id) => {
+                    let st = self.nodes.get_mut(&id).expect("node state");
+                    if matches!(st.phase, Phase::In { end, .. } if end == et) {
+                        match st.presence.as_ref().and_then(|p| p.repeat.clone()) {
+                            Some(repeat) => {
+                                st.start(&repeat, et, "loop", true);
+                                st.phase = Phase::Loop;
+                            }
+                            None => st.phase = Phase::Shown,
+                        }
+                    }
+                }
+                Event::OutEnd(id) => {
+                    let st = self.nodes.get_mut(&id).expect("node state");
+                    if matches!(st.phase, Phase::Out { end, .. } if end == et) {
+                        st.phase = Phase::Gone;
+                    }
+                }
+                Event::Removed => {
+                    if matches!(self.scene, ScenePhase::Stopping { until } if until == et) {
+                        self.scene = ScenePhase::Removed;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Значения всех анимаций в момент `t` (события до `t` уже обработаны).
+    pub fn values(&self, t: f64) -> Animated {
+        let mut out = Animated { removed: self.scene == ScenePhase::Removed, diagnostics: self.diagnostics.clone(), ..Animated::default() };
+        for (&id, st) in &self.nodes {
+            let mut nv = NodeValues::default();
+            for (&ch, tr) in &st.abs {
+                let v = tr.value(t);
+                nv.abs.insert(ch, v);
+                if tr.running(t) {
+                    let progress = progress(tr, t);
+                    nv.notes.push(format!("transition {} {}%", ch.name(), pct(progress)));
+                    nv.channels.push(info(ch, "transition", tr, v, t, progress));
+                }
+            }
+            let waiting = st.phase == Phase::Waiting;
+            for (&ch, tr) in &st.rel {
+                let v = tr.value(t);
+                let f = v.n() as f32;
+                match ch {
+                    Channel::X => nv.motion.dx = f,
+                    Channel::Y => nv.motion.dy = f,
+                    Channel::Scale => nv.motion.scale = f,
+                    Channel::Rotate => nv.motion.rotate = f,
+                    Channel::Opacity => nv.motion.opacity = f,
+                    Channel::Reveal => nv.motion.reveal = f,
+                    _ => {
+                        nv.abs.insert(ch, v);
+                    }
+                }
+                let p = if waiting { Some(0.0) } else { progress(tr, t) };
+                nv.channels.push(info(ch, "presence", tr, v, t, p));
+            }
+            match st.phase {
+                Phase::Waiting => nv.notes.insert(0, "ждёт play".into()),
+                Phase::In { start, end } => nv.notes.insert(0, format!("in {}%", pct(span_progress(start, end, t)))),
+                Phase::Loop => nv.notes.insert(0, "loop".into()),
+                Phase::Out { start, end } => nv.notes.insert(0, format!("out {}%", pct(span_progress(start, end, t)))),
+                Phase::Gone => nv.notes.insert(0, "ушёл".into()),
+                Phase::Shown => {}
+            }
+            nv.show = match st.phase {
+                Phase::Gone => Some(false),
+                Phase::Out { .. } if st.own_hidden => Some(true),
+                _ => None,
+            };
+            if !nv.abs.is_empty() || !nv.motion.is_identity() || nv.show.is_some() || !nv.notes.is_empty() || !nv.channels.is_empty() {
+                out.nodes.insert(id, nv);
+            }
+        }
+        out
+    }
+}
+
+fn span_progress(start: f64, end: f64, t: f64) -> Option<f64> {
+    (end.is_finite() && end > start).then(|| ((t - start) / (end - start)).clamp(0.0, 1.0))
+}
+
+fn progress(tr: &Track, t: f64) -> Option<f64> {
+    let start = tr.segs.first()?.start;
+    span_progress(start, tr.end()?, t)
+}
+
+fn pct(p: Option<f64>) -> String {
+    p.map_or("∞".into(), |p| format!("{}", (p * 100.0).round() as i64))
+}
+
+fn info(ch: Channel, layer: &'static str, tr: &Track, v: V, t: f64, progress: Option<f64>) -> ChannelInfo {
+    ChannelInfo { channel: ch.name(), layer, source: tr.source, value: v.show(), easing: tr.easing_label(t), progress }
+}
+
+/// Переход из прозрачного цвета (или в него) меняет только альфу, а не оттенок.
+fn fade_colors(from: V, to: V) -> (V, V) {
+    match (from, to) {
+        (V::C(f), V::C(t)) if f[3] == 0.0 => (V::C([t[0], t[1], t[2], 0.0]), to),
+        (V::C(f), V::C(t)) if t[3] == 0.0 => (from, V::C([f[0], f[1], f[2], 0.0])),
+        _ => (from, to),
+    }
+}
+
+/// Узел виден, если ни он, ни его предки не скрыты (`when`).
+fn effective_visibility(scene: &Scene) -> BTreeMap<u32, bool> {
+    let mut out = BTreeMap::new();
+    fn walk(scene: &Scene, id: u32, parent_visible: bool, out: &mut BTreeMap<u32, bool>) {
+        let vis = parent_visible && !scene.node(id).hidden();
+        out.insert(id, vis);
+        for &c in &scene.node(id).children {
+            walk(scene, c, vis, out);
+        }
+    }
+    if let Some(stage) = &scene.stage {
+        walk(scene, stage.id, true, &mut out);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bezier_endpoints_and_symmetry() {
+        assert_eq!(bezier(EASE_IN_OUT, 0.0), 0.0);
+        assert_eq!(bezier(EASE_IN_OUT, 1.0), 1.0);
+        assert!((bezier(EASE_IN_OUT, 0.5) - 0.5).abs() < 1e-6);
+        assert!(bezier(EASE_IN, 0.5) < 0.5 && bezier(EASE_OUT, 0.5) > 0.5);
+        assert!((bezier(LINEAR, 0.3) - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn springs_settle_and_overshoot() {
+        let bouncy = Easing::Spring { stiffness: 300.0, damping: 12.0, mass: 1.0 };
+        let snappy = Easing::Spring { stiffness: 400.0, damping: 30.0, mass: 1.0 };
+        let critical = Easing::Spring { stiffness: 100.0, damping: 20.0, mass: 1.0 };
+        let over = Easing::Spring { stiffness: 100.0, damping: 40.0, mass: 1.0 };
+        for e in [bouncy, snappy, critical, over] {
+            let d = e.duration(0.0);
+            assert!(d > 0.05 && d < 10.0, "{e:?}: {d}");
+            assert!((e.progress(d, 0.0) - 1.0).abs() <= 1e-3, "{e:?}");
+            assert_eq!(e.progress(0.0, 0.0), 0.0);
+        }
+        // Пружина с малым затуханием перелетает цель, критическая — нет.
+        let peak = (0..1000).map(|i| bouncy.progress(i as f64 / 1000.0, 0.0)).fold(0.0, f64::max);
+        assert!(peak > 1.2, "{peak}");
+        let peak = (0..2000).map(|i| critical.progress(i as f64 / 1000.0, 0.0)).fold(0.0, f64::max);
+        assert!(peak <= 1.0 + 1e-9, "{peak}");
+    }
+
+    #[test]
+    fn spring_keeps_initial_velocity() {
+        let s = Easing::Spring { stiffness: 400.0, damping: 30.0, mass: 1.0 };
+        let h = 1e-6;
+        let v = (s.progress(h, 3.0) - s.progress(0.0, 3.0)) / h;
+        assert!((v - 3.0).abs() < 1e-3, "{v}");
+    }
+
+    fn program(v: Value) -> Program {
+        let theme = BTreeMap::new();
+        Compiler { theme: &theme, notes: Vec::new() }.compile(&v).unwrap()
+    }
+
+    fn tween(d: f64) -> Value {
+        json!({ "kind": "tween", "duration": d, "ease": "linear" })
+    }
+
+    #[test]
+    fn seq_par_delay_offsets() {
+        let a = json!({ "motion": "animate", "targets": { "opacity": [0, 1] }, "easing": tween(0.2) });
+        let b = json!({ "motion": "animate", "targets": { "x": [-40, 0] }, "easing": tween(0.5) });
+        let p = program(json!({ "motion": "seq", "items": [a, { "motion": "delay", "seconds": 0.1, "item": b }] }));
+        assert_eq!(p.segs.len(), 2);
+        assert!((p.segs[1].offset - 0.3).abs() < 1e-12);
+        assert!((p.duration - 0.8).abs() < 1e-12);
+        let p = program(json!([a, b]));
+        assert!((p.duration - 0.5).abs() < 1e-12 && p.segs.iter().all(|s| s.offset == 0.0));
+    }
+
+    #[test]
+    fn interrupted_motion_starts_from_current_value() {
+        let fade_in = program(json!({ "motion": "animate", "targets": { "opacity": [0, 1] }, "easing": tween(1.0) }));
+        let fade_out = program(json!({ "motion": "animate", "targets": { "opacity": [1, 0] }, "easing": tween(1.0) }));
+        let mut st = NodeState::default();
+        st.start(&fade_in, 0.0, "in", false);
+        assert!((st.current(Channel::Opacity, 0.4).n() - 0.4).abs() < 1e-9);
+        // out посреди in: идёт от 0.4, а не от объявленной 1.
+        st.start(&fade_out, 0.4, "out", true);
+        assert!((st.current(Channel::Opacity, 0.4).n() - 0.4).abs() < 1e-9);
+        assert!((st.current(Channel::Opacity, 0.9).n() - 0.2).abs() < 1e-9);
+        assert_eq!(st.current(Channel::Opacity, 2.0).n(), 0.0);
+    }
+
+    #[test]
+    fn pulse_swings_between_values() {
+        let p = program(json!({ "motion": "pulse", "period": 1.0, "opacity": [1, 0.4] }));
+        assert!(p.infinite);
+        let mut st = NodeState::default();
+        st.start(&p, 0.0, "loop", false);
+        assert!((st.current(Channel::Opacity, 0.0).n() - 1.0).abs() < 1e-9);
+        assert!((st.current(Channel::Opacity, 0.5).n() - 0.4).abs() < 1e-9);
+        assert!((st.current(Channel::Opacity, 1.0).n() - 1.0).abs() < 1e-9);
+        assert!((st.current(Channel::Opacity, 10.5).n() - 0.4).abs() < 1e-9);
+    }
+}

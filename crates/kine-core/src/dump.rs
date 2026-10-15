@@ -40,6 +40,13 @@ pub fn dump(scene: &Scene, frame: &Frame) -> String {
         if fonts.is_empty() { "—".to_string() } else { fonts.join(" · ") },
         if frame.system_fonts { " + системные" } else { " · системные выключены" }
     );
+    if let Some(c) = &frame.clock {
+        let log = if c.log.is_empty() { String::new() } else { format!(" · {}", c.log.join(", ")) };
+        let _ = writeln!(out, "time: t={}s · кадр {} · сцена {}{log}", num(c.t as f32), c.frame, c.scene);
+    }
+    if frame.removed {
+        let _ = writeln!(out, "сцена снята: в кадре ничего нет");
+    }
     if let Some(stage) = &scene.stage {
         let children = &scene.node(stage.id).children;
         for (i, &c) in children.iter().enumerate() {
@@ -77,7 +84,21 @@ fn node_lines(scene: &Scene, frame: &Frame, id: u32, prefix: &str, last: bool, o
             let _ = write!(line, "  {}", rect(&f.rect));
             summary(frame, f, &mut line);
         }
-        None => line.push_str("  (hidden: when=false)"),
+        None if node.hidden() => line.push_str("  (hidden: when=false)"),
+        None if frame.removed => line.push_str("  (сцена снята)"),
+        None => line.push_str("  (ушёл после out)"),
+    }
+    if let Some(a) = fnode.and_then(|f| f.anim.as_ref()) {
+        let motion = a.motion.describe();
+        if !motion.is_empty() {
+            let _ = write!(line, "  motion {}", motion.join(" · "));
+        }
+        if !a.notes.is_empty() {
+            let _ = write!(line, "  [{}]", a.notes.join(", "));
+        }
+    } else if frame.clock.is_none() && let Some(p) = node.props.get("presence") {
+        let keys = p.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+        let _ = write!(line, "  [presence {keys}]");
     }
     annotations(&node.props, &mut line);
     if let Some(label) = fnode.and_then(|f| f.applied_else.as_deref()) {
@@ -164,9 +185,6 @@ fn summary(frame: &Frame, f: &FrameNode, line: &mut String) {
 /// Объявленные утверждения и то, что ещё не исполняется: агент должен видеть это в строке узла.
 fn annotations(props: &std::collections::BTreeMap<String, Value>, line: &mut String) {
     let keys = |v: &Value| v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
-    if let Some(p) = props.get("presence") {
-        let _ = write!(line, "  [presence {} — с M2]", keys(p));
-    }
     if let Some(m) = props.get("must") {
         let _ = write!(line, "  [must {}]", keys(m));
     }
@@ -186,8 +204,18 @@ pub fn inspect(scene: &Scene, frame: &Frame, path: &str) -> Option<String> {
     if let Some(src) = &node.src {
         let _ = writeln!(out, "source    {src}");
     }
+    if let Some(c) = &frame.clock {
+        let _ = writeln!(out, "time      t={}s, кадр {}, сцена {}", num(c.t as f32), c.frame, c.scene);
+    }
     let Some(f) = frame.find(id) else {
-        let _ = writeln!(out, "hidden    when=false, в кадре отсутствует");
+        let why = if node.hidden() {
+            "when=false"
+        } else if frame.removed {
+            "сцена снята"
+        } else {
+            "ушёл после out"
+        };
+        let _ = writeln!(out, "hidden    {why}, в кадре отсутствует");
         return Some(out);
     };
     let _ = writeln!(out, "rect      {}", plain_rect(&f.rect));
@@ -267,6 +295,16 @@ pub fn inspect(scene: &Scene, frame: &Frame, path: &str) -> Option<String> {
             let _ = writeln!(out, "  {key:<11} {:<40} ← {}", r.value.to_string(), chain.join(" ← "));
         }
     }
+
+    if let Some(a) = &f.anim
+        && (!a.channels.is_empty() || !a.notes.is_empty()) {
+            let _ = writeln!(out, "motion    {}", a.notes.join(", "));
+            for c in &a.channels {
+                let progress = c.progress.map(|p| format!(" {}%", (p * 100.0).round() as i64)).unwrap_or_default();
+                let origin = if c.layer == c.source { c.layer.to_string() } else { format!("{} {}", c.layer, c.source) };
+                let _ = writeln!(out, "  {:<11} {:<10} ← {origin} ({}){progress}", c.channel, c.value, c.easing);
+            }
+        }
 
     let skip = ["look", "instance", "part", "hidden"];
     let rest: Vec<_> = node.props.iter().filter(|(k, _)| !skip.contains(&k.as_str())).collect();

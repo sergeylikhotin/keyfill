@@ -1,4 +1,4 @@
-import { Box, Span, Text, component, grid, stack } from '@kine/core';
+import { Box, Span, Text, animate, component, fade, grid, spring, stack, tween } from '@kine/core';
 import { theme } from './theme';
 
 const team = { font: theme.font.ui, size: 34, weight: 600, color: theme.color.text } as const;
@@ -53,6 +53,7 @@ export const Scoreboard = component({
         when={live}
         anchor={{ at: 'top-right', offset: [14, -14] }}
         look={{ background: theme.color.accent, padding: [6, 12], radius: 10 }}
+        presence={{ in: [fade([0, 1], tween(0.15)), animate({ scale: [0.6, 1] }, spring.bouncy)], out: fade([1, 0], tween(0.2)) }}
       >
         <Text look={{ font: theme.font.ui, size: 18, weight: 600, color: theme.color.onAccent, tracking: 0.06 }}>4K HDR</Text>
       </Box>

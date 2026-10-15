@@ -1,49 +1,68 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
+use kine_cli::time::{self, Moment, Offset, TimeSpec};
+use kine_cli::{Failure, Session, filmstrip};
 use kine_core::diag::Level;
-use kine_core::{EvalOptions, Mode};
 use kine_core::look::parse_color;
-use kine_js::RunOptions;
+use kine_core::{EvalOptions, Mode};
+use kine_js::{JsException, RunOptions};
 use kine_render::RenderOptions;
 
 const USAGE: &str = "\
 kine — рендер TSX-сцен без браузера
 
-  kine render <scene.tsx> [-o out.png] [--scale N] [--dump]
-  kine dump <scene.tsx>               текстовое дерево сцены с геометрией и диагностиками
-  kine inspect <scene.tsx> <path>     один узел: значения, их происхождение, исходник
-  kine check <scene.tsx> [--json]     только диагностики; код выхода 1 при ошибках
+  kine render <entry> [-o out.png] [--scale N] [--dump]
+  kine dump <entry>                   текстовое дерево сцены с геометрией, движением и диагностиками
+  kine inspect <entry> <path>         один узел: значения, их происхождение, движение, исходник
+  kine check <entry> [--json]         только диагностики
+  kine filmstrip <entry> [--t a..b] [-o strip.png] [--n 8] [--cols 4] [--tile 480] [--dump]
+                                      раскадровка: n моментов диапазона одной картинкой
+
+<entry> — сцена (defineScene) или сценарий *.cues.ts (cues). Без сценария сцена получает play в 0.
+
+Время (одна грамматика для --t и --cue):
+  1.2  60f         секунды или кадры
+  settled          кадр «в эфире»: закончились все in первого play (по умолчанию)
+  settled+0.5      смещение; маркеры таймлайна (out+0.2) — с M2b
+  0..4             диапазон, для filmstrip; по умолчанию от 0 до конца сценария
+  --cue \"0 play; 125f stop\"   команды сценария в короткой форме (дополняют *.cues.ts)
 
 Общие флаги:
   --mode dev|air   dev (по умолчанию): нарушение must — ошибка; air: применяются шаги else
-  --bg #RRGGBB     подложка: рисуется под сценой и учитывается в проверке контраста
+  --bg \"#RRGGBB\"   подложка: рисуется под сценой и учитывается в проверке контраста
   --seed N         сид Math.random
-  --now MS         значение Date.now";
+  --now MS         значение Date.now
+
+Коды выхода: 0 успех, 1 ошибки в диагностиках, 2 неверный вызов, 3 сборка, 4 исключение JS, 5 сбой kine.";
 
 struct Args {
     rest: Vec<String>,
     flags: Vec<(String, Option<String>)>,
 }
 
+const VALUED: &[&str] = &["-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile"];
+const SWITCHES: &[&str] = &["--dump", "--json", "-h", "--help"];
+
 impl Args {
-    fn parse(raw: Vec<String>) -> Self {
-        let valued = ["-o", "--scale", "--bg", "--seed", "--now", "--mode"];
+    fn parse(raw: Vec<String>) -> Result<Self> {
         let mut rest = Vec::new();
         let mut flags = Vec::new();
         let mut it = raw.into_iter();
         while let Some(a) = it.next() {
-            if valued.contains(&a.as_str()) {
-                let v = it.next();
-                flags.push((a, v));
-            } else if a.starts_with('-') {
+            if VALUED.contains(&a.as_str()) {
+                let v = it.next().with_context(|| format!("{a}: нет значения"))?;
+                flags.push((a, Some(v)));
+            } else if SWITCHES.contains(&a.as_str()) {
                 flags.push((a, None));
+            } else if a.starts_with("--") {
+                bail!("неизвестный флаг {a}");
             } else {
                 rest.push(a);
             }
         }
-        Self { rest, flags }
+        Ok(Self { rest, flags })
     }
 
     fn flag(&self, name: &str) -> bool {
@@ -54,6 +73,10 @@ impl Args {
         self.flags.iter().find(|(k, _)| k == name).and_then(|(_, v)| v.as_deref())
     }
 
+    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>> {
+        self.value(name).map(|s| s.parse::<T>().map_err(|_| anyhow::anyhow!("{name}: ожидается число, получено {s:?}"))).transpose()
+    }
+
     fn entry(&self) -> Result<PathBuf> {
         self.rest.get(1).map(PathBuf::from).context("не указан файл сцены")
     }
@@ -61,11 +84,11 @@ impl Args {
 
 fn run_options(args: &Args) -> Result<RunOptions> {
     let mut opts = RunOptions::default();
-    if let Some(s) = args.value("--seed") {
-        opts.seed = s.parse().context("--seed: ожидается целое")?;
+    if let Some(s) = args.number("--seed")? {
+        opts.seed = s;
     }
-    if let Some(s) = args.value("--now") {
-        opts.now_ms = s.parse().context("--now: ожидается число миллисекунд")?;
+    if let Some(n) = args.number("--now")? {
+        opts.now_ms = n;
     }
     Ok(opts)
 }
@@ -81,59 +104,105 @@ fn parse_hex(s: &str) -> Result<kine_core::look::Rgba> {
 }
 
 fn main() -> ExitCode {
-    let args = Args::parse(std::env::args().skip(1).collect());
-    match run(&args) {
+    match run() {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::from(2)
+            let code = if e.downcast_ref::<JsException>().is_some() {
+                4
+            } else {
+                match e.downcast_ref::<Failure>() {
+                    Some(Failure::Usage) => 2,
+                    Some(Failure::Build) => 3,
+                    None => 5,
+                }
+            };
+            ExitCode::from(code)
         }
     }
 }
 
-fn run(args: &Args) -> Result<ExitCode> {
-    let Some(cmd) = args.rest.first().map(String::as_str) else {
-        println!("{USAGE}");
-        return Ok(ExitCode::SUCCESS);
-    };
-    if matches!(cmd, "help" | "-h" | "--help") {
-        println!("{USAGE}");
-        return Ok(ExitCode::SUCCESS);
-    }
+/// Всё, что задаёт вызов: флаги, вход и время. Ошибки здесь — неверный вызов (код 2).
+struct Call {
+    cmd: String,
+    entry: PathBuf,
+    eval: EvalOptions,
+    opts: RunOptions,
+    extra: Vec<kine_cli::session::CueArg>,
+    time: Option<TimeSpec>,
+}
 
-    let entry = args.entry()?;
+fn call(args: &Args) -> Result<Option<Call>> {
+    let Some(cmd) = args.rest.first().map(String::as_str) else { return Ok(None) };
+    if matches!(cmd, "help") || args.flag("-h") || args.flag("--help") {
+        return Ok(None);
+    }
+    if !matches!(cmd, "render" | "dump" | "inspect" | "check" | "filmstrip") {
+        bail!("неизвестная команда {cmd}\n\n{USAGE}");
+    }
     let background = args.value("--bg").map(parse_hex).transpose()?;
     let mode = match args.value("--mode") {
         None | Some("dev") => Mode::Dev,
         Some("air") => Mode::Air,
         Some(other) => bail!("--mode: ожидается dev или air, получено {other}"),
     };
-    let rendered = kine_cli::frame(&entry, &run_options(args)?, EvalOptions { mode, background })?;
-    for log in &rendered.logs {
+    let time = args.value("--t").map(time::parse).transpose().context("--t")?;
+    match (&time, cmd) {
+        (Some(TimeSpec::Range(..)), c) if c != "filmstrip" => bail!("--t: диапазон {} принимает только filmstrip; здесь нужен момент", args.value("--t").unwrap_or("")),
+        (Some(TimeSpec::Moment(_)), "filmstrip") => bail!("--t: filmstrip принимает диапазон, например 0..2 или settled..settled+1"),
+        _ => {}
+    }
+    Ok(Some(Call {
+        cmd: cmd.to_string(),
+        entry: args.entry()?,
+        eval: EvalOptions { mode, background },
+        opts: run_options(args)?,
+        extra: args.value("--cue").map(kine_cli::session::parse_cues).transpose()?.unwrap_or_default(),
+        time,
+    }))
+}
+
+fn run() -> Result<ExitCode> {
+    let args = Args::parse(std::env::args().skip(1).collect()).context(Failure::Usage)?;
+    let Some(call) = call(&args).context(Failure::Usage)? else {
+        println!("{USAGE}");
+        return Ok(ExitCode::SUCCESS);
+    };
+    let source = kine_cli::bundle(&call.entry)?;
+    let mut session = Session::open(&source, &call.opts, &call.extra)?;
+
+    if call.cmd == "filmstrip" {
+        return filmstrip_cmd(&args, &call, session, &source);
+    }
+
+    let t = match &call.time {
+        Some(TimeSpec::Moment(m)) => time::resolve(m, &mut session).context(Failure::Usage)?,
+        _ => session.settled_time()?,
+    };
+    let frame = session.frame_at(t, call.eval)?;
+    for log in &session.logs {
         eprintln!("js {}: {}", log.level, log.message);
     }
-    let (scene, frame) = (&rendered.scene, &rendered.frame);
+    let scene = &session.scene;
+    let errors = frame.diagnostics.0.iter().any(|d| d.level == Level::Error);
 
-    match cmd {
+    match call.cmd.as_str() {
         "render" => {
-            let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("png"));
-            let opts = RenderOptions {
-                scale: args.value("--scale").map(str::parse).transpose().context("--scale: ожидается число")?.unwrap_or(1.0),
-                background,
-            };
-            let png = kine_render::render_png(frame, &opts)?;
+            let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| call.entry.with_extension("png"));
+            let opts = RenderOptions { scale: args.number("--scale").context(Failure::Usage)?.unwrap_or(1.0), background: call.eval.background };
+            let png = kine_render::render_png(&frame, &opts)?;
             std::fs::write(&out, png).with_context(|| format!("не удалось записать {}", out.display()))?;
             if args.flag("--dump") {
-                print!("{}", kine_core::dump::dump(scene, frame));
+                print!("{}", kine_core::dump::dump(scene, &frame));
             }
             eprintln!("written {}", out.display());
         }
-        "dump" => print!("{}", kine_core::dump::dump(scene, frame)),
+        "dump" => print!("{}", kine_core::dump::dump(scene, &frame)),
         "inspect" => {
-            let path = args.rest.get(2).context("не указан адрес узла, например LowerThird#1/title")?;
-            match kine_core::dump::inspect(scene, frame, path) {
+            let path = args.rest.get(2).context("не указан адрес узла, например LowerThird#1/title").context(Failure::Usage)?;
+            match kine_core::dump::inspect(scene, &frame, path) {
                 Some(text) => print!("{text}"),
-                None => bail!("узел {path} не найден; адреса узлов есть в `kine dump`"),
+                None => return Err(anyhow::anyhow!("узел {path} не найден; адреса узлов есть в `kine dump`").context(Failure::Usage)),
             }
         }
         "check" => {
@@ -145,11 +214,48 @@ fn run(args: &Args) -> Result<ExitCode> {
                     println!("{d}");
                 }
             }
-            if diags.iter().any(|d| d.level == Level::Error) {
-                return Ok(ExitCode::from(1));
-            }
         }
-        other => bail!("неизвестная команда {other}\n\n{USAGE}"),
+        _ => unreachable!(),
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if errors { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+fn filmstrip_cmd(args: &Args, call: &Call, mut probe: Session, source: &str) -> Result<ExitCode> {
+    // Первая сессия разрешает границы (settled, конец сценария); кадры рендерит вторая с начала.
+    let (from, to) = match &call.time {
+        Some(TimeSpec::Range(a, b)) => (time::resolve(a, &mut probe).context(Failure::Usage)?, time::resolve(b, &mut probe).context(Failure::Usage)?),
+        _ => (time::resolve(&Moment::At(Offset::Seconds(0.0)), &mut probe)?, probe.end_time()?),
+    };
+    if to < from {
+        return Err(anyhow::anyhow!("--t: конец диапазона {to} раньше начала {from}").context(Failure::Usage));
+    }
+    let mut session = Session::open(source, &call.opts, &call.extra)?;
+    let usage = |r: Result<Option<usize>>| r.context(Failure::Usage);
+    let fopts = filmstrip::Options {
+        from,
+        to,
+        count: usage(args.number("--n"))?.unwrap_or(8),
+        cols: usage(args.number("--cols"))?.unwrap_or(4),
+        tile: args.number("--tile").context(Failure::Usage)?.unwrap_or(480.0),
+        background: call.eval.background,
+    };
+    let times = filmstrip::times(&session, &fopts);
+    let strip = filmstrip::build(&mut session, &times, call.eval, &fopts)?;
+    for log in &session.logs {
+        eprintln!("js {}: {}", log.level, log.message);
+    }
+    let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| strip_path(&call.entry));
+    let png = kine_render::execute_png(&strip.display, &RenderOptions { scale: 1.0, background: None })?;
+    std::fs::write(&out, png).with_context(|| format!("не удалось записать {}", out.display()))?;
+    if args.flag("--dump") {
+        println!("{}", strip.dumps.join("\n"));
+    }
+    let span = format!("{}..{} с", times.first().unwrap_or(&0.0), times.last().unwrap_or(&0.0));
+    eprintln!("written {} ({} кадров, {span})", out.display(), strip.frames.len());
+    let errors = strip.frames.iter().flat_map(|f| &f.diagnostics.0).any(|d| d.level == Level::Error);
+    Ok(if errors { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+fn strip_path(entry: &Path) -> PathBuf {
+    entry.with_extension("strip.png")
 }

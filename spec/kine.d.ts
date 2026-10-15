@@ -21,9 +21,8 @@ declare module '@kine/core' {
 
   // ─── Время ────────────────────────────────────────────────────────────────
 
-  /** Время сцены в секундах. В deterministic-режиме = frame / fps. */
-  export const time: Accessor<number>;
-  export const frame: Accessor<number>;
+  // Времени в JS нет: движение исполняет ядро (presence, transition, timeline), а JS работает
+  // только на командах сценария и смене данных. Поэтому кадр вычислим в любой момент t.
 
   // ─── Единицы и значения ───────────────────────────────────────────────────
 
@@ -276,6 +275,7 @@ declare module '@kine/core' {
     readonly [componentBrand]: { readonly props: P; readonly parts: N };
   }
   export type PartsOf<C> = C extends Component<any, infer N> ? N : never;
+  export type PropsOf<C> = C extends Component<infer P, any> ? P : never;
 
   export function component<const S extends PropSchema, const N extends string = never>(
     def: ComponentDef<S, N>,
@@ -368,6 +368,28 @@ declare module '@kine/core' {
     readonly systemFonts?: boolean;
   }
   export function defineScene(def: SceneDef): SceneDef;
+
+  // ─── Сценарий (*.cues.ts) ─────────────────────────────────────────────────
+
+  const cueBrand: unique symbol;
+  export type Cue = { readonly [cueBrand]: true };
+
+  export interface CueBuilder {
+    /** play — узлы с presence начинают in; stop — out, сцена снимается после последнего out. */
+    at(t: number, cmd: 'play' | 'stop'): Cue;
+    /** Новые значения пропсов всех экземпляров компонента; изменения анимируются через transition. */
+    at<C extends Component<any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
+  }
+
+  const cuesBrand: unique symbol;
+  export type Cues = { readonly [cuesBrand]: true };
+
+  /**
+   * Сценарий команд для рендера в файл и проверок: `kine render scene.cues.ts --t 2.4`.
+   * Команда применяется на границе кадра (время округляется вверх до кадра).
+   * Без сценария сцена получает play в момент 0.
+   */
+  export function cues(scene: SceneDef, build: (b: CueBuilder) => readonly Cue[]): Cues;
 
   export const source: {
     json<T>(path: string, o?: { watch?: boolean }): Accessor<T | undefined>;

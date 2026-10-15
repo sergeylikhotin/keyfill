@@ -14,17 +14,28 @@ cargo build
 ```
 
 ```bash
-cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-third.png --bg #2b3340 --dump
+cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-third.png --bg "#2b3340" --dump
 ```
 
 ## Команды
 
 | Команда | Что делает |
 |---|---|
-| `kine render <scene.tsx> [-o out.png] [--scale N] [--dump]` | PNG кадра; без `--bg` — с прозрачностью |
-| `kine dump <scene.tsx>` | Дерево сцены: адреса узлов, геометрия, стили, диагностики |
-| `kine inspect <scene.tsx> <path>` | Один узел: значения, токены и слои, откуда они пришли, исходник |
-| `kine check <scene.tsx> [--json]` | Только диагностики; код выхода 1 при ошибках |
+| `kine render <entry> [-o out.png] [--scale N] [--dump]` | PNG кадра; без `--bg` — с прозрачностью |
+| `kine dump <entry>` | Дерево сцены: адреса узлов, геометрия, стили, фазы движения, диагностики |
+| `kine inspect <entry> <path>` | Один узел: значения, токены и слои, откуда они пришли, каналы движения, исходник |
+| `kine check <entry> [--json]` | Только диагностики; код выхода 1 при ошибках |
+| `kine filmstrip <entry> [--t a..b] [-o strip.png] [--n 8] [--cols 4] [--tile 480] [--dump]` | Раскадровка: n моментов диапазона одной картинкой, с `--dump` — дамп каждого |
+
+`<entry>` — сцена (`defineScene`) или сценарий `*.cues.ts` (`cues(scene, ({ at }) => [...])`). Без сценария сцена получает `play` в момент 0.
+
+Время — одна грамматика для `--t` и `--cue`: `1.2` (секунды), `60f` (кадры), `settled` (кадр «в эфире», когда закончились все `in`; по умолчанию), `settled+0.5`, диапазон `0..2` для `filmstrip`. `--cue "0 play; 125f stop"` — команды в короткой форме.
+
+Коды выхода: 0 успех, 1 ошибки в диагностиках, 2 неверный вызов, 3 сборка, 4 исключение JS, 5 сбой kine.
+
+```bash
+cargo run -q -p kine-cli -- filmstrip examples/lower-third/scene.cues.ts --n 12 -o out/lower-third.strip.png
+```
 
 Общие флаги: `--mode dev|air` (dev — нарушение `must` это ошибка, air — применяются шаги `else`), `--bg #RRGGBB` (подложка: рисуется и учитывается в контрасте), `--seed N`, `--now MS`.
 
@@ -46,10 +57,10 @@ npm run typecheck
 |---|---|
 | `packages/core` | `@kine/core` для JS: сигналы, JSX-рантайм, примитивы, мост команд; `bundle.mjs` собирает сцену (шрифты — через import) |
 | `crates/kine-js` | QuickJS-хост: исполняет бандл, подменяет часы и случайность |
-| `crates/kine-core` | Дерево сцены, `look` с provenance, Taffy, текст (parley), дамп и inspect |
-| `crates/kine-render` | Рендер кадра через vello_cpu, PNG |
-| `crates/kine-cli` | Конвейер TSX → кадр и команды `kine` |
+| `crates/kine-core` | Дерево сцены, `look` с provenance, Taffy, текст (parley), движение (`motion.rs`), display list, дамп и inspect |
+| `crates/kine-render` | CPU-бэкенд: исполняет display list через vello_cpu, PNG |
+| `crates/kine-cli` | Сессия (JS-хост, сценарий, часы), раскадровка и команды `kine` |
 | `spec` | Типы публичного API и контракт-тест для tsc |
-| `examples/lower-third` | Плашка: компонент, таймлайн, тема, сцена, золотой дамп |
-| `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, сцена с переполнением |
+| `examples/lower-third` | Плашка: компонент, presence, transition, таймлайн, тема, сцена, сценарий `scene.cues.ts`, золотые дампы |
+| `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, бейдж с presence, сценарий, сцена с переполнением |
 | `assets/fonts` | Шрифты для примеров и тестов (Inter, OFL) |

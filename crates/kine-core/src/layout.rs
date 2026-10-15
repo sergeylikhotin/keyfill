@@ -8,7 +8,8 @@ use taffy::prelude::*;
 use taffy::style_helpers::{FromFr, FromLength, FromPercent, TaffyAuto};
 
 use crate::diag::{Diagnostics, Level};
-use crate::look::{self, Look, Target, Visual};
+use crate::look::{self, Look, Target, Transform, Visual};
+use crate::motion::{Animated, Channel, Clock, NodeValues, V};
 use crate::scene::{Kind, Scene};
 use crate::text::{Fit, FitThen, LoadedFont, RunSpec, TextBlock, TextEngine, TextSource};
 
@@ -80,6 +81,8 @@ pub struct FrameNode {
     pub children: Vec<FrameNode>,
     /// Какой шаг `else` применён к узлу.
     pub applied_else: Option<String>,
+    /// Анимации узла в этот момент: presence поверх look, пометки для дампа.
+    pub anim: Option<NodeValues>,
     anchor: Option<Value>,
 }
 
@@ -93,6 +96,10 @@ pub struct Frame {
     pub diagnostics: Diagnostics,
     pub fonts: Vec<LoadedFont>,
     pub system_fonts: bool,
+    /// Время кадра; `None` у кадра без часов (статичная сцена).
+    pub clock: Option<Clock>,
+    /// Сцена снята после stop: в кадре ничего нет.
+    pub removed: bool,
 }
 
 impl Frame {
@@ -142,19 +149,21 @@ struct Pending {
     /// Якорь узла, вынесенного из потока (position: absolute).
     anchor: Option<Value>,
     applied_else: Option<String>,
+    anim: Option<NodeValues>,
 }
 
 struct Ctx<'a> {
     scene: &'a Scene,
     engine: &'a mut TextEngine,
     overrides: &'a Overrides,
+    anim: &'a Animated,
 }
 
 pub fn build_frame(scene: &Scene, engine: &mut TextEngine) -> Result<Frame> {
-    build_frame_with(scene, engine, &Overrides::new())
+    build_frame_with(scene, engine, &Overrides::new(), &Animated::default())
 }
 
-pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Overrides) -> Result<Frame> {
+pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Overrides, anim: &Animated) -> Result<Frame> {
     let Some(stage) = scene.stage.clone() else {
         bail!("в сцене нет stage: бандл должен вызвать mount(scene)");
     };
@@ -162,6 +171,7 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
     let mut diagnostics = Diagnostics::default();
     diagnostics.0.extend(engine.diagnostics.0.iter().cloned());
     diagnostics.0.extend(scene.js_diagnostics.iter().cloned());
+    diagnostics.0.extend(anim.diagnostics.0.iter().cloned());
     let mut frame = Frame {
         size: stage.size,
         fps: stage.fps,
@@ -172,12 +182,15 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
         diagnostics,
         fonts: engine.fonts.clone(),
         system_fonts: engine.system_fonts,
+        clock: anim.clock.clone(),
+        removed: anim.removed,
     };
 
-    let mut ctx = Ctx { scene, engine, overrides };
+    let mut ctx = Ctx { scene, engine, overrides, anim };
     let mut taffy: TaffyTree<usize> = TaffyTree::new();
 
-    for &child in &scene.node(stage.id).children {
+    let roots: &[u32] = if anim.removed { &[] } else { &scene.node(stage.id).children };
+    for &child in roots {
         let Some(mut pending) = build_node(&mut ctx, child, None, &mut taffy, &mut frame)? else { continue };
         let anchor = scene.node(child).props.get("anchor").cloned();
         let target = match &anchor {
@@ -235,7 +248,10 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
 fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut TaffyTree<usize>, frame: &mut Frame) -> Result<Option<Pending>> {
     let scene = ctx.scene;
     let node = scene.node(id);
-    if node.hidden() {
+    let anim = ctx.anim.nodes.get(&id);
+    // Скрытый узел рисуется, пока идёт его out; ушедший после out не рисуется.
+    let show = anim.and_then(|a| a.show);
+    if show == Some(false) || (node.hidden() && show != Some(true)) {
         return Ok(None);
     }
     let over = ctx.overrides.get(&id);
@@ -248,8 +264,19 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
 
     let extra = over.map(|o| o.look.as_slice()).unwrap_or(&[]);
     let look = look::resolve(scene, node, extra, diags);
-    let visual = look::visual(&look, &path, src, diags);
+    let mut visual = look::visual(&look, &path, src, diags);
+    if let Some(a) = anim {
+        apply_animated(&mut visual, a);
+    }
     let mut style = taffy_style(scene, id, &visual, diags);
+    if let Some(a) = anim {
+        if let Some(V::N(w)) = a.abs.get(&Channel::Width) {
+            style.size.width = length(*w as f32);
+        }
+        if let Some(V::N(h)) = a.abs.get(&Channel::Height) {
+            style.size.height = length(*h as f32);
+        }
+    }
 
     // Якорь внутри контейнера: в stack — ячейка сетки с выравниванием, иначе узел выносится из потока.
     let mut anchor = None;
@@ -268,9 +295,13 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
     }
 
     let applied_else = over.map(|o| o.label.clone());
+    let anim = anim.cloned();
     match node.kind {
         Kind::Text => {
-            let source = text_source(scene, id, &look, over, &mut frame.diagnostics);
+            let mut source = text_source(scene, id, &look, over, &mut frame.diagnostics);
+            if let Some(color @ V::C(_)) = anim.as_ref().and_then(|a| a.abs.get(&Channel::Color)) {
+                source.look.color = color.rgba();
+            }
             let requested = source.look.family.clone();
             let block = ctx.engine.build(source);
             match (&requested, &block.resolved_family) {
@@ -295,7 +326,7 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
             frame.texts.push(block);
             let index = frame.texts.len() - 1;
             let tnode = taffy.new_leaf_with_context(style, index)?;
-            Ok(Some(Pending { id, tnode, look, visual, text: Some(index), children: Vec::new(), anchor, applied_else }))
+            Ok(Some(Pending { id, tnode, look, visual, text: Some(index), children: Vec::new(), anchor, applied_else, anim }))
         }
         Kind::Box | Kind::Image | Kind::Shape | Kind::Stage => {
             if matches!(node.kind, Kind::Image | Kind::Shape) {
@@ -310,7 +341,7 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
             }
             let ids: Vec<NodeId> = children.iter().map(|c| c.tnode).collect();
             let tnode = taffy.new_with_children(style, &ids)?;
-            Ok(Some(Pending { id, tnode, look, visual, text: None, children, anchor, applied_else }))
+            Ok(Some(Pending { id, tnode, look, visual, text: None, children, anchor, applied_else, anim }))
         }
     }
 }
@@ -410,8 +441,31 @@ fn finish(ctx: &mut Ctx, taffy: &TaffyTree<usize>, p: &mut Pending, parent: Rect
         text,
         children,
         applied_else: p.applied_else.clone(),
+        anim: p.anim.take(),
         anchor: p.anchor.clone(),
     })
+}
+
+/// Переходы и presence по каналам, которые перекрывают `look`.
+fn apply_animated(visual: &mut Visual, a: &NodeValues) {
+    for (&ch, &v) in &a.abs {
+        match (ch, v) {
+            (Channel::Opacity, V::N(o)) => visual.opacity = (o as f32).clamp(0.0, 1.0),
+            (Channel::Radius, V::N(r)) => visual.radius = [(r as f32).max(0.0); 4],
+            (Channel::Background, V::C(_)) => visual.background = Some(v.rgba()),
+            (Channel::X | Channel::Y | Channel::Scale | Channel::Rotate, V::N(n)) => {
+                let t = visual.transform.get_or_insert(Transform { x: 0.0, y: 0.0, scale: [1.0, 1.0], rotate: 0.0, origin: [0.5, 0.5] });
+                let n = n as f32;
+                match ch {
+                    Channel::X => t.x = n,
+                    Channel::Y => t.y = n,
+                    Channel::Scale => t.scale = [n, n],
+                    _ => t.rotate = n,
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn collect_rects(node: &FrameNode, out: &mut HashMap<u32, Rect>) {

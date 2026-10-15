@@ -42,7 +42,7 @@ impl fmt::Display for Diagnostic {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Diagnostics(pub Vec<Diagnostic>);
 
 impl Diagnostics {

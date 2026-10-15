@@ -12,8 +12,8 @@ export const LowerThird = component({
       anchor={{ to: 'titleSafe', at: 'bottom-left' }}
       layout={row({ gap: 16, align: 'center' })}
       look={[
-        { background: theme.color.surface, padding: [16, 24], radius: 12 },
-        on(live, { border: { width: 2, paint: theme.color.accent } }),
+        { background: theme.color.surface, padding: [16, 24], radius: 12, transition: { background: tween(0.4) } },
+        on(live, { background: theme.color.surfaceLive, border: { width: 2, paint: theme.color.accent } }),
       ]}
       must={{ inside: 'titleSafe' }}
     >
@@ -22,7 +22,7 @@ export const LowerThird = component({
         when={live}
         size={{ w: 16, h: 16 }}
         look={{ background: theme.color.accent, radius: 8 }}
-        presence={{ loop: pulse({ period: 1.2, opacity: [1, 0.4] }) }}
+        presence={{ loop: pulse({ period: 1.2, opacity: [1, 0.4] }), out: fade([1, 0], tween(0.2)) }}
       />
       <Box layout={column({ gap: 4 })}>
         <Text

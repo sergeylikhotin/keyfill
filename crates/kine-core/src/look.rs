@@ -118,7 +118,7 @@ pub fn resolve_layers<'a>(
     look
 }
 
-fn substitute(v: &Value, theme: &BTreeMap<String, Value>, tokens: &mut Vec<String>, missing: &mut Vec<String>) -> Value {
+pub(crate) fn substitute(v: &Value, theme: &BTreeMap<String, Value>, tokens: &mut Vec<String>, missing: &mut Vec<String>) -> Value {
     match v {
         Value::Object(map) => {
             if let Some(path) = map.get("$t").and_then(Value::as_str) {
@@ -393,8 +393,7 @@ pub fn visual(look: &Look, path: &str, src: Option<&str>, diags: &mut Diagnostic
         };
         Ok(Transform { x: f("x").unwrap_or(0.0), y: f("y").unwrap_or(0.0), scale, rotate: f("rotate").unwrap_or(0.0), origin })
     });
-    r.unsupported("blend", "режимы наложения появятся в M1");
-    r.unsupported("transition", "переходы исполняются с M2");
+    r.unsupported("blend", "режимы наложения пока не рисуются");
     v
 }
 

@@ -15,7 +15,8 @@ export type Cmd =
       fonts?: string[];
       systemFonts?: boolean;
     }
-  | { op: 'diag'; level: 'info' | 'warn' | 'error'; rule: string; node: string; source?: string; message: string; hint?: string };
+  | { op: 'diag'; level: 'info' | 'warn' | 'error'; rule: string; node: string; source?: string; message: string; hint?: string }
+  | { op: 'cues'; items: { t: number; cmd: string; target?: string; props?: Record<string, unknown> }[] };
 
 declare const __kine_emit: (json: string) => void;
 

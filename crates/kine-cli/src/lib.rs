@@ -1,11 +1,36 @@
-//! Конвейер сцены: TSX → esbuild → QuickJS → дерево → кадр.
+//! Конвейер сцены: TSX → esbuild → QuickJS → дерево → кадр во времени.
+
+pub mod filmstrip;
+pub mod session;
+pub mod time;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{Context as _, Result, bail};
-use kine_core::{EvalOptions, Frame, Scene, TextEngine};
+use anyhow::{Context as _, Result};
+use kine_core::{EvalOptions, Frame, Scene};
 use kine_js::{LogLine, RunOptions};
+
+pub use session::Session;
+
+/// Класс ошибки для кода выхода CLI: 2 — неверный вызов, 3 — сборка. Исключение JS
+/// помечено типом `kine_js::JsException` (код 4), всё остальное — сбой kine (код 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Usage,
+    Build,
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Failure::Usage => "неверный вызов",
+            Failure::Build => "сборка сцены",
+        })
+    }
+}
+
+impl std::error::Error for Failure {}
 
 /// Корень репозитория kine: там лежат `packages/core` и `node_modules/esbuild`.
 pub fn kine_home() -> PathBuf {
@@ -21,14 +46,15 @@ fn slash(p: &Path) -> String {
 
 /// Собирает сцену в один IIFE-скрипт через `packages/core/bundle.mjs`: dev-JSX с местами
 /// в исходнике, `@kine/core` из репозитория, импорты шрифтов как абсолютные пути к файлам.
+/// Точка входа — сцена (`defineScene`) или сценарий (`cues`).
 pub fn bundle(entry: &Path) -> Result<String> {
     let home = std::path::absolute(kine_home())?;
     if !home.join("node_modules/esbuild").exists() {
-        bail!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home));
+        return Err(anyhow::anyhow!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home)).context(Failure::Build));
     }
     let entry = std::path::absolute(entry)?;
     if !entry.exists() {
-        bail!("сцена {} не найдена", slash(&entry));
+        return Err(anyhow::anyhow!("сцена {} не найдена", slash(&entry)).context(Failure::Usage));
     }
     let out = Command::new("node")
         .arg(home.join("packages/core/bundle.mjs"))
@@ -37,25 +63,10 @@ pub fn bundle(entry: &Path) -> Result<String> {
         .output()
         .context("не удалось запустить node для сборки сцены")?;
     if !out.status.success() {
-        bail!("сборка сцены:
-{}", String::from_utf8_lossy(&out.stderr).trim_end());
+        let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
+        return Err(anyhow::anyhow!("{stderr}").context(Failure::Build));
     }
     Ok(String::from_utf8(out.stdout)?)
-}
-
-pub struct Loaded {
-    pub scene: Scene,
-    pub logs: Vec<LogLine>,
-}
-
-pub fn load(entry: &Path, opts: &RunOptions) -> Result<Loaded> {
-    let source = bundle(entry)?;
-    let output = kine_js::run_bundle(&source, opts)?;
-    let mut scene = Scene::default();
-    for batch in &output.batches {
-        scene.apply_batch(batch)?;
-    }
-    Ok(Loaded { scene, logs: output.logs })
 }
 
 pub struct Rendered {
@@ -64,10 +75,20 @@ pub struct Rendered {
     pub logs: Vec<LogLine>,
 }
 
-/// Полный кадр: шрифты сцены, раскладка, `must` и `else`.
-pub fn frame(entry: &Path, opts: &RunOptions, eval: EvalOptions) -> Result<Rendered> {
-    let Loaded { scene, logs } = load(entry, opts)?;
-    let mut engine = TextEngine::for_scene(&scene);
-    let frame = kine_core::evaluate(&scene, &mut engine, eval)?;
+/// Кадр в момент `t`; без `t` — кадр «в эфире», когда закончились все `in` первого play.
+pub fn frame_at(entry: &Path, opts: &RunOptions, eval: EvalOptions, t: Option<f64>) -> Result<Rendered> {
+    let source = bundle(entry)?;
+    let mut session = Session::open(&source, opts, &[])?;
+    let t = match t {
+        Some(t) => t,
+        None => session.settled_time()?,
+    };
+    let frame = session.frame_at(t, eval)?;
+    let Session { scene, logs, .. } = session;
     Ok(Rendered { scene, frame, logs })
+}
+
+/// Кадр «в эфире».
+pub fn frame(entry: &Path, opts: &RunOptions, eval: EvalOptions) -> Result<Rendered> {
+    frame_at(entry, opts, eval, None)
 }

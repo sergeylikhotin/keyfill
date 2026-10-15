@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, component, defineScene, hex, timeline, tween } from '@kine/core';
+import { Box, Text, component, cues, defineScene, hex, timeline, tween } from '@kine/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 
 // Таймлайн адресует несуществующую часть.
@@ -56,5 +56,20 @@ defineScene({
 // Цвет только через конструкторы или токены.
 // @ts-expect-error hex требует ведущий #
 hex('FF3355');
+
+// Сценарий: команды и пропсы проверяются по компоненту.
+const demo = defineScene({ stage: { ref: [1920, 1080] }, fps: 50, root: () => <Box /> });
+cues(demo, ({ at }) => [
+  at(0, 'play'),
+  at(1, 'update', LowerThird, { name: 'Иван' }),
+  // @ts-expect-error у LowerThird нет пропса nam
+  at(2, 'update', LowerThird, { nam: 'Иван' }),
+  // @ts-expect-error live — boolean
+  at(2, 'update', LowerThird, { live: 'yes' }),
+  // @ts-expect-error неизвестная команда
+  at(3, 'pause'),
+  // @ts-expect-error update без компонента
+  at(3, 'update'),
+]);
 
 export { Card };

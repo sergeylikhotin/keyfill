@@ -47,6 +47,29 @@ pub enum Cmd {
     },
     /// Диагностика, которую обнаружил JS-рантайм (например, чтение сигнала вне трекинга).
     Diag(Diagnostic),
+    /// Сценарий команд из `*.cues.ts`.
+    Cues { items: Vec<Cue> },
+}
+
+/// Команда сценария: `play`, `stop`, `update` (новые пропсы экземпляров компонента).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Cue {
+    pub t: f64,
+    pub cmd: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub props: Option<Value>,
+}
+
+impl Cue {
+    pub fn label(&self) -> String {
+        let t = crate::look::num(self.t as f32);
+        match &self.target {
+            Some(target) => format!("{}@{t} {target}", self.cmd),
+            None => format!("{}@{t}", self.cmd),
+        }
+    }
 }
 
 /// Кусок текста внутри `Text`: либо прямой текст, либо `Span` со своим `look`.
@@ -145,6 +168,7 @@ pub struct Scene {
     pub stage: Option<Stage>,
     pub theme: BTreeMap<String, Value>,
     pub js_diagnostics: Vec<Diagnostic>,
+    pub cues: Vec<Cue>,
 }
 
 impl Scene {
@@ -187,6 +211,7 @@ impl Scene {
                 node.runs = runs;
             }
             Cmd::Diag(d) => self.js_diagnostics.push(d),
+            Cmd::Cues { items } => self.cues.extend(items),
             Cmd::Theme { values } => {
                 self.theme.extend(values);
             }

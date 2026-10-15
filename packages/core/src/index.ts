@@ -32,11 +32,6 @@ function flat(v: unknown, out: unknown[] = []): unknown[] {
   return out;
 }
 
-// ─── Время (в M0 всегда кадр 0) ─────────────────────────────────────────────
-
-export const time = signal(0);
-export const frame = signal(0);
-
 // ─── Значения ───────────────────────────────────────────────────────────────
 
 export const pct: typeof S.pct = (v) => ({ pct: v });
@@ -62,7 +57,7 @@ export const column: typeof S.column = (o = {}) => ({ kind: 'column', ...o });
 export const grid: typeof S.grid = (o) => ({ kind: 'grid', ...o });
 export const stack: typeof S.stack = () => ({ kind: 'stack' });
 
-// ─── Движение: пока только данные, ядро исполнит их в M2 ────────────────────
+// ─── Движение: только данные, исполняет ядро ────────────────────────────────
 
 export const tween: typeof S.tween = (duration, ease = 'inOut') => ({ kind: 'tween', duration, ease });
 
@@ -78,7 +73,7 @@ export const spring: typeof S.spring = Object.assign(springOf, {
   bouncy: springOf({ stiffness: 300, damping: 12 }),
 });
 
-/** Оценка длительности для seq/par; точное время пружин посчитает ядро (M2). */
+/** Оценка длительности для seq/par; точное время пружин считает ядро. */
 const easingDuration = (e?: S.Easing) => (!e ? 0.3 : e.kind === 'tween' ? e.duration : 0.6);
 const motion = (data: Props, duration: number) => brand<S.Motion>({ ...data, duration });
 
@@ -233,6 +228,10 @@ export const prop: typeof S.prop = () => brand({ $prop: true });
 
 const counters = new Map<string, number>();
 
+/** Экземпляры компонентов: команда сценария `update` меняет их пропсы. */
+type Instance = { component: string; name: string; set(key: string, value: unknown): void; src?: string };
+const instances: Instance[] = [];
+
 export const component: typeof S.component = (def) => {
   if (typeof def.name !== 'string') throw new KineError('component(): нужно поле name');
   const C = (p: Props): KineElement => {
@@ -240,12 +239,28 @@ export const component: typeof S.component = (def) => {
     counters.set(def.name, n);
     const inst = `${def.name}#${n}`;
 
+    // Каждый пропс — ячейка: снаружи в неё приходит значение или аксессор, а команда
+    // `update` заменяет содержимое. Внутри компонента пропс всегда аксессор.
     const accessors: Props = {};
+    const slots: Record<string, S.Signal<{ v: unknown }>> = {};
     for (const k of Object.keys(def.props ?? {})) {
       if (!(k in p)) throw new KineError(`${def.name}: не передан пропс "${k}"`, p.__src);
-      const v = p[k];
-      accessors[k] = typeof v === 'function' ? v : () => v;
+      const slot = signal<{ v: unknown }>({ v: p[k] });
+      slots[k] = slot;
+      accessors[k] = () => {
+        const { v } = slot();
+        return typeof v === 'function' ? (v as Accessor<unknown>)() : v;
+      };
     }
+    instances.push({
+      component: def.name,
+      name: inst,
+      src: p.__src,
+      set(key, value) {
+        if (!(key in slots)) throw new KineError(`update: у ${def.name} нет пропса "${key}"`, p.__src);
+        slots[key].set({ v: value });
+      },
+    });
     const parts: Props = {};
     for (const name of def.parts ?? []) parts[name] = { $part: name, inst };
 
@@ -271,11 +286,34 @@ export const component: typeof S.component = (def) => {
   return brand(Object.assign(C, { kineName: def.name }));
 };
 
-// ─── Сцена ──────────────────────────────────────────────────────────────────
+// ─── Сцена и сценарий ───────────────────────────────────────────────────────
 
 export const defineScene: typeof S.defineScene = (def) => def;
 
-export function mount(scene: Props) {
+type CueItem = { t: number; cmd: string; target?: string; props?: Record<string, unknown> };
+
+export const cues: typeof S.cues = (scene, build) => {
+  const at = (t: number, cmd: string, target?: { kineName: string }, props?: Record<string, unknown>): CueItem => {
+    if (typeof t !== 'number' || !(t >= 0)) throw new KineError(`cues: время должно быть числом ≥ 0, получено ${t}`);
+    if (cmd === 'update' && !target?.kineName) throw new KineError('cues: update требует компонент: at(t, "update", LowerThird, { ... })');
+    return { t, cmd, target: target?.kineName, props };
+  };
+  return brand({ $cues: true, scene, items: build(brand({ at })) });
+};
+
+/** Команда `update` из ядра: новые значения пропсов всех экземпляров компонента. */
+(globalThis as any).__kine_update = (json: string) => {
+  const { target, props } = JSON.parse(json) as { target: string; props: Record<string, unknown> };
+  const found = instances.filter((i) => i.component === target);
+  if (!found.length) throw new KineError(`update: в сцене нет экземпляров ${target}`);
+  batch(() => {
+    for (const i of found) for (const [k, v] of Object.entries(props ?? {})) i.set(k, v);
+  });
+  host.flush();
+};
+
+export function mount(entry: Props) {
+  const scene = entry.$cues ? entry.scene : entry;
   const stage = host.create('stage');
   host.emit({
     op: 'stage',
@@ -300,11 +338,12 @@ export function mount(scene: Props) {
   );
   if (!isElement(root)) throw new KineError('scene.root должен вернуть элемент');
   host.insert(stage, root.id);
+  if (entry.$cues) host.emit({ op: 'cues', items: entry.items });
   host.flush();
 }
 
 const notYet = (name: string) => (): never => {
-  throw new KineError(`source.${name} появится в M5`);
+  throw new KineError(`source.${name} появится в M6`);
 };
 
 export const source: typeof S.source = { json: notYet('json'), ws: notYet('ws'), osc: notYet('osc') };

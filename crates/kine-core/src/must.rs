@@ -9,8 +9,9 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::diag::{Diagnostics, Level};
-use crate::layout::{ElseStep, Frame, FrameNode, Overrides, Rect, build_frame, build_frame_with, content_rect};
+use crate::layout::{ElseStep, Frame, FrameNode, Overrides, Rect, build_frame_with, content_rect};
 use crate::look::{Rgba, num};
+use crate::motion::Animated;
 use crate::scene::{Kind, Scene};
 use crate::text::TextEngine;
 
@@ -42,9 +43,15 @@ pub struct Violation {
     pub message: String,
 }
 
-/// Строит кадр, проверяет `must` и в режиме air применяет `else`.
+/// Строит статичный кадр (без часов), проверяет `must` и в режиме air применяет `else`.
 pub fn evaluate(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions) -> Result<Frame> {
-    let base = build_frame(scene, engine)?;
+    evaluate_at(scene, engine, opts, &Animated::default())
+}
+
+/// То же для кадра с анимациями. `must` проверяет графику без слоя presence: появление
+/// и уход — промежуточные кадры, а утверждения говорят о состоянии в эфире.
+pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, anim: &Animated) -> Result<Frame> {
+    let base = build_frame_with(scene, engine, &Overrides::new(), anim)?;
     let (violations, notes) = check(scene, &base, opts);
     if violations.is_empty() {
         let mut frame = base;
@@ -60,7 +67,7 @@ pub fn evaluate(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions) -> Re
                 let hint = if steps.is_empty() {
                     Some(default_hint(v.rule).to_string())
                 } else {
-                    match first_fix(scene, engine, opts, v.id, &Overrides::new(), &steps)? {
+                    match first_fix(scene, engine, opts, anim, v.id, &Overrides::new(), &steps)? {
                         Some(step) => Some(format!("{} это исправляет; в эфире шаг применится сам", step.label)),
                         None => Some(format!("ни один шаг else ({} шт.) это не исправляет; {}", steps.len(), default_hint(v.rule))),
                     }
@@ -79,10 +86,10 @@ pub fn evaluate(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions) -> Re
                 if steps.is_empty() {
                     continue;
                 }
-                let chosen = first_fix(scene, engine, opts, id, &overrides, &steps)?.unwrap_or_else(|| steps.last().expect("non-empty").clone());
+                let chosen = first_fix(scene, engine, opts, anim, id, &overrides, &steps)?.unwrap_or_else(|| steps.last().expect("non-empty").clone());
                 overrides.insert(id, chosen);
             }
-            let mut frame = build_frame_with(scene, engine, &overrides)?;
+            let mut frame = build_frame_with(scene, engine, &overrides, anim)?;
             let (remaining, notes) = check(scene, &frame, opts);
             for v in &violations {
                 if let Some(step) = overrides.get(&v.id) {
@@ -133,11 +140,19 @@ pub fn else_steps(scene: &Scene, id: u32) -> Vec<ElseStep> {
         .collect()
 }
 
-fn first_fix(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, id: u32, base: &Overrides, steps: &[ElseStep]) -> Result<Option<ElseStep>> {
+fn first_fix(
+    scene: &Scene,
+    engine: &mut TextEngine,
+    opts: EvalOptions,
+    anim: &Animated,
+    id: u32,
+    base: &Overrides,
+    steps: &[ElseStep],
+) -> Result<Option<ElseStep>> {
     for step in steps {
         let mut overrides = base.clone();
         overrides.insert(id, step.clone());
-        let frame = build_frame_with(scene, engine, &overrides)?;
+        let frame = build_frame_with(scene, engine, &overrides, anim)?;
         if node_violations(scene, &frame, opts, id, &mut Diagnostics::default()).is_empty() {
             return Ok(Some(step.clone()));
         }
