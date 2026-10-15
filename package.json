@@ -1,0 +1,11 @@
+{
+  "name": "kine-workspace",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "typescript": "5.8.3"
+  }
+}

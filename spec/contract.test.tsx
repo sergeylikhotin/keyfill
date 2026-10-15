@@ -33,6 +33,7 @@ timeline(LowerThird, ({ at }) => ({
 
 // Часть из чужого компонента нельзя подставить по строке.
 const Card = component({
+  name: 'Card',
   props: { title: String },
   parts: ['root'],
   // @ts-expect-error name принимает PartRef, а не строку

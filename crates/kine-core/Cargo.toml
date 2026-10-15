@@ -1,0 +1,13 @@
+[package]
+name = "kine-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+taffy.workspace = true
+parley.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+skrifa = "0.44"

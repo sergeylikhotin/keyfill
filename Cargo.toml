@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+kine-core = { path = "crates/kine-core" }
+kine-render = { path = "crates/kine-render" }
+kine-js = { path = "crates/kine-js" }
+taffy = "0.15"
+parley = "0.12"
+vello_cpu = "0.3"
+rquickjs = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"

@@ -1,0 +1,9 @@
+[package]
+name = "kine-js"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rquickjs.workspace = true
+anyhow.workspace = true

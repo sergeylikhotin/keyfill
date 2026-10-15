@@ -33,7 +33,7 @@ declare module '@kine/core' {
 
   const tokenBrand: unique symbol;
   /** Ссылка на токен темы. Разрешается в ядре, поэтому смена темы не перезапускает JS. */
-  export type Token<T> = { readonly [tokenBrand]: T; readonly path: string };
+  export type Token<T> = { readonly [tokenBrand]: T };
 
   export type Color =
     | { readonly r: number; readonly g: number; readonly b: number; readonly a?: number }
@@ -246,6 +246,8 @@ declare module '@kine/core' {
   export type ReactiveProps<P> = { readonly [K in keyof P]: Reactive<P[K]> };
 
   export interface ComponentDef<S extends PropSchema, N extends string> {
+    /** Имя для дампа и ошибок: экземпляры называются `LowerThird#1`. */
+    readonly name: string;
     readonly props: S;
     readonly parts?: readonly N[];
     readonly view: (props: PropAccessors<InferProps<S>>, part: Parts<N>) => KineElement;

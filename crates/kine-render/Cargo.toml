@@ -1,0 +1,11 @@
+[package]
+name = "kine-render"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+kine-core.workspace = true
+vello_cpu.workspace = true
+parley.workspace = true
+anyhow.workspace = true

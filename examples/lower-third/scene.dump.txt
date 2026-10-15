@@ -1,0 +1,14 @@
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+└─ LowerThird#1/panel  box row gap 16  (96,889 523×137)  bg color.surface · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  [presence in,out — с M2]  [must inside — с M1]
+   ├─ LowerThird#1/dot  box  (122,950 16×16)  bg color.accent · r 8  [presence loop — с M2]
+   └─ LowerThird#1/panel/box[1]  box column gap 4  (154,907 439×101)
+      ├─ LowerThird#1/title  text  (154,907 439×65)  "Анна Смирнова"  Arial 600 56px (запрошен Inter) · color.text  [must contrast,fit — с M1]  [else — с M1]  [fit — с M1]
+      └─ LowerThird#1/subtitle  text  (154,976 439×32)  "ВЕДУЩАЯ"  Arial 400 28px (запрошен Inter) · color.muted
+
+diagnostics: 0 error, 2 warn, 0 info
+warn font.fallback LowerThird#1/title: шрифт Inter не найден, использован Arial
+    at examples/lower-third/LowerThird.tsx:28:9
+    hint: установи шрифт в систему или подключи файл через font: { family, file } (файлы шрифтов — M1)
+warn font.fallback LowerThird#1/subtitle: шрифт Inter не найден, использован Arial
+    at examples/lower-third/LowerThird.tsx:37:9
+    hint: установи шрифт в систему или подключи файл через font: { family, file } (файлы шрифтов — M1)

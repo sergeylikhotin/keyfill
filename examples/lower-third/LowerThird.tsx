@@ -2,6 +2,7 @@ import { Box, Text, component, fade, on, prop, pulse, row, column, slide, spring
 import { theme } from './theme';
 
 export const LowerThird = component({
+  name: 'LowerThird',
   props: { name: String, role: String, live: Boolean, tags: prop<string[]>() },
   parts: ['panel', 'dot', 'title', 'subtitle'],
 
