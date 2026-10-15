@@ -1,0 +1,7 @@
+target/
+node_modules/
+dist/
+out/
+*.png
+*.mp4
+*.mov
