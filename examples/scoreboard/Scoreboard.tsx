@@ -7,7 +7,7 @@ const score = { font: theme.font.ui, size: 40, weight: 600, color: theme.color.t
 export const Scoreboard = component({
   name: 'Scoreboard',
   props: { home: String, away: String, homeScore: Number, awayScore: Number, period: String, live: Boolean },
-  parts: ['panel', 'home', 'away', 'status', 'badge'],
+  parts: ['panel', 'home', 'away', 'homeScore', 'awayScore', 'status', 'badge'],
 
   view: ({ home, away, homeScore, awayScore, period, live }, part) => (
     <Box name={part.panel} anchor={{ to: 'titleSafe', at: 'top-left' }} layout={stack()} must={{ inside: 'titleSafe' }}>
@@ -25,7 +25,7 @@ export const Scoreboard = component({
         >
           {home}
         </Text>
-        <Text look={score}>{() => String(homeScore())}</Text>
+        <Text name={part.homeScore} look={score}>{() => String(homeScore())}</Text>
         <Text
           name={part.away}
           look={team}
@@ -35,7 +35,7 @@ export const Scoreboard = component({
         >
           {away}
         </Text>
-        <Text look={score}>{() => String(awayScore())}</Text>
+        <Text name={part.awayScore} look={score}>{() => String(awayScore())}</Text>
         <Text name={part.status} cell={{ colSpan: 2 }} look={{ font: theme.font.ui, size: 22, color: theme.color.muted }}>
           <Span look={{ color: theme.color.live, weight: 600 }}>● LIVE</Span>
           {' · '}
@@ -59,4 +59,17 @@ export const Scoreboard = component({
       </Box>
     </Box>
   ),
+
+  commands: {
+    // Гол: счёт +1 и вспышка цифры — сегмент таймлайна goalHome или goalAway.
+    goal: {
+      params: { side: String },
+      run: ({ side }, ctx) => {
+        if (side === 'home') ctx.set({ homeScore: ctx.props.homeScore() + 1 });
+        else ctx.set({ awayScore: ctx.props.awayScore() + 1 });
+        ctx.play(side === 'home' ? 'goalHome' : 'goalAway');
+        ctx.emit('goal');
+      },
+    },
+  },
 });

@@ -43,6 +43,13 @@ pub fn dump(scene: &Scene, frame: &Frame) -> String {
     if let Some(c) = &frame.clock {
         let log = if c.log.is_empty() { String::new() } else { format!(" · {}", c.log.join(", ")) };
         let _ = writeln!(out, "time: t={}s · кадр {} · сцена {}{log}", num(c.t as f32), c.frame, c.scene);
+        // Последние события: что уже произошло к этому кадру (маркеры, состояния, emit).
+        const SHOWN: usize = 8;
+        if !c.events.is_empty() {
+            let skip = c.events.len().saturating_sub(SHOWN);
+            let earlier = if skip > 0 { format!(" (+{skip} ранее)") } else { String::new() };
+            let _ = writeln!(out, "events{earlier}: {}", c.events[skip..].join(" · "));
+        }
     }
     if frame.removed {
         let _ = writeln!(out, "сцена снята: в кадре ничего нет");
@@ -86,6 +93,7 @@ fn node_lines(scene: &Scene, frame: &Frame, id: u32, prefix: &str, last: bool, o
         }
         None if node.hidden() => line.push_str("  (hidden: when=false)"),
         None if frame.removed => line.push_str("  (сцена снята)"),
+        None if node.parent.is_some_and(|p| scene.node(p).kind != Kind::Stage && frame.find(p).is_none()) => line.push_str("  (вместе с родителем)"),
         None => line.push_str("  (ушёл после out)"),
     }
     if let Some(a) = fnode.and_then(|f| f.anim.as_ref()) {

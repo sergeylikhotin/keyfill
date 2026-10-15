@@ -9,6 +9,7 @@ pub mod look;
 pub mod motion;
 pub mod must;
 pub mod scene;
+pub mod timeline;
 pub mod text;
 
 pub use display::DisplayList;

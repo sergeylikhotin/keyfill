@@ -260,52 +260,101 @@ declare module '@kine/core' {
   /** Снаружи можно передать значение или аксессор. */
   export type ReactiveProps<P> = { readonly [K in keyof P]: Reactive<P[K]> };
 
-  export interface ComponentDef<S extends PropSchema, N extends string> {
+  /** То, что команда компонента может сделать с экземпляром. */
+  export interface CommandContext<P> {
+    /** Текущие пропсы экземпляра. */
+    readonly props: PropAccessors<P>;
+    /** Новые значения своих пропсов, как команда сценария `update`. */
+    set(patch: Partial<P>): void;
+    /** Сыграть сегмент таймлайна от маркера до следующего и вернуться туда, где был; без маркера — play. */
+    play(marker?: string): void;
+    next(): void;
+    stop(): void;
+    /** Своё событие для пульта и журнала. */
+    emit(name: string, data?: unknown): void;
+  }
+
+  export interface CommandDef<P, S extends PropSchema> {
+    readonly params: S;
+    readonly run: (params: InferProps<S>, ctx: CommandContext<P>) => void;
+  }
+
+  export interface ComponentDef<S extends PropSchema, N extends string, C extends Record<string, PropSchema>> {
     /** Имя для дампа и ошибок: экземпляры называются `LowerThird#1`. */
     readonly name: string;
     readonly props: S;
     readonly parts?: readonly N[];
     readonly view: (props: PropAccessors<InferProps<S>>, part: Parts<N>) => KineElement;
+    /** Появление и уход корня. Если у компонента есть таймлайн в сцене, управляет он, а не presence. */
     readonly presence?: Presence;
+    /** Действия, которые пульт показывает как кнопки с параметрами: `at(t, 'invoke', Scoreboard, 'goal', { side: 'home' })`. */
+    readonly commands?: { readonly [K in keyof C]: CommandDef<InferProps<S>, C[K]> };
   }
 
   const componentBrand: unique symbol;
-  export interface Component<P, N extends string> {
+  export interface Component<P, N extends string, C = {}> {
     (props: ReactiveProps<P> & NodePlacement): KineElement;
-    readonly [componentBrand]: { readonly props: P; readonly parts: N };
+    readonly [componentBrand]: { readonly props: P; readonly parts: N; readonly commands: C };
   }
-  export type PartsOf<C> = C extends Component<any, infer N> ? N : never;
-  export type PropsOf<C> = C extends Component<infer P, any> ? P : never;
+  export type PartsOf<C> = C extends Component<any, infer N, any> ? N : never;
+  export type PropsOf<C> = C extends Component<infer P, any, any> ? P : never;
+  /** Команды компонента и типы их параметров. */
+  export type CommandsOf<C> = C extends Component<any, any, infer K> ? K : never;
 
-  export function component<const S extends PropSchema, const N extends string = never>(
-    def: ComponentDef<S, N>,
-  ): Component<InferProps<S>, N>;
+  export function component<
+    const S extends PropSchema,
+    const N extends string = never,
+    const C extends Record<string, PropSchema> = {},
+  >(def: ComponentDef<S, N, C>): Component<InferProps<S>, N, { readonly [K in keyof C]: InferProps<C[K]> }>;
 
   // ─── Таймлайн (*.motion.ts) ───────────────────────────────────────────────
 
   const keyBrand: unique symbol;
   export type Key<N extends string> = { readonly [keyBrand]: N };
 
+  const emitBrand: unique symbol;
+  export type TimelineEmit = { readonly [emitBrand]: true };
+
   export interface KeyBuilder<N extends string> {
     /** В момент t анимировать часть `part`. Имя части проверяется по компоненту. */
     at(t: number, part: N, targets: AnimTargets, easing?: Easing): Key<N>;
+    /** Своё событие, когда воспроизведение проходит момент t. */
+    emit(t: number, name: string): TimelineEmit;
   }
 
-  export interface TimelineDef<N extends string> {
+  export interface TimelineLoop<M extends string> {
+    readonly from: M;
+    readonly to: M;
+    /** repeat — с начала, pingpong — туда и обратно. По умолчанию repeat. */
+    readonly mode?: 'repeat' | 'pingpong';
+    /** Сколько повторов; без него — пока не придёт next или stop. */
+    readonly count?: number;
+  }
+
+  /**
+   * Воспроизведение:
+   * - play — от 0 вперёд; на маркере из `holds` стоп до next; отрезок `loop` повторяется до next;
+   *   обычное воспроизведение не заходит за маркер `out`;
+   * - stop — прыжок на `out` и воспроизведение до следующего маркера (или конца), затем экземпляр снят;
+   * - next — снимает текущую остановку: продолжить после hold или выйти из цикла;
+   * - ctx.play('goal') в команде — сегмент от маркера до следующего, затем возврат туда, где был.
+   * Прыжки (stop, сегмент) продолжают каналы с текущих значений; каналы без ключей после прыжка доигрывают своё.
+   * Без явного `loop`, если есть маркеры `loop` и `out`, повторяется отрезок loop..out.
+   */
+  export interface TimelineDef<N extends string, M extends string> {
     readonly keys: readonly Key<N>[];
-    /**
-     * Маркеры управляют эфиром: play → от 0 до `loop`, затем отрезок loop..out
-     * повторяется, stop → от `out` до конца. Свои маркеры — точки остановки для next.
-     */
-    readonly markers?: { readonly loop?: number; readonly out?: number } & Readonly<Record<string, number>>;
+    readonly markers?: { readonly [K in M]: number };
+    readonly loop?: TimelineLoop<NoInfer<M>>;
+    readonly holds?: readonly NoInfer<M>[];
+    readonly events?: readonly TimelineEmit[];
   }
 
   const timelineBrand: unique symbol;
   export type Timeline<C> = { readonly [timelineBrand]: C };
 
-  export function timeline<C extends Component<any, any>>(
+  export function timeline<C extends Component<any, any, any>, const M extends string = never>(
     target: C,
-    build: (k: KeyBuilder<PartsOf<C>>) => TimelineDef<PartsOf<C>>,
+    build: (k: KeyBuilder<PartsOf<C>>) => TimelineDef<PartsOf<C>, M>,
   ): Timeline<C>;
 
   // ─── Примитивы ────────────────────────────────────────────────────────────
@@ -366,6 +415,8 @@ declare module '@kine/core' {
     readonly fonts?: readonly FontFile[];
     /** Системные шрифты; для детерминированного рендера выключай и подключай файлы. По умолчанию true. */
     readonly systemFonts?: boolean;
+    /** Таймлайны компонентов из *.motion.ts: у каждого экземпляра компонента — своё воспроизведение. */
+    readonly timelines?: readonly Timeline<any>[];
   }
   export function defineScene(def: SceneDef): SceneDef;
 
@@ -375,10 +426,22 @@ declare module '@kine/core' {
   export type Cue = { readonly [cueBrand]: true };
 
   export interface CueBuilder {
-    /** play — узлы с presence начинают in; stop — out, сцена снимается после последнего out. */
-    at(t: number, cmd: 'play' | 'stop'): Cue;
+    /**
+     * play — узлы с presence начинают in, таймлайны — воспроизведение; stop — out, сцена снимается
+     * после последнего out; next — снять остановку таймлайна (hold или цикл). С компонентом —
+     * только его экземпляры.
+     */
+    at(t: number, cmd: 'play' | 'stop' | 'next', target?: Component<any, any, any>): Cue;
     /** Новые значения пропсов всех экземпляров компонента; изменения анимируются через transition. */
-    at<C extends Component<any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
+    at<C extends Component<any, any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
+    /** Команда компонента с параметрами, на всех его экземплярах. */
+    at<C extends Component<any, any, any>, K extends keyof CommandsOf<C> & string>(
+      t: number,
+      cmd: 'invoke',
+      target: C,
+      command: K,
+      params: CommandsOf<C>[K],
+    ): Cue;
   }
 
   const cuesBrand: unique symbol;

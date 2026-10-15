@@ -1,0 +1,89 @@
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=0.3s · кадр 15 · сцена playing · play@0
+events: 0s scene state:playing · 0s Scoreboard#1 state:in
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  motion opacity×1.02 · сдвиг 0,0.4  [timeline in τ=0.3]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  motion reveal 0.6  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  motion reveal 0.23  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1.01  [in 24%]
+      └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
+
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=0.9s · кадр 45 · сцена playing · play@0
+events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 emit:reveal-done · 0.7s Scoreboard#1 marker:ready · 0.7s Scoreboard#1 state:hold
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline hold τ=0.7 на ready]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1  [in 72%]
+      └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
+
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=1.6s · кадр 80 · сцена playing · play@0, next@1.2, update@1.6 Scoreboard
+events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 emit:reveal-done · 0.7s Scoreboard#1 marker:ready · 0.7s Scoreboard#1 state:hold · 1.2s Scoreboard#1 state:in · 1.5s Scoreboard#1 marker:loop · 1.5s Scoreboard#1 state:loop
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline loop τ=1.1]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.99
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  [out 0%]
+      └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
+
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=2.26s · кадр 113 · сцена playing · play@0, next@1.2, update@1.6 Scoreboard, invoke@2.2 Scoreboard.goal
+events (+3 ранее): 0.7s Scoreboard#1 marker:ready · 0.7s Scoreboard#1 state:hold · 1.2s Scoreboard#1 state:in · 1.5s Scoreboard#1 marker:loop · 1.5s Scoreboard#1 state:loop · 2.2s Scoreboard#1 marker:goalHome · 2.2s Scoreboard#1 state:segment · 2.2s Scoreboard#1 emit:goal
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline segment τ=3.06]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text  motion scale×1.24
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (hidden: when=false)
+      └─ Scoreboard#1/badge/text[0]  text  (вместе с родителем)
+
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=3.7s · кадр 185 · сцена playing · play@0, next@1.2, update@1.6 Scoreboard, invoke@2.2 Scoreboard.goal, update@3 Scoreboard
+events (+4 ранее): 0.7s Scoreboard#1 state:hold · 1.2s Scoreboard#1 state:in · 1.5s Scoreboard#1 marker:loop · 1.5s Scoreboard#1 state:loop · 2.2s Scoreboard#1 marker:goalHome · 2.2s Scoreboard#1 state:segment · 2.2s Scoreboard#1 emit:goal · 3.6s Scoreboard#1 state:loop
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline loop τ=1.8]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1  [in 56%]
+      └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
+
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=4.3s · кадр 215 · сцена stopping · play@0, next@1.2, update@1.6 Scoreboard, invoke@2.2 Scoreboard.goal, update@3 Scoreboard, stop@4.2
+events (+7 ранее): 1.5s Scoreboard#1 state:loop · 2.2s Scoreboard#1 marker:goalHome · 2.2s Scoreboard#1 state:segment · 2.2s Scoreboard#1 emit:goal · 3.6s Scoreboard#1 state:loop · 4.2s Scoreboard#1 marker:out · 4.2s Scoreboard#1 state:out · 4.2s scene state:stopping
+└─ Scoreboard#1/panel  box stack  (96,54 520×184)  motion opacity×0.84 · сдвиг 0,-3.75  [timeline out τ=2.7]  [must inside]
+   ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.9
+   │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
+   └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion opacity×0.5  [out 50%]
+      └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent

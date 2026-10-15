@@ -2,6 +2,7 @@
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
 import { Box, Text, component, cues, defineScene, hex, timeline, tween } from '@kine/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
+import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
 // Таймлайн адресует несуществующую часть.
 timeline(LowerThird, ({ at }) => ({
@@ -70,6 +71,39 @@ cues(demo, ({ at }) => [
   at(3, 'pause'),
   // @ts-expect-error update без компонента
   at(3, 'update'),
+  at(4, 'next', Scoreboard),
+  at(4, 'invoke', Scoreboard, 'goal', { side: 'home' }),
+  // @ts-expect-error у Scoreboard нет команды penalty
+  at(4, 'invoke', Scoreboard, 'penalty', {}),
+  // @ts-expect-error side — строка
+  at(4, 'invoke', Scoreboard, 'goal', { side: 1 }),
+  // @ts-expect-error у LowerThird нет команд
+  at(4, 'invoke', LowerThird, 'goal', {}),
 ]);
+
+// Таймлайн: holds и loop ссылаются только на объявленные маркеры.
+timeline(Scoreboard, ({ at }) => ({
+  keys: [at(0, 'panel', { opacity: [0, 1] })],
+  markers: { ready: 0.5, loop: 1, out: 2 },
+  // @ts-expect-error маркера redy нет
+  holds: ['redy'],
+}));
+timeline(Scoreboard, ({ at }) => ({
+  keys: [at(0, 'panel', { opacity: [0, 1] })],
+  markers: { loop: 1, out: 2 },
+  // @ts-expect-error маркера lop нет
+  loop: { from: 'lop', to: 'out' },
+}));
+
+// Параметры команды типизированы в её run.
+component({
+  name: 'Clock',
+  props: { seconds: Number },
+  view: () => <Box />,
+  commands: {
+    // @ts-expect-error by — число, у него нет toUpperCase
+    add: { params: { by: Number }, run: ({ by }, ctx) => ctx.set({ seconds: by.toUpperCase() }) },
+  },
+});
 
 export { Card };

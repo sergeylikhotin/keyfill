@@ -198,3 +198,95 @@ fn update_runs_transition_and_out() {
     let later = s.frame_at(1.8, dev()).unwrap();
     assert!(later.find(dot).is_none());
 }
+
+// ─── Таймлайны (M2b) ────────────────────────────────────────────────────────
+
+fn events_until(s: &Session, t: f64) -> Vec<String> {
+    s.motion.events_log.iter().filter(|e| e.t <= t + 1e-9 && e.source != "scene").map(|e| format!("{}@{}:{}", e.kind, kine_core::look::num(e.t as f32), e.name)).collect()
+}
+
+/// Сценарий из плана M2: play → hold → next → stop посреди in. События и значения — точные.
+#[test]
+fn play_hold_next_stop_mid_in() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/scoreboard/scene.tsx", &parse_cues("1.2 next; 1.3 stop").unwrap());
+    let held = s.frame_at(1.0, dev()).unwrap();
+    assert_eq!(motion_of(&s, &held, "Scoreboard#1/panel").opacity, 1.0);
+    let before = s.frame_at(1.3, dev()).unwrap();
+    let at_stop = motion_of(&s, &before, "Scoreboard#1/panel");
+    let frame = s.frame_at(1.4, dev()).unwrap();
+    let after = motion_of(&s, &frame, "Scoreboard#1/panel");
+    // out идёт с текущих значений: прозрачность падает плавно, без скачка к объявленной.
+    assert!(after.opacity < at_stop.opacity && after.opacity > 0.5, "{at_stop:?} → {after:?}");
+    // out длится до следующего маркера (goalHome = 3.0), то есть 0.4 с.
+    let gone = s.frame_at(1.7, dev()).unwrap();
+    assert!(gone.removed, "табло снято после out");
+    assert_eq!(
+        events_until(&s, 1.7),
+        [
+            "state@0:in",
+            "emit@0.6:reveal-done",
+            "marker@0.7:ready",
+            "state@0.7:hold",
+            "state@1.2:in",
+            "marker@1.3:out",
+            "state@1.3:out",
+            "state@1.7:removed",
+        ]
+    );
+}
+
+/// Команда компонента: данные меняются, сегмент играет и возвращает табло в цикл.
+#[test]
+fn goal_command_plays_segment_and_returns_to_loop() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+    let score = s.scene.find("Scoreboard#1/homeScore").unwrap();
+    let frame = s.frame_at(2.26, dev()).unwrap();
+    let node = frame.find(score).unwrap();
+    assert_eq!(frame.texts[node.text.unwrap().0].content, "3");
+    assert!(node.anim.as_ref().unwrap().motion.scale > 1.2, "вспышка счёта");
+    let frame = s.frame_at(3.7, dev()).unwrap();
+    let panel = s.scene.find("Scoreboard#1/panel").unwrap();
+    let notes = &frame.find(panel).unwrap().anim.as_ref().unwrap().notes;
+    assert!(notes[0].starts_with("timeline loop"), "{notes:?}");
+    let ev = events_until(&s, 3.7);
+    assert!(ev.contains(&"emit@2.2:goal".to_string()) && ev.contains(&"state@3.6:loop".to_string()), "{ev:?}");
+    assert!(!ev.iter().any(|e| e.contains("goalAway")), "сегмент кончается на goalAway, но не играет его: {ev:?}");
+}
+
+/// Маркер в грамматике времени: момент, когда воспроизведение впервые его проходит.
+#[test]
+fn marker_time_resolves_from_playback() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+    assert!((s.marker_time("goalHome").unwrap() - 2.2).abs() < 1e-9);
+    assert!((s.marker_time("loop").unwrap() - 1.5).abs() < 1e-9);
+    assert!(s.marker_time("goalAway").is_err(), "goalAway в этом сценарии не играет");
+}
+
+#[test]
+fn scoreboard_cues_timeline_snapshot() {
+    let Some(home) = home() else { return };
+    let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+    let mut parts = Vec::new();
+    for t in [0.3, 0.9, 1.6, 2.26, 3.7, 4.3] {
+        let frame = s.frame_at(t, dev()).unwrap();
+        parts.push(kine_core::dump::dump(&s.scene, &frame));
+    }
+    let dump = parts.join("\n");
+    let snap = "examples/scoreboard/scene.cues.dump.txt";
+    let path = home.join(snap);
+    if std::env::var_os("KINE_UPDATE_SNAPSHOTS").is_some() {
+        std::fs::write(&path, &dump).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("нет снапшота {snap}: запусти с KINE_UPDATE_SNAPSHOTS=1"));
+    assert_eq!(dump.replace("\r\n", "\n"), expected.replace("\r\n", "\n"), "дамп сценария разошёлся со снапшотом {snap}");
+}

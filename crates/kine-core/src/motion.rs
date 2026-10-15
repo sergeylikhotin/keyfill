@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::diag::{Diagnostics, Level};
 use crate::look::{self, Rgba, num};
 use crate::scene::{Kind, Scene};
+use crate::timeline::{self, Run, TimelineDef};
 
 // ─── Каналы и значения ──────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ impl V {
 const LINEAR: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 const EASE_IN: [f64; 4] = [0.42, 0.0, 1.0, 1.0];
 const EASE_OUT: [f64; 4] = [0.0, 0.0, 0.58, 1.0];
-const EASE_IN_OUT: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
+pub(crate) const EASE_IN_OUT: [f64; 4] = [0.42, 0.0, 0.58, 1.0];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Easing {
@@ -323,7 +324,7 @@ pub struct Seg {
 }
 
 impl Seg {
-    fn new(start: f64, from: V, to: V, easing: Easing, v0: f64, pingpong: bool) -> Seg {
+    pub(crate) fn new(start: f64, from: V, to: V, easing: Easing, v0: f64, pingpong: bool) -> Seg {
         Seg { start, from, to, easing, v0, dur: easing.duration(v0), pingpong }
     }
 
@@ -357,7 +358,7 @@ pub struct Track {
 }
 
 impl Track {
-    fn active(&self, t: f64) -> Option<&Seg> {
+    pub(crate) fn active(&self, t: f64) -> Option<&Seg> {
         self.segs.iter().rev().find(|s| s.start <= t)
     }
 
@@ -385,11 +386,11 @@ impl Track {
         self.segs.iter().map(|s| s.start + s.dur).reduce(f64::max)
     }
 
-    fn running(&self, t: f64) -> bool {
+    pub(crate) fn running(&self, t: f64) -> bool {
         self.end().is_none_or(|e| t < e) && self.segs.first().is_some_and(|s| s.start <= t)
     }
 
-    fn easing_label(&self, t: f64) -> String {
+    pub(crate) fn easing_label(&self, t: f64) -> String {
         self.active(t).or(self.segs.first()).map(|s| s.easing.label()).unwrap_or_default()
     }
 }
@@ -425,13 +426,13 @@ impl Program {
     }
 }
 
-struct Compiler<'a> {
-    theme: &'a BTreeMap<String, Value>,
-    notes: Vec<(Level, &'static str, String)>,
+pub(crate) struct Compiler<'a> {
+    pub(crate) theme: &'a BTreeMap<String, Value>,
+    pub(crate) notes: Vec<(Level, &'static str, String)>,
 }
 
 impl Compiler<'_> {
-    fn value(&mut self, ch: Channel, raw: &Value) -> Result<V, String> {
+    pub(crate) fn value(&mut self, ch: Channel, raw: &Value) -> Result<V, String> {
         if ch.is_color() {
             let (mut tokens, mut missing) = (Vec::new(), Vec::new());
             let v = look::substitute(raw, self.theme, &mut tokens, &mut missing);
@@ -547,6 +548,8 @@ struct NodeState {
     targets: BTreeMap<Channel, V>,
     visible: bool,
     own_hidden: bool,
+    /// Экземпляр снят адресным stop: с этого момента не рисуется.
+    hide_at: Option<f64>,
 }
 
 impl NodeState {
@@ -627,6 +630,24 @@ enum Event {
     InEnd(u32),
     OutEnd(u32),
     Removed,
+    /// Остановка таймлайна `runs[i]` с поколением расписания.
+    Timeline(usize, u64),
+}
+
+/// Событие для пульта и журнала: смена состояния, маркер, своё событие, конец.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MotionEvent {
+    pub t: f64,
+    /// `scene` или экземпляр (`Scoreboard#1`).
+    pub source: String,
+    pub kind: &'static str,
+    pub name: String,
+}
+
+impl MotionEvent {
+    pub fn label(&self) -> String {
+        format!("{}s {} {}:{}", num(self.t as f32), self.source, self.kind, self.name)
+    }
 }
 
 /// Анимационное состояние сцены. События обрабатываются строго по времени, поэтому
@@ -639,8 +660,12 @@ pub struct MotionState {
     seq: u64,
     scene: ScenePhase,
     initialized: bool,
+    /// Воспроизведения таймлайнов, по одному на экземпляр компонента.
+    runs: Vec<Run>,
     /// Журнал команд для дампа: `play@0`, `stop@2.5`.
     pub log: Vec<String>,
+    /// События по времени: состояния, маркеры, emit.
+    pub events_log: Vec<MotionEvent>,
     pub diagnostics: Diagnostics,
     /// Когда закончатся все `in`, начатые последним play: кадр «в эфире» по умолчанию.
     pub settled_at: Option<f64>,
@@ -723,6 +748,8 @@ pub struct Clock {
     pub frame: u64,
     pub scene: &'static str,
     pub log: Vec<String>,
+    /// События до момента кадра включительно.
+    pub events: Vec<String>,
 }
 
 /// Всё, что движение добавляет к кадру.
@@ -761,6 +788,8 @@ impl MotionState {
         let visible = effective_visibility(scene);
         let mut enter = Vec::new();
         let mut leave = Vec::new();
+        let with_timeline: Vec<String> =
+            scene.timelines.iter().filter_map(|v| v.get("timeline").and_then(Value::as_str)).map(String::from).collect();
         let ids: Vec<u32> = scene.nodes.keys().copied().collect();
         for id in ids {
             let node = scene.node(id);
@@ -769,7 +798,16 @@ impl MotionState {
             }
             let is_new = !self.nodes.contains_key(&id);
             if is_new {
-                let presence = node.props.get("presence").map(|p| self.compile_presence(scene, id, p));
+                let mut presence_raw = node.props.get("presence");
+                // Корнем компонента с таймлайном управляет таймлайн, а не presence.
+                if presence_raw.is_some()
+                    && let Some(inst) = node.instance()
+                    && with_timeline.iter().any(|c| c == component_of(inst))
+                {
+                    presence_raw = None;
+                    self.note(Level::Info, "motion.timeline", scene, id, "presence корня не исполняется: появлением и уходом управляет таймлайн".into());
+                }
+                let presence = presence_raw.map(|p| self.compile_presence(scene, id, p));
                 let mut st = NodeState { presence, ..NodeState::default() };
                 if let Some(p) = st.presence.clone() {
                     st.phase = Phase::Waiting;
@@ -824,7 +862,105 @@ impl MotionState {
         for id in leave {
             self.leave(id, t);
         }
+        if !self.initialized {
+            self.build_runs(scene);
+        }
         self.initialized = true;
+    }
+
+    fn build_runs(&mut self, scene: &Scene) {
+        let mut defs: Vec<TimelineDef> = Vec::new();
+        for v in &scene.timelines {
+            let mut c = Compiler { theme: &scene.theme, notes: Vec::new() };
+            let name = v.get("timeline").and_then(Value::as_str).unwrap_or("?").to_string();
+            match timeline::parse(v, &mut c) {
+                Ok(d) if defs.iter().any(|x| x.component == d.component) => {
+                    self.diagnostics.push(Level::Error, "timeline.duplicate", &name, None, "у компонента два таймлайна; используется первый", None);
+                }
+                Ok(d) => defs.push(d),
+                Err(errors) => {
+                    for e in errors {
+                        self.diagnostics.push(Level::Error, "timeline.invalid", &name, None, e, None);
+                    }
+                }
+            }
+            for (level, rule, msg) in c.notes {
+                self.diagnostics.push(level, rule, &name, None, msg, None);
+            }
+        }
+        for def in &defs {
+            let roots: Vec<(u32, String)> = scene
+                .nodes
+                .values()
+                .filter_map(|n| n.instance().filter(|i| component_of(i) == def.component).map(|i| (n.id, i.to_string())))
+                .collect();
+            if roots.is_empty() {
+                self.diagnostics.push(Level::Warn, "timeline.unused", &def.component, None, "в сцене нет экземпляров этого компонента", None);
+            }
+            for (root, inst) in roots {
+                let parts: BTreeMap<String, u32> = scene
+                    .nodes
+                    .values()
+                    .filter_map(|n| n.part().filter(|(i, _)| *i == inst).map(|(_, p)| (p.to_string(), n.id)))
+                    .collect();
+                for k in &def.keys {
+                    if !parts.contains_key(&k.part) {
+                        let msg = format!("ключ на {}s адресует часть {:?}, а в view нет узла с name={{part.{}}}", num(k.t as f32), k.part, k.part);
+                        self.note(Level::Error, "timeline.part", scene, root, msg);
+                    }
+                }
+                let nodes = &self.nodes;
+                let start = |id: u32, ch: Channel| match ch.identity() {
+                    Some(v) => V::N(v),
+                    None => nodes.get(&id).map_or(V::N(0.0), |st| st.abs_value(ch, 0.0)),
+                };
+                let run = Run::new(inst, root, def.clone(), &parts, start);
+                self.runs.push(run);
+            }
+        }
+    }
+
+    fn schedule_run(&mut self, i: usize) {
+        let run = &mut self.runs[i];
+        run.generation += 1;
+        let generation = run.generation;
+        if let Some((at, _)) = run.next_stop() {
+            self.schedule(at, Event::Timeline(i, generation));
+        }
+        self.drain(i);
+    }
+
+    /// Переносит события воспроизведения в общий журнал по времени.
+    fn drain(&mut self, i: usize) {
+        let events = std::mem::take(&mut self.runs[i].events);
+        let source = self.runs[i].inst.clone();
+        for e in events {
+            self.push_event(MotionEvent { t: e.t, source: source.clone(), kind: e.kind, name: e.name });
+        }
+    }
+
+    fn push_event(&mut self, e: MotionEvent) {
+        let pos = self.events_log.partition_point(|x| x.t <= e.t);
+        self.events_log.insert(pos, e);
+    }
+
+    fn scene_event(&mut self, t: f64, name: &str) {
+        self.push_event(MotionEvent { t, source: "scene".into(), kind: "state", name: name.into() });
+    }
+
+    /// Корни экземпляров компонента.
+    pub fn roots_of(scene: &Scene, component: &str) -> Vec<u32> {
+        scene.nodes.values().filter(|n| n.instance().is_some_and(|i| component_of(i) == component)).map(|n| n.id).collect()
+    }
+
+    fn subtree(scene: &Scene, root: u32) -> Vec<u32> {
+        let mut out = vec![root];
+        let mut i = 0;
+        while i < out.len() {
+            out.extend(scene.node(out[i]).children.iter().copied());
+            i += 1;
+        }
+        out
     }
 
     fn compile_presence(&mut self, scene: &Scene, id: u32, p: &Value) -> Presence {
@@ -938,43 +1074,146 @@ impl MotionState {
         }
     }
 
-    /// play: узлы с presence начинают `in` (или сразу `loop`).
-    pub fn play(&mut self, t: f64) {
-        if self.scene == ScenePhase::Playing {
-            self.log.push(format!("play@{} (уже идёт)", num(t as f32)));
+    fn run_play(&mut self, i: usize, t: f64) {
+        self.runs[i].play(t);
+        let settled = t + self.runs[i].def.settle_tau();
+        self.settled_at = Some(self.settled_at.map_or(settled, |s| s.max(settled)));
+        self.schedule_run(i);
+    }
+
+    fn runs_of(&self, roots: &[u32]) -> Vec<usize> {
+        (0..self.runs.len()).filter(|i| roots.contains(&self.runs[*i].root)).collect()
+    }
+
+    /// play: узлы с presence начинают `in` (или сразу `loop`), таймлайны — воспроизведение.
+    /// `roots` — только эти экземпляры; `None` — вся сцена.
+    pub fn play(&mut self, scene: &Scene, roots: Option<&[u32]>, t: f64) {
+        let Some(roots) = roots else {
+            if self.scene == ScenePhase::Playing {
+                self.push_event(MotionEvent { t, source: "scene".into(), kind: "ignored", name: "play: уже идёт".into() });
+                return;
+            }
+            self.scene = ScenePhase::Playing;
+            self.scene_event(t, "playing");
+            self.settled_at = Some(t);
+            let ids: Vec<u32> = self.nodes.iter().filter(|(_, s)| s.presence.is_some() && s.visible).map(|(id, _)| *id).collect();
+            for id in ids {
+                self.enter(id, t);
+            }
+            for i in 0..self.runs.len() {
+                self.run_play(i, t);
+            }
             return;
+        };
+        if matches!(self.scene, ScenePhase::Loaded | ScenePhase::Removed) {
+            self.scene = ScenePhase::Playing;
+            self.scene_event(t, "playing");
         }
-        self.scene = ScenePhase::Playing;
-        self.log.push(format!("play@{}", num(t as f32)));
-        self.settled_at = Some(t);
-        let ids: Vec<u32> = self.nodes.iter().filter(|(_, s)| s.presence.is_some() && s.visible).map(|(id, _)| *id).collect();
-        for id in ids {
-            self.enter(id, t);
+        self.settled_at.get_or_insert(t);
+        for &root in roots {
+            for id in Self::subtree(scene, root) {
+                let Some(st) = self.nodes.get_mut(&id) else { continue };
+                st.hide_at = None;
+                let fresh = matches!(st.phase, Phase::Waiting | Phase::Gone);
+                if fresh && st.visible {
+                    self.enter(id, t);
+                }
+            }
+        }
+        for i in self.runs_of(roots) {
+            self.run_play(i, t);
         }
     }
 
-    /// stop: узлы с `out` начинают его; сцена снимается, когда закончится последний.
-    /// Узлы без `out` (например, только с `loop`) остаются на экране до снятия сцены.
-    pub fn stop(&mut self, t: f64) {
-        self.log.push(format!("stop@{}", num(t as f32)));
-        if self.scene != ScenePhase::Playing {
+    /// stop: узлы с `out` начинают его, таймлайны прыгают на маркер `out`; сцена (или экземпляр)
+    /// снимается, когда закончится последний. Узлы без `out` остаются на экране до снятия.
+    pub fn stop(&mut self, scene: &Scene, roots: Option<&[u32]>, t: f64) {
+        let ids: Vec<u32> = match roots {
+            None => self.nodes.keys().copied().collect(),
+            Some(roots) => roots.iter().flat_map(|r| Self::subtree(scene, *r)).collect(),
+        };
+        if roots.is_none() && self.scene != ScenePhase::Playing {
             self.scene = ScenePhase::Removed;
+            self.scene_event(t, "removed");
             return;
         }
-        let ids: Vec<u32> = self
-            .nodes
-            .iter()
-            .filter(|(_, s)| {
-                s.presence.as_ref().is_some_and(|p| p.exit.is_some()) && s.visible && !matches!(s.phase, Phase::Gone | Phase::Out { .. })
+        let leaving: Vec<u32> = ids
+            .into_iter()
+            .filter(|id| {
+                self.nodes.get(id).is_some_and(|s| {
+                    s.presence.as_ref().is_some_and(|p| p.exit.is_some()) && s.visible && !matches!(s.phase, Phase::Gone | Phase::Out { .. })
+                })
             })
-            .map(|(id, _)| *id)
             .collect();
         let mut until = t;
-        for id in ids {
+        for id in leaving {
             until = until.max(self.leave(id, t));
         }
-        self.scene = ScenePhase::Stopping { until };
-        self.schedule(until, Event::Removed);
+        let runs = match roots {
+            None => (0..self.runs.len()).collect(),
+            Some(roots) => self.runs_of(roots),
+        };
+        for i in runs {
+            until = until.max(self.runs[i].stop(t));
+            self.schedule_run(i);
+        }
+        match roots {
+            None => {
+                self.scene = ScenePhase::Stopping { until };
+                self.scene_event(t, "stopping");
+                self.schedule(until, Event::Removed);
+            }
+            Some(roots) => {
+                // Экземпляр снимается целиком, когда закончился последний out в нём.
+                for root in roots {
+                    if let Some(st) = self.nodes.get_mut(root) {
+                        st.hide_at = Some(until);
+                    }
+                }
+                self.horizon = self.horizon.max(until);
+            }
+        }
+    }
+
+    /// next: снять остановку таймлайна (hold или цикл).
+    pub fn next(&mut self, roots: Option<&[u32]>, t: f64) {
+        let runs = match roots {
+            None => (0..self.runs.len()).collect(),
+            Some(roots) => self.runs_of(roots),
+        };
+        if runs.is_empty() {
+            self.push_event(MotionEvent { t, source: "scene".into(), kind: "ignored", name: "next: в сцене нет таймлайнов".into() });
+        }
+        for i in runs {
+            self.runs[i].next(t);
+            self.schedule_run(i);
+        }
+    }
+
+    /// Команда движения от команды компонента (`ctx.play('goal')`, `ctx.stop()`, `ctx.emit(...)`).
+    pub fn instance_cmd(&mut self, scene: &Scene, inst: &str, cmd: &str, marker: Option<&str>, name: Option<&str>, t: f64) -> Result<(), String> {
+        let root = scene.nodes.values().find(|n| n.instance() == Some(inst)).map(|n| n.id).ok_or_else(|| format!("экземпляр {inst} не найден"))?;
+        let roots = [root];
+        match (cmd, marker) {
+            ("play", Some(marker)) => {
+                let Some(i) = self.runs_of(&roots).first().copied() else {
+                    return Err(format!("ctx.play({marker:?}): у {inst} нет таймлайна; подключи его в defineScene({{ timelines }})"));
+                };
+                self.runs[i].segment(t, marker)?;
+                self.schedule_run(i);
+            }
+            ("play", None) => self.play(scene, Some(&roots), t),
+            ("stop", _) => self.stop(scene, Some(&roots), t),
+            ("next", _) => self.next(Some(&roots), t),
+            ("emit", _) => self.push_event(MotionEvent { t, source: inst.into(), kind: "emit", name: name.unwrap_or("?").into() }),
+            (other, _) => return Err(format!("неизвестная команда движения {other}")),
+        }
+        Ok(())
+    }
+
+    /// Ближайшее запланированное событие движения.
+    pub fn next_event_time(&self) -> Option<f64> {
+        self.events.first().map(|e| e.0)
     }
 
     /// Обрабатывает запланированные события до момента `t` включительно.
@@ -1006,9 +1245,22 @@ impl MotionState {
                 Event::Removed => {
                     if matches!(self.scene, ScenePhase::Stopping { until } if until == et) {
                         self.scene = ScenePhase::Removed;
+                        self.scene_event(et, "removed");
                     }
                 }
+                Event::Timeline(i, generation) => {
+                    if self.runs[i].generation == generation
+                        && let Some((_, stop)) = self.runs[i].next_stop() {
+                            self.runs[i].on_stop(et, stop);
+                            self.schedule_run(i);
+                        }
+                }
             }
+        }
+        // Маркеры и emit между остановками: их моменты известны точно, журнал дописывается до t.
+        for i in 0..self.runs.len() {
+            self.runs[i].flush(t);
+            self.drain(i);
         }
     }
 
@@ -1053,12 +1305,47 @@ impl MotionState {
                 Phase::Shown => {}
             }
             nv.show = match st.phase {
+                _ if st.hide_at.is_some_and(|h| t >= h) => Some(false),
                 Phase::Gone => Some(false),
                 Phase::Out { .. } if st.own_hidden => Some(true),
                 _ => None,
             };
             if !nv.abs.is_empty() || !nv.motion.is_identity() || nv.show.is_some() || !nv.notes.is_empty() || !nv.channels.is_empty() {
                 out.nodes.insert(id, nv);
+            }
+        }
+        // Таймлайны поверх presence: сдвиги складываются, множители перемножаются.
+        for run in &self.runs {
+            for &(id, ch) in run.keys() {
+                let Some(v) = run.value((id, ch), t) else { continue };
+                let nv = out.nodes.entry(id).or_default();
+                let f = v.n() as f32;
+                match ch {
+                    Channel::X => nv.motion.dx += f,
+                    Channel::Y => nv.motion.dy += f,
+                    Channel::Scale => nv.motion.scale *= f,
+                    Channel::Rotate => nv.motion.rotate += f,
+                    Channel::Opacity => nv.motion.opacity *= f,
+                    Channel::Reveal => nv.motion.reveal *= f,
+                    _ => {
+                        nv.abs.insert(ch, v);
+                    }
+                }
+                if let Some((tr, local)) = run.track((id, ch), t) {
+                    nv.channels.push(ChannelInfo {
+                        channel: ch.name(),
+                        layer: "timeline",
+                        source: run.state,
+                        value: v.show(),
+                        easing: tr.easing_label(local),
+                        progress: progress(tr, local),
+                    });
+                }
+            }
+            let root = out.nodes.entry(run.root).or_default();
+            root.notes.insert(0, run.describe(t));
+            if run.removed() {
+                root.show = Some(false);
             }
         }
         out
@@ -1089,6 +1376,11 @@ fn fade_colors(from: V, to: V) -> (V, V) {
         (V::C(f), V::C(t)) if t[3] == 0.0 => (from, V::C([f[0], f[1], f[2], 0.0])),
         _ => (from, to),
     }
+}
+
+/// Имя компонента по имени экземпляра: `Scoreboard#1` → `Scoreboard`.
+pub fn component_of(inst: &str) -> &str {
+    inst.split('#').next().unwrap_or(inst)
 }
 
 /// Узел виден, если ни он, ни его предки не скрыты (`when`).

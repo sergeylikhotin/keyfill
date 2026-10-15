@@ -16,7 +16,10 @@ export type Cmd =
       systemFonts?: boolean;
     }
   | { op: 'diag'; level: 'info' | 'warn' | 'error'; rule: string; node: string; source?: string; message: string; hint?: string }
-  | { op: 'cues'; items: { t: number; cmd: string; target?: string; props?: Record<string, unknown> }[] };
+  | { op: 'cues'; items: { t: number; cmd: string; target?: string; props?: Record<string, unknown>; command?: string }[] }
+  | { op: 'timelines'; items: readonly unknown[] }
+  /** play / next / stop / emit от команды компонента; ядро исполнит в момент команды сценария. */
+  | { op: 'motion'; inst: string; cmd: string; marker?: string; name?: string; data?: unknown };
 
 declare const __kine_emit: (json: string) => void;
 

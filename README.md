@@ -29,12 +29,12 @@ cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-t
 
 `<entry>` — сцена (`defineScene`) или сценарий `*.cues.ts` (`cues(scene, ({ at }) => [...])`). Без сценария сцена получает `play` в момент 0.
 
-Время — одна грамматика для `--t` и `--cue`: `1.2` (секунды), `60f` (кадры), `settled` (кадр «в эфире», когда закончились все `in`; по умолчанию), `settled+0.5`, диапазон `0..2` для `filmstrip`. `--cue "0 play; 125f stop"` — команды в короткой форме.
+Время — одна грамматика для `--t` и `--cue`: `1.2` (секунды), `60f` (кадры), `settled` (кадр «в эфире», когда закончились все `in`; по умолчанию), `settled+0.5`, маркеры таймлайна `goalHome+0.1`, диапазон `0..2` или `ready..out` для `filmstrip`. `--cue "0 play; 1.2 next; 125f stop Scoreboard"` — команды в короткой форме: play, stop, next, с компонентом — только его экземпляры; `update` и `invoke` с параметрами — в `*.cues.ts`.
 
 Коды выхода: 0 успех, 1 ошибки в диагностиках, 2 неверный вызов, 3 сборка, 4 исключение JS, 5 сбой kine.
 
 ```bash
-cargo run -q -p kine-cli -- filmstrip examples/lower-third/scene.cues.ts --n 12 -o out/lower-third.strip.png
+cargo run -q -p kine-cli -- filmstrip examples/scoreboard/scene.cues.ts --n 16 -o out/scoreboard.strip.png
 ```
 
 Общие флаги: `--mode dev|air` (dev — нарушение `must` это ошибка, air — применяются шаги `else`), `--bg #RRGGBB` (подложка: рисуется и учитывается в контрасте), `--seed N`, `--now MS`.
@@ -61,6 +61,6 @@ npm run typecheck
 | `crates/kine-render` | CPU-бэкенд: исполняет display list через vello_cpu, PNG |
 | `crates/kine-cli` | Сессия (JS-хост, сценарий, часы), раскадровка и команды `kine` |
 | `spec` | Типы публичного API и контракт-тест для tsc |
-| `examples/lower-third` | Плашка: компонент, presence, transition, таймлайн, тема, сцена, сценарий `scene.cues.ts`, золотые дампы |
-| `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, бейдж с presence, сценарий, сцена с переполнением |
+| `examples/lower-third` | Плашка: компонент, presence, transition, тема, сцена, сценарий `scene.cues.ts`, золотые дампы |
+| `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, таймлайн с hold, циклом и сегментами, команда `goal`, эфирный сценарий, сцена с переполнением |
 | `assets/fonts` | Шрифты для примеров и тестов (Inter, OFL) |

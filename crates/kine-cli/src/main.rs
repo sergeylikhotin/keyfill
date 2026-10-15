@@ -25,7 +25,8 @@ kine — рендер TSX-сцен без браузера
 Время (одна грамматика для --t и --cue):
   1.2  60f         секунды или кадры
   settled          кадр «в эфире»: закончились все in первого play (по умолчанию)
-  settled+0.5      смещение; маркеры таймлайна (out+0.2) — с M2b
+  settled+0.5      смещение
+  out  out+0.2     маркер таймлайна: момент, когда воспроизведение впервые его проходит
   0..4             диапазон, для filmstrip; по умолчанию от 0 до конца сценария
   --cue \"0 play; 125f stop\"   команды сценария в короткой форме (дополняют *.cues.ts)
 
@@ -175,10 +176,13 @@ fn run() -> Result<ExitCode> {
         return filmstrip_cmd(&args, &call, session, &source);
     }
 
-    let t = match &call.time {
-        Some(TimeSpec::Moment(m)) => time::resolve(m, &mut session).context(Failure::Usage)?,
-        _ => session.settled_time()?,
+    // Момент разрешается на пробной сессии: settled и маркеры продвигают её время вперёд.
+    let moment = match &call.time {
+        Some(TimeSpec::Moment(m)) => m.clone(),
+        _ => Moment::Settled(Offset::Seconds(0.0)),
     };
+    let t = time::resolve(&moment, &mut session).context(Failure::Usage)?;
+    let mut session = Session::open(&source, &call.opts, &call.extra)?;
     let frame = session.frame_at(t, call.eval)?;
     for log in &session.logs {
         eprintln!("js {}: {}", log.level, log.message);

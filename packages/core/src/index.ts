@@ -88,7 +88,8 @@ export const pulse: typeof S.pulse = (o) => motion({ motion: 'pulse', ...o }, o.
 
 export const timeline: typeof S.timeline = (target, build) => {
   const at = (t: number, part: string, targets: S.AnimTargets, easing?: S.Easing) => brand<never>({ t, part, targets, easing });
-  return brand({ timeline: (target as unknown as { kineName: string }).kineName, ...build({ at }) });
+  const emit = (t: number, name: string) => brand<S.TimelineEmit>({ t, name });
+  return brand({ timeline: (target as unknown as { kineName: string }).kineName, ...build({ at, emit }) });
 };
 
 // ─── Тема ───────────────────────────────────────────────────────────────────
@@ -228,9 +229,18 @@ export const prop: typeof S.prop = () => brand({ $prop: true });
 
 const counters = new Map<string, number>();
 
-/** Экземпляры компонентов: команда сценария `update` меняет их пропсы. */
-type Instance = { component: string; name: string; set(key: string, value: unknown): void; src?: string };
+/** Экземпляры компонентов: команды сценария `update` и `invoke` адресуют их по имени компонента. */
+type Instance = {
+  component: string;
+  name: string;
+  src?: string;
+  set(key: string, value: unknown): void;
+  invoke(command: string, params: Record<string, unknown>): void;
+};
 const instances: Instance[] = [];
+
+/** Команда движения экземпляру: ядро исполнит её в тот же момент, что и команду сценария. */
+const motionCmd = (inst: string, cmd: string, extra: Record<string, unknown> = {}) => host.emit({ op: 'motion', inst, cmd, ...extra });
 
 export const component: typeof S.component = (def) => {
   if (typeof def.name !== 'string') throw new KineError('component(): нужно поле name');
@@ -252,13 +262,34 @@ export const component: typeof S.component = (def) => {
         return typeof v === 'function' ? (v as Accessor<unknown>)() : v;
       };
     }
+    const set = (key: string, value: unknown) => {
+      if (!(key in slots)) throw new KineError(`update: у ${def.name} нет пропса "${key}"`, p.__src);
+      slots[key].set({ v: value });
+    };
+    const commands = (def.commands ?? {}) as Record<string, { params: Props; run: (params: Props, ctx: unknown) => void }>;
+    const ctx = {
+      props: accessors,
+      set: (patch: Props) => batch(() => Object.entries(patch).forEach(([k, v]) => set(k, v))),
+      play: (marker?: string) => motionCmd(inst, 'play', marker === undefined ? {} : { marker }),
+      next: () => motionCmd(inst, 'next'),
+      stop: () => motionCmd(inst, 'stop'),
+      emit: (name: string, data?: unknown) => motionCmd(inst, 'emit', { name, data }),
+    };
     instances.push({
       component: def.name,
       name: inst,
       src: p.__src,
-      set(key, value) {
-        if (!(key in slots)) throw new KineError(`update: у ${def.name} нет пропса "${key}"`, p.__src);
-        slots[key].set({ v: value });
+      set,
+      invoke(command, params) {
+        const c = commands[command];
+        if (!c) {
+          const known = Object.keys(commands).join(', ') || 'нет ни одной';
+          throw new KineError(`invoke: у ${def.name} нет команды "${command}"; команды: ${known}`, p.__src);
+        }
+        for (const k of Object.keys(c.params ?? {})) {
+          if (!(k in (params ?? {}))) throw new KineError(`invoke ${def.name}.${command}: не передан параметр "${k}"`, p.__src);
+        }
+        batch(() => c.run(params ?? {}, ctx));
       },
     });
     const parts: Props = {};
@@ -290,25 +321,40 @@ export const component: typeof S.component = (def) => {
 
 export const defineScene: typeof S.defineScene = (def) => def;
 
-type CueItem = { t: number; cmd: string; target?: string; props?: Record<string, unknown> };
+type CueItem = { t: number; cmd: string; target?: string; props?: Record<string, unknown>; command?: string };
 
 export const cues: typeof S.cues = (scene, build) => {
-  const at = (t: number, cmd: string, target?: { kineName: string }, props?: Record<string, unknown>): CueItem => {
+  const at = (t: number, cmd: string, target?: { kineName: string }, a?: unknown, b?: unknown): CueItem => {
     if (typeof t !== 'number' || !(t >= 0)) throw new KineError(`cues: время должно быть числом ≥ 0, получено ${t}`);
-    if (cmd === 'update' && !target?.kineName) throw new KineError('cues: update требует компонент: at(t, "update", LowerThird, { ... })');
-    return { t, cmd, target: target?.kineName, props };
+    if ((cmd === 'update' || cmd === 'invoke') && !target?.kineName) {
+      throw new KineError(`cues: ${cmd} требует компонент: at(t, "${cmd}", Component, ...)`);
+    }
+    if (cmd === 'invoke') return { t, cmd, target: target!.kineName, command: a as string, props: b as Record<string, unknown> };
+    return { t, cmd, target: target?.kineName, props: a as Record<string, unknown> | undefined };
   };
   return brand({ $cues: true, scene, items: build(brand({ at })) });
+};
+
+const instancesOf = (target: string, what: string) => {
+  const found = instances.filter((i) => i.component === target);
+  if (!found.length) throw new KineError(`${what}: в сцене нет экземпляров ${target}`);
+  return found;
 };
 
 /** Команда `update` из ядра: новые значения пропсов всех экземпляров компонента. */
 (globalThis as any).__kine_update = (json: string) => {
   const { target, props } = JSON.parse(json) as { target: string; props: Record<string, unknown> };
-  const found = instances.filter((i) => i.component === target);
-  if (!found.length) throw new KineError(`update: в сцене нет экземпляров ${target}`);
+  const found = instancesOf(target, 'update');
   batch(() => {
     for (const i of found) for (const [k, v] of Object.entries(props ?? {})) i.set(k, v);
   });
+  host.flush();
+};
+
+/** Команда `invoke` из ядра: команда компонента на всех его экземплярах. */
+(globalThis as any).__kine_invoke = (json: string) => {
+  const { target, command, params } = JSON.parse(json) as { target: string; command: string; params: Record<string, unknown> };
+  for (const i of instancesOf(target, 'invoke')) i.invoke(command, params);
   host.flush();
 };
 
@@ -338,6 +384,7 @@ export function mount(entry: Props) {
   );
   if (!isElement(root)) throw new KineError('scene.root должен вернуть элемент');
   host.insert(stage, root.id);
+  if (scene.timelines?.length) host.emit({ op: 'timelines', items: scene.timelines });
   if (entry.$cues) host.emit({ op: 'cues', items: entry.items });
   host.flush();
 }

@@ -49,6 +49,21 @@ pub enum Cmd {
     Diag(Diagnostic),
     /// Сценарий команд из `*.cues.ts`.
     Cues { items: Vec<Cue> },
+    /// Таймлайны из `defineScene({ timelines })`.
+    Timelines { items: Vec<Value> },
+    /// play / next / stop / emit от команды компонента.
+    Motion(MotionCmd),
+}
+
+/// Команда движения, которую отправила команда компонента; ядро исполняет её в момент команды сценария.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MotionCmd {
+    pub inst: String,
+    pub cmd: String,
+    #[serde(default)]
+    pub marker: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Команда сценария: `play`, `stop`, `update` (новые пропсы экземпляров компонента).
@@ -60,14 +75,18 @@ pub struct Cue {
     pub target: Option<String>,
     #[serde(default)]
     pub props: Option<Value>,
+    /// Имя команды компонента у `invoke`.
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 impl Cue {
     pub fn label(&self) -> String {
         let t = crate::look::num(self.t as f32);
-        match &self.target {
-            Some(target) => format!("{}@{t} {target}", self.cmd),
-            None => format!("{}@{t}", self.cmd),
+        match (&self.target, &self.command) {
+            (Some(target), Some(command)) => format!("{}@{t} {target}.{command}", self.cmd),
+            (Some(target), None) => format!("{}@{t} {target}", self.cmd),
+            _ => format!("{}@{t}", self.cmd),
         }
     }
 }
@@ -169,6 +188,9 @@ pub struct Scene {
     pub theme: BTreeMap<String, Value>,
     pub js_diagnostics: Vec<Diagnostic>,
     pub cues: Vec<Cue>,
+    pub timelines: Vec<Value>,
+    /// Команды движения от JS, ещё не исполненные: их забирает сессия после каждого пакета.
+    pub motion_cmds: Vec<MotionCmd>,
 }
 
 impl Scene {
@@ -212,6 +234,8 @@ impl Scene {
             }
             Cmd::Diag(d) => self.js_diagnostics.push(d),
             Cmd::Cues { items } => self.cues.extend(items),
+            Cmd::Timelines { items } => self.timelines.extend(items),
+            Cmd::Motion(m) => self.motion_cmds.push(m),
             Cmd::Theme { values } => {
                 self.theme.extend(values);
             }
