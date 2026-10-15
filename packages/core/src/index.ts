@@ -304,7 +304,7 @@ export function mount(scene: Props) {
 }
 
 const notYet = (name: string) => (): never => {
-  throw new KineError(`source.${name} появится в M3`);
+  throw new KineError(`source.${name} появится в M5`);
 };
 
 export const source: typeof S.source = { json: notYet('json'), ws: notYet('ws'), osc: notYet('osc') };
