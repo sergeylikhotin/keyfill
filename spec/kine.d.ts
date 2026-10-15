@@ -229,6 +229,37 @@ declare module '@kine/core' {
   export function delay(seconds: number, m: Motion): Motion;
   /** Бесконечный цикл, обычно для presence.loop. */
   export function pulse(o: { period: number; opacity?: readonly [number, number]; scale?: readonly [number, number] }): Motion;
+  /**
+   * Каскад: движение применяется к каждому видимому ребёнку узла со сдвигом i·step
+   * (`reverse` — начиная с последнего). Пишется в presence контейнера: `in: stagger(0.06, fade([0, 1]))`.
+   */
+  export function stagger(step: number, m: Motion, o?: { reverse?: boolean }): Motion;
+
+  // ─── Числа и часы, которые ведёт ядро ─────────────────────────────────────
+
+  const dynamicBrand: unique symbol;
+  /** Кусок текста, значение которого считает ядро на каждом кадре, без вызова JS. */
+  export type Dynamic = { readonly [dynamicBrand]: true };
+
+  /**
+   * Анимированное число в `<Text>`: при смене значения ядро ведёт его к новому через `easing`.
+   * `format`: `'0'` — целое, `'0.0'` — один знак после точки, `'00'` — минимум две цифры.
+   */
+  export function count(value: Reactive<number>, o?: { easing?: Easing; format?: string }): Dynamic;
+
+  /**
+   * Часы и таймеры в `<Text>`: значение в секундах идёт само со скоростью `rate`, пока `running`.
+   * Смена `from` сбрасывает часы; пауза и пуск продолжают с текущего значения.
+   * `format`: `'mm:ss'`, `'m:ss'`, `'h:mm:ss'`, `'ss.0'`. `min`/`max` — где часы стоят (обратный отсчёт: rate -1, min 0).
+   */
+  export function clock(o: {
+    from: Reactive<number>;
+    rate?: number;
+    running?: Reactive<boolean>;
+    format?: string;
+    min?: number;
+    max?: number;
+  }): Dynamic;
 
   export interface Presence {
     readonly in?: Motion | readonly Motion[];
@@ -360,7 +391,7 @@ declare module '@kine/core' {
   // ─── Примитивы ────────────────────────────────────────────────────────────
 
   export type KineElement = { readonly __kine: 'element' };
-  export type Child = KineElement | string | number | Accessor<string | number> | false | null | undefined | readonly Child[];
+  export type Child = KineElement | string | number | Accessor<string | number> | Dynamic | false | null | undefined | readonly Child[];
 
   /** То, как узел размещается в родителе. Есть у примитивов и у компонентов. */
   export interface NodePlacement {

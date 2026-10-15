@@ -17,6 +17,16 @@ cargo build
 cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-third.png --bg "#2b3340" --dump
 ```
 
+Видео и просмотрщик (рендер видео лучше собирать в release):
+
+```bash
+cargo run -q --release -p kine-cli -- video examples/scoreboard/scene.cues.ts -o out/scoreboard.webm
+```
+
+```bash
+cargo run -q --release -p kine-cli -- view examples/scoreboard/scene.cues.ts
+```
+
 ## Команды
 
 | Команда | Что делает |
@@ -26,6 +36,8 @@ cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx -o out/lower-t
 | `kine inspect <entry> <path>` | Один узел: значения, токены и слои, откуда они пришли, каналы движения, исходник |
 | `kine check <entry> [--json]` | Только диагностики; код выхода 1 при ошибках |
 | `kine filmstrip <entry> [--t a..b] [-o strip.png] [--n 8] [--cols 4] [--tile 480] [--dump]` | Раскадровка: n моментов диапазона одной картинкой, с `--dump` — дамп каждого |
+| `kine video <entry> [--t a..b] [-o out.mov] [--codec prores\|qtrle\|vp9\|h264\|png] [--scale N]` | Видео через ffmpeg: `.mov` — ProRes 4444 с альфой, `.webm` — VP9 с альфой, `.mp4` — H.264 на подложке, каталог — PNG; побайтно воспроизводимо |
+| `kine view [entry] [--dir out] [--port 4747]` | Веб-просмотрщик на localhost: галерея всех выводов с автообновлением и живая сцена с ползунком времени, дампом, событиями и inspect по клику |
 
 `<entry>` — сцена (`defineScene`) или сценарий `*.cues.ts` (`cues(scene, ({ at }) => [...])`). Без сценария сцена получает `play` в момент 0.
 

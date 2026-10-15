@@ -1,4 +1,4 @@
-import { Box, Span, Text, animate, component, fade, grid, spring, stack, tween } from '@kine/core';
+import { Box, Span, Text, animate, clock, component, count, fade, grid, spring, stack, tween } from '@kine/core';
 import { theme } from './theme';
 
 const team = { font: theme.font.ui, size: 34, weight: 600, color: theme.color.text } as const;
@@ -6,10 +6,20 @@ const score = { font: theme.font.ui, size: 40, weight: 600, color: theme.color.t
 
 export const Scoreboard = component({
   name: 'Scoreboard',
-  props: { home: String, away: String, homeScore: Number, awayScore: Number, period: String, live: Boolean },
+  props: {
+    home: String,
+    away: String,
+    homeScore: Number,
+    awayScore: Number,
+    period: String,
+    /** Время матча в секундах; идёт само, пока clockRunning. */
+    clockFrom: Number,
+    clockRunning: Boolean,
+    live: Boolean,
+  },
   parts: ['panel', 'home', 'away', 'homeScore', 'awayScore', 'status', 'badge'],
 
-  view: ({ home, away, homeScore, awayScore, period, live }, part) => (
+  view: ({ home, away, homeScore, awayScore, period, clockFrom, clockRunning, live }, part) => (
     <Box name={part.panel} anchor={{ to: 'titleSafe', at: 'top-left' }} layout={stack()} must={{ inside: 'titleSafe' }}>
       <Box
         layout={grid({ columns: [{ fr: 1 }, 72], gap: [16, 10] })}
@@ -25,7 +35,7 @@ export const Scoreboard = component({
         >
           {home}
         </Text>
-        <Text name={part.homeScore} look={score}>{() => String(homeScore())}</Text>
+        <Text name={part.homeScore} look={score}>{count(homeScore)}</Text>
         <Text
           name={part.away}
           look={team}
@@ -35,11 +45,13 @@ export const Scoreboard = component({
         >
           {away}
         </Text>
-        <Text name={part.awayScore} look={score}>{() => String(awayScore())}</Text>
+        <Text name={part.awayScore} look={score}>{count(awayScore)}</Text>
         <Text name={part.status} cell={{ colSpan: 2 }} look={{ font: theme.font.ui, size: 22, color: theme.color.muted }}>
           <Span look={{ color: theme.color.live, weight: 600 }}>● LIVE</Span>
           {' · '}
           {period}
+          {' · '}
+          {clock({ from: clockFrom, running: clockRunning, format: 'mm:ss' })}
         </Text>
         {/* Подчёркивание привязано к части status: второй проход раскладки ставит его под текст. */}
         <Box

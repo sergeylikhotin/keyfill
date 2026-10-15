@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::diag::{Diagnostics, Level};
+use crate::dynamic::Dyn;
 use crate::look::{self, Rgba, num};
 use crate::scene::{Kind, Scene};
 use crate::timeline::{self, Run, TimelineDef};
@@ -408,12 +409,23 @@ pub struct ProgSeg {
     pub pingpong: bool,
 }
 
-/// Скомпилированное движение (`animate`, `seq`, `par`, `delay`, `pulse`): сегменты по каналам.
+/// Скомпилированное движение (`animate`, `seq`, `par`, `delay`, `pulse`, `stagger`): сегменты по каналам.
 #[derive(Debug, Clone, Default)]
 pub struct Program {
     pub segs: Vec<ProgSeg>,
+    /// Длительность без каскада: сколько детей, станет известно только при запуске.
     pub duration: f64,
     pub infinite: bool,
+    /// `stagger`: движение для каждого ребёнка узла со сдвигом `i·step`.
+    pub per_child: Vec<StaggerPart>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaggerPart {
+    pub offset: f64,
+    pub step: f64,
+    pub reverse: bool,
+    pub program: Program,
 }
 
 impl Program {
@@ -421,8 +433,18 @@ impl Program {
         for s in &mut self.segs {
             s.offset += by;
         }
+        for p in &mut self.per_child {
+            p.offset += by;
+        }
         self.duration += by;
         self
+    }
+
+    fn merge(&mut self, other: Program) {
+        self.segs.extend(other.segs);
+        self.per_child.extend(other.per_child);
+        self.duration = self.duration.max(other.duration);
+        self.infinite |= other.infinite;
     }
 }
 
@@ -465,7 +487,7 @@ impl Compiler<'_> {
                     };
                     segs.push(ProgSeg { channel, offset: 0.0, from, to, easing, pingpong: false });
                 }
-                Ok(Program { segs, duration: easing.duration(0.0), infinite: false })
+                Ok(Program { segs, duration: easing.duration(0.0), ..Program::default() })
             }
             Some("seq") => {
                 let items = v.get("items").and_then(Value::as_array).ok_or("seq без items")?;
@@ -477,6 +499,7 @@ impl Compiler<'_> {
                     }
                     let p = self.compile(item)?.shifted(out.duration);
                     out.segs.extend(p.segs);
+                    out.per_child.extend(p.per_child);
                     out.duration = p.duration;
                     out.infinite = p.infinite;
                 }
@@ -486,6 +509,15 @@ impl Compiler<'_> {
             Some("delay") => {
                 let s = v.get("seconds").and_then(Value::as_f64).filter(|s| *s >= 0.0).ok_or("delay: ожидается seconds ≥ 0")?;
                 Ok(self.compile(v.get("item").ok_or("delay без движения")?)?.shifted(s))
+            }
+            Some("stagger") => {
+                let step = v.get("step").and_then(Value::as_f64).filter(|s| *s >= 0.0).ok_or("stagger: ожидается step ≥ 0")?;
+                let program = self.compile(v.get("item").ok_or("stagger без движения")?)?;
+                if !program.per_child.is_empty() {
+                    return Err("stagger внутри stagger не поддерживается".into());
+                }
+                let reverse = v.get("reverse").and_then(Value::as_bool).unwrap_or(false);
+                Ok(Program { per_child: vec![StaggerPart { offset: 0.0, step, reverse, program }], ..Program::default() })
             }
             Some("pulse") => {
                 let period = v.get("period").and_then(Value::as_f64).filter(|p| *p > 0.0).ok_or("pulse: ожидается period > 0")?;
@@ -497,7 +529,7 @@ impl Compiler<'_> {
                         segs.push(ProgSeg { channel, offset: 0.0, from: Some(from), to, easing, pingpong: true });
                     }
                 }
-                Ok(Program { segs, duration: period, infinite: true })
+                Ok(Program { segs, duration: period, infinite: true, ..Program::default() })
             }
             _ => Err(format!("не движение: {v}")),
         }
@@ -506,10 +538,7 @@ impl Compiler<'_> {
     fn par(&mut self, items: &[Value]) -> Result<Program, String> {
         let mut out = Program::default();
         for item in items {
-            let p = self.compile(item)?;
-            out.segs.extend(p.segs);
-            out.duration = out.duration.max(p.duration);
-            out.infinite |= p.infinite;
+            out.merge(self.compile(item)?);
         }
         Ok(out)
     }
@@ -548,6 +577,8 @@ struct NodeState {
     targets: BTreeMap<Channel, V>,
     visible: bool,
     own_hidden: bool,
+    /// Дети в порядке сцены: для каскада `stagger`.
+    children: Vec<u32>,
     /// Экземпляр снят адресным stop: с этого момента не рисуется.
     hide_at: Option<f64>,
 }
@@ -662,6 +693,8 @@ pub struct MotionState {
     initialized: bool,
     /// Воспроизведения таймлайнов, по одному на экземпляр компонента.
     runs: Vec<Run>,
+    /// `count()` и `clock()`: (узел Text, номер куска) → состояние.
+    dyns: BTreeMap<(u32, usize), Dyn>,
     /// Журнал команд для дампа: `play@0`, `stop@2.5`.
     pub log: Vec<String>,
     /// События по времени: состояния, маркеры, emit.
@@ -685,6 +718,8 @@ pub struct NodeValues {
     pub notes: Vec<String>,
     /// Подробности по каналам для inspect.
     pub channels: Vec<ChannelInfo>,
+    /// Текст кусков `count()` и `clock()` по номеру куска.
+    pub texts: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -808,15 +843,17 @@ impl MotionState {
                     self.note(Level::Info, "motion.timeline", scene, id, "presence корня не исполняется: появлением и уходом управляет таймлайн".into());
                 }
                 let presence = presence_raw.map(|p| self.compile_presence(scene, id, p));
-                let mut st = NodeState { presence, ..NodeState::default() };
-                if let Some(p) = st.presence.clone() {
+                let mut st = NodeState { presence, children: node.children.clone(), ..NodeState::default() };
+                let enter = st.presence.as_ref().map(|p| p.enter.clone());
+                if enter.is_some() {
                     st.phase = Phase::Waiting;
-                    // Пока не было play, узел стоит в первом кадре своего in.
-                    if let Some(enter) = &p.enter {
-                        st.start(enter, f64::INFINITY, "in", false);
-                    }
                 }
+                st.visible = visible.get(&id).copied().unwrap_or(false);
                 self.nodes.insert(id, st);
+                // Пока не было play, узел (и каскад его детей) стоит в первом кадре своего in.
+                if let Some(Some(enter)) = enter {
+                    self.run_program(id, &enter, f64::INFINITY, "in", false);
+                }
             }
 
             let (targets, transitions) = self.targets_of(scene, id);
@@ -855,6 +892,16 @@ impl MotionState {
             }
             st.visible = vis;
             st.own_hidden = hidden;
+
+            for (i, run) in node.runs.iter().enumerate() {
+                let Some(desc) = &run.dynamic else { continue };
+                match Dyn::update(self.dyns.get(&(id, i)), desc, t) {
+                    Ok(d) => {
+                        self.dyns.insert((id, i), d);
+                    }
+                    Err(e) => self.note(Level::Error, "text.dynamic", scene, id, e),
+                }
+            }
         }
         for id in enter {
             self.enter(id, t);
@@ -1031,6 +1078,28 @@ impl MotionState {
         (targets, transitions)
     }
 
+    /// Запускает программу на узле и её каскад (`stagger`) на детях; возвращает момент окончания.
+    fn run_program(&mut self, id: u32, prog: &Program, t: f64, source: &'static str, continuing: bool) -> f64 {
+        let st = self.nodes.get_mut(&id).expect("node state");
+        st.start(prog, t, source, continuing);
+        let children = st.children.clone();
+        let mut end = if prog.infinite { f64::INFINITY } else { t + prog.duration };
+        for part in &prog.per_child {
+            let mut kids: Vec<u32> = children.iter().copied().filter(|c| self.nodes.get(c).is_some_and(|s| s.visible)).collect();
+            if part.reverse {
+                kids.reverse();
+            }
+            for (i, c) in kids.into_iter().enumerate() {
+                let shifted = part.program.clone().shifted(part.offset + part.step * i as f64);
+                end = end.max(if shifted.infinite { f64::INFINITY } else { t + shifted.duration });
+                let kid = self.nodes.get_mut(&c).expect("node state");
+                let on_screen = continuing && !matches!(kid.phase, Phase::Waiting | Phase::Gone);
+                kid.start(&shifted, t, source, on_screen);
+            }
+        }
+        end
+    }
+
     fn enter(&mut self, id: u32, t: f64) {
         let st = self.nodes.get_mut(&id).expect("node state");
         let Some(p) = st.presence.clone() else {
@@ -1039,18 +1108,16 @@ impl MotionState {
         };
         let continuing = !matches!(st.phase, Phase::Waiting | Phase::Gone);
         if let Some(enter) = &p.enter {
-            st.start(enter, t, "in", continuing);
-            if enter.infinite {
-                st.phase = Phase::In { start: t, end: f64::INFINITY };
-                return;
-            }
-            let end = t + enter.duration;
+            let end = self.run_program(id, enter, t, "in", continuing);
+            let st = self.nodes.get_mut(&id).expect("node state");
             st.phase = Phase::In { start: t, end };
-            self.settled_at = Some(self.settled_at.map_or(end, |s| s.max(end)));
-            self.schedule(end, Event::InEnd(id));
+            if end.is_finite() {
+                self.settled_at = Some(self.settled_at.map_or(end, |s| s.max(end)));
+                self.schedule(end, Event::InEnd(id));
+            }
         } else if let Some(repeat) = &p.repeat {
-            st.start(repeat, t, "loop", continuing);
-            st.phase = Phase::Loop;
+            self.run_program(id, repeat, t, "loop", continuing);
+            self.nodes.get_mut(&id).expect("node state").phase = Phase::Loop;
         } else {
             st.phase = Phase::Shown;
         }
@@ -1061,9 +1128,9 @@ impl MotionState {
         let st = self.nodes.get_mut(&id).expect("node state");
         match st.presence.as_ref().and_then(|p| p.exit.clone()) {
             Some(exit) => {
-                st.start(&exit, t, "out", true);
-                let end = t + exit.duration;
-                st.phase = Phase::Out { start: t, end };
+                let end = self.run_program(id, &exit, t, "out", true);
+                let end = if end.is_finite() { end } else { t + exit.duration };
+                self.nodes.get_mut(&id).expect("node state").phase = Phase::Out { start: t, end };
                 self.schedule(end, Event::OutEnd(id));
                 end
             }
@@ -1229,8 +1296,8 @@ impl MotionState {
                     if matches!(st.phase, Phase::In { end, .. } if end == et) {
                         match st.presence.as_ref().and_then(|p| p.repeat.clone()) {
                             Some(repeat) => {
-                                st.start(&repeat, et, "loop", true);
-                                st.phase = Phase::Loop;
+                                self.run_program(id, &repeat, et, "loop", true);
+                                self.nodes.get_mut(&id).expect("node state").phase = Phase::Loop;
                             }
                             None => st.phase = Phase::Shown,
                         }
@@ -1313,6 +1380,14 @@ impl MotionState {
             if !nv.abs.is_empty() || !nv.motion.is_identity() || nv.show.is_some() || !nv.notes.is_empty() || !nv.channels.is_empty() {
                 out.nodes.insert(id, nv);
             }
+        }
+        for (&(id, i), d) in &self.dyns {
+            let nv = out.nodes.entry(id).or_default();
+            nv.texts.insert(i, d.text(t));
+            if let Dyn::Count { .. } = d
+                && d.running(t) {
+                    nv.notes.push("count".into());
+                }
         }
         // Таймлайны поверх presence: сдвиги складываются, множители перемножаются.
         for run in &self.runs {

@@ -97,6 +97,9 @@ pub struct Run {
     pub text: String,
     #[serde(default)]
     pub look: Option<Value>,
+    /// `count()` или `clock()`: текст куска считает ядро на каждом кадре.
+    #[serde(default)]
+    pub dynamic: Option<Value>,
     #[serde(default)]
     pub src: Option<String>,
 }

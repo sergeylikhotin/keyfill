@@ -16,7 +16,9 @@ export default defineScene({
       away="Футбольный клуб Торпедо имени Эдуарда Стрельцова"
       homeScore={0}
       awayScore={0}
-      period="1-й тайм, 12′"
+      period="1-й тайм"
+      clockFrom={12 * 60}
+      clockRunning={false}
       live={signal(false)}
     />
   ),

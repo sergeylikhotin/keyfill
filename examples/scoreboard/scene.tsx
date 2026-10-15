@@ -18,7 +18,9 @@ export default defineScene({
       away="Крылья Советов Самара"
       homeScore={2}
       awayScore={1}
-      period="2-й тайм, 67′"
+      period="2-й тайм"
+      clockFrom={67 * 60 + 12}
+      clockRunning={true}
       live={live}
     />
   ),

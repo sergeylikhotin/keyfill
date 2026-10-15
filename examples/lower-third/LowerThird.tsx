@@ -1,4 +1,4 @@
-import { Box, Text, component, fade, on, prop, pulse, row, column, slide, spring, tween } from '@kine/core';
+import { Box, Text, component, fade, on, par, prop, pulse, row, column, slide, spring, stagger, tween } from '@kine/core';
 import { theme } from './theme';
 
 export const LowerThird = component({
@@ -24,7 +24,8 @@ export const LowerThird = component({
         look={{ background: theme.color.accent, radius: 8 }}
         presence={{ loop: pulse({ period: 1.2, opacity: [1, 0.4] }), out: fade([1, 0], tween(0.2)) }}
       />
-      <Box layout={column({ gap: 4 })}>
+      {/* Имя и должность появляются по очереди: каскад на детях колонки. */}
+      <Box layout={column({ gap: 4 })} presence={{ in: stagger(0.08, par(fade([0, 1], tween(0.25)), slide({ y: [10, 0] }, tween(0.3, 'out')))) }}>
         <Text
           name={part.title}
           look={{ font: theme.font.display, size: 56, weight: 600, color: theme.color.text }}

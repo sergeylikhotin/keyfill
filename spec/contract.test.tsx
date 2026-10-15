@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, component, cues, defineScene, hex, timeline, tween } from '@kine/core';
+import { Box, Text, clock, component, count, cues, defineScene, hex, stagger, timeline, tween } from '@kine/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
@@ -107,3 +107,11 @@ component({
 });
 
 export { Card };
+
+// Числа и часы ведёт ядро: count принимает только число, clock — секунды.
+// @ts-expect-error count — для чисел, строку анимировать нечем
+count('3');
+// @ts-expect-error from у часов — секунды числом
+clock({ from: '67:12' });
+// @ts-expect-error stagger каскадирует движение, а не изинг
+stagger(0.05, tween(0.2));

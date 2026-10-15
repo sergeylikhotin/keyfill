@@ -3,6 +3,7 @@
 
 pub mod diag;
 pub mod display;
+pub mod dynamic;
 pub mod dump;
 pub mod layout;
 pub mod look;

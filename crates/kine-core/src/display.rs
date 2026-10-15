@@ -238,6 +238,59 @@ impl DisplayList {
     }
 }
 
+/// Рамка узла на экране: прямоугольник раскладки после всех трансформаций (look, presence,
+/// таймлайн), как его рисует display list. Для подсветки и попадания курсором.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NodeBox {
+    pub id: u32,
+    /// Габариты после трансформации (для поворота — описанный прямоугольник).
+    pub rect: Rect,
+    /// Глубина в дереве: чем больше, тем ближе к зрителю при равном порядке.
+    pub depth: u32,
+    /// Итоговая прозрачность с учётом предков.
+    pub opacity: f32,
+}
+
+impl Affine {
+    fn apply(&self, x: f32, y: f32) -> (f32, f32) {
+        let [a, b, c, d, e, f] = self.0;
+        let (x, y) = (x as f64, y as f64);
+        ((a * x + c * y + e) as f32, (b * x + d * y + f) as f32)
+    }
+}
+
+/// Рамки всех узлов кадра в порядке отрисовки (последний — сверху).
+pub fn node_boxes(frame: &Frame) -> Vec<NodeBox> {
+    fn walk(node: &FrameNode, parent: Affine, alpha: f32, depth: u32, out: &mut Vec<NodeBox>) {
+        let v = &node.visual;
+        let r = node.rect;
+        let motion = node.anim.as_ref().map(|a| a.motion).unwrap_or_default();
+        let tr = parent * node_transform(v, &motion, r);
+        let opacity = alpha * (v.opacity * motion.opacity).clamp(0.0, 1.0);
+        let corners = [(r.x, r.y), (r.x + r.w, r.y), (r.x, r.y + r.h), (r.x + r.w, r.y + r.h)].map(|(x, y)| tr.apply(x, y));
+        let (x0, y0) = corners.iter().fold((f32::MAX, f32::MAX), |(a, b), (x, y)| (a.min(*x), b.min(*y)));
+        let (x1, y1) = corners.iter().fold((f32::MIN, f32::MIN), |(a, b), (x, y)| (a.max(*x), b.max(*y)));
+        out.push(NodeBox { id: node.id, rect: Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, depth, opacity });
+        for c in &node.children {
+            walk(c, tr, opacity, depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    for root in &frame.roots {
+        walk(root, Affine::IDENTITY, 1.0, 0, &mut out);
+    }
+    out
+}
+
+/// Узел под точкой: самый поздний в порядке отрисовки среди видимых, чья рамка её содержит.
+pub fn hit(boxes: &[NodeBox], x: f32, y: f32) -> Option<u32> {
+    boxes
+        .iter()
+        .rev()
+        .find(|b| b.opacity > 0.0 && x >= b.rect.x && y >= b.rect.y && x <= b.rect.x + b.rect.w && y <= b.rect.y + b.rect.h)
+        .map(|b| b.id)
+}
+
 fn rect_str(r: &Rect) -> String {
     format!("{},{} {}×{}", r.x, r.y, r.w, r.h)
 }

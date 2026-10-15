@@ -8,7 +8,7 @@ events: 0s scene state:playing · 0s Scoreboard#1 state:in
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  motion reveal 0.23  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:12"  Inter 400 22px · color.muted · span×1  motion opacity×0
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1.01  [in 24%]
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
@@ -23,7 +23,7 @@ events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:12"  Inter 400 22px · color.muted · span×1
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1  [in 72%]
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
@@ -38,7 +38,7 @@ events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.99
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:13"  Inter 400 22px · color.muted · span×1  motion opacity×0.99
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  [out 0%]
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
@@ -50,10 +50,10 @@ events (+3 ранее): 0.7s Scoreboard#1 marker:ready · 0.7s Scoreboard#1 stat
 └─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline segment τ=3.06]  [must inside]
    ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
    │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
-   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text  motion scale×1.24
+   │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text  motion scale×1.24  [count]
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:14"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (hidden: when=false)
       └─ Scoreboard#1/badge/text[0]  text  (вместе с родителем)
@@ -68,7 +68,7 @@ events (+4 ранее): 0.7s Scoreboard#1 state:hold · 1.2s Scoreboard#1 state:
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:15"  Inter 400 22px · color.muted · span×1  motion opacity×0.55
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion scale×1  [in 56%]
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
@@ -83,7 +83,7 @@ events (+7 ранее): 1.5s Scoreboard#1 state:loop · 2.2s Scoreboard#1 marker
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "3"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1  motion opacity×0.9
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:16"  Inter 400 22px · color.muted · span×1  motion opacity×0.9
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12  motion opacity×0.5  [out 50%]
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent

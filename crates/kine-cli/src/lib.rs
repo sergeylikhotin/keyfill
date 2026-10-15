@@ -3,6 +3,8 @@
 pub mod filmstrip;
 pub mod session;
 pub mod time;
+pub mod video;
+pub mod view;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

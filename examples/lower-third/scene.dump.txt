@@ -10,5 +10,5 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:28:9
+    at examples/lower-third/LowerThird.tsx:29:9
     hint: передай подложку эфира через --bg #RRGGBB

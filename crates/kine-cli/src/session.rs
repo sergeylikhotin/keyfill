@@ -70,6 +70,16 @@ impl Session {
         &self.cues
     }
 
+    /// Время, до которого сессия уже дошла.
+    pub fn now(&self) -> f64 {
+        self.now
+    }
+
+    /// Ближайшая граница кадра.
+    pub fn nearest_frame(&self, t: f64) -> f64 {
+        ((t * self.fps).round() / self.fps).max(0.0)
+    }
+
     /// Ближайшая граница кадра не раньше `t`.
     pub fn snap(&self, t: f64) -> f64 {
         snap(t, self.fps)

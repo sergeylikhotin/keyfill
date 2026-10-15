@@ -4,7 +4,7 @@ export type Cmd =
   | { op: 'create'; id: number; kind: string; src?: string }
   | { op: 'set'; id: number; key: string; value: unknown }
   | { op: 'insert'; parent: number; child: number }
-  | { op: 'text'; id: number; runs: { text: string; look?: unknown; src?: string }[] }
+  | { op: 'text'; id: number; runs: { text: string; look?: unknown; src?: string; dynamic?: unknown }[] }
   | { op: 'theme'; values: Record<string, unknown> }
   | {
       op: 'stage';
@@ -38,7 +38,7 @@ export const host = {
   insert(parent: number, child: number) {
     queue.push({ op: 'insert', parent, child });
   },
-  runs(id: number, runs: { text: string; look?: unknown; src?: string }[]) {
+  runs(id: number, runs: { text: string; look?: unknown; src?: string; dynamic?: unknown }[]) {
     queue.push({ op: 'text', id, runs });
   },
   emit(cmd: Cmd) {

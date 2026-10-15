@@ -248,8 +248,11 @@ fn goal_command_plays_segment_and_returns_to_loop() {
     let score = s.scene.find("Scoreboard#1/homeScore").unwrap();
     let frame = s.frame_at(2.26, dev()).unwrap();
     let node = frame.find(score).unwrap();
-    assert_eq!(frame.texts[node.text.unwrap().0].content, "3");
     assert!(node.anim.as_ref().unwrap().motion.scale > 1.2, "вспышка счёта");
+    // Счёт идёт через count(): цифра сменится на середине перехода.
+    let frame = s.frame_at(2.6, dev()).unwrap();
+    let node = frame.find(score).unwrap();
+    assert_eq!(frame.texts[node.text.unwrap().0].content, "3");
     let frame = s.frame_at(3.7, dev()).unwrap();
     let panel = s.scene.find("Scoreboard#1/panel").unwrap();
     let notes = &frame.find(panel).unwrap().anim.as_ref().unwrap().notes;
@@ -289,4 +292,92 @@ fn scoreboard_cues_timeline_snapshot() {
     }
     let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("нет снапшота {snap}: запусти с KINE_UPDATE_SNAPSHOTS=1"));
     assert_eq!(dump.replace("\r\n", "\n"), expected.replace("\r\n", "\n"), "дамп сценария разошёлся со снапшотом {snap}");
+}
+
+// ─── M2c: каскад, числа и часы, видео ───────────────────────────────────────
+
+/// stagger: имя и должность появляются по очереди, а не вместе.
+#[test]
+fn stagger_cascades_children() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/lower-third/scene.tsx", &[]);
+    let frame = s.frame_at(0.12, dev()).unwrap();
+    let title = motion_of(&s, &frame, "LowerThird#1/title");
+    let subtitle = motion_of(&s, &frame, "LowerThird#1/subtitle");
+    assert!(title.opacity > subtitle.opacity + 0.2, "{title:?} vs {subtitle:?}");
+    let frame = s.frame_at(0.6, dev()).unwrap();
+    assert_eq!(motion_of(&s, &frame, "LowerThird#1/subtitle").opacity, 1.0);
+}
+
+fn text_of(s: &Session, frame: &kine_core::Frame, path: &str) -> String {
+    let id = s.scene.find(path).unwrap();
+    frame.texts[frame.find(id).unwrap().text.unwrap().0].content.clone()
+}
+
+/// count() ведёт число к новому значению, clock() идёт сам — без вызова JS на кадре.
+#[test]
+fn count_and_clock_are_driven_by_core() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+    let frame = s.frame_at(0.0, dev()).unwrap();
+    assert!(text_of(&s, &frame, "Scoreboard#1/status").ends_with("67:12"));
+    let frame = s.frame_at(2.2, dev()).unwrap();
+    assert_eq!(text_of(&s, &frame, "Scoreboard#1/homeScore"), "2", "count только начал движение");
+    let frame = s.frame_at(3.0, dev()).unwrap();
+    assert_eq!(text_of(&s, &frame, "Scoreboard#1/homeScore"), "3");
+    assert!(text_of(&s, &frame, "Scoreboard#1/status").ends_with("67:15"));
+}
+
+/// Два прогона дают побайтно одинаковое видео (ProRes 4444 с альфой).
+#[test]
+fn video_is_byte_identical() {
+    let Some(home) = home() else { return };
+    if !kine_cli::video::ffmpeg_available() {
+        eprintln!("skip: нет ffmpeg");
+        return;
+    }
+    let render = |name: &str| {
+        let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+        let out = std::env::temp_dir().join(format!("kine-test-{}-{name}.mov", std::process::id()));
+        let opts = kine_cli::video::VideoOptions {
+            from: 2.0,
+            to: 2.6,
+            codec: kine_cli::video::Codec::Prores,
+            scale: 0.25,
+            background: None,
+            out: out.clone(),
+        };
+        let report = kine_cli::video::render(&mut s, dev(), &opts).unwrap();
+        assert_eq!(report.frames, 31);
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        bytes
+    };
+    let _ = home;
+    let (a, b) = (render("a"), render("b"));
+    assert!(!a.is_empty());
+    assert!(a == b, "видео различается между прогонами");
+}
+
+/// Рамки узлов (подсветка и попадание курсором в kine view) учитывают движение.
+#[test]
+fn node_boxes_follow_motion() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = session("examples/scoreboard/scene.cues.ts", &[]);
+    let frame = s.frame_at(4.3, dev()).unwrap();
+    let panel = s.scene.find("Scoreboard#1/panel").unwrap();
+    let boxes = kine_core::display::node_boxes(&frame);
+    let b = boxes.iter().find(|b| b.id == panel).unwrap();
+    // Раскладка ставит табло в y=54, таймлайн out уже сдвинул его вверх.
+    assert!(b.rect.y < 54.0 - 1.0 && b.opacity < 1.0, "{b:?}");
+    let score = s.scene.find("Scoreboard#1/homeScore").unwrap();
+    let sb = boxes.iter().find(|b| b.id == score).unwrap();
+    let (cx, cy) = (sb.rect.x + sb.rect.w / 2.0, sb.rect.y + sb.rect.h / 2.0);
+    assert_eq!(kine_core::display::hit(&boxes, cx, cy), Some(score));
 }

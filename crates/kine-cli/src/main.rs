@@ -19,6 +19,12 @@ kine — рендер TSX-сцен без браузера
   kine check <entry> [--json]         только диагностики
   kine filmstrip <entry> [--t a..b] [-o strip.png] [--n 8] [--cols 4] [--tile 480] [--dump]
                                       раскадровка: n моментов диапазона одной картинкой
+  kine video <entry> [--t a..b] [-o out.mov] [--codec prores|qtrle|vp9|h264|png] [--scale N]
+                                      видео через ffmpeg: .mov — ProRes 4444 с альфой, .webm — VP9 с альфой,
+                                      .mp4 — H.264 на подложке, каталог — PNG-последовательность
+  kine view [entry] [--dir out] [--port 4747]
+                                      веб-просмотрщик: галерея выводов из каталога и живая сцена
+                                      с ползунком времени, дампом и inspect по клику; следит за правками
 
 <entry> — сцена (defineScene) или сценарий *.cues.ts (cues). Без сценария сцена получает play в 0.
 
@@ -27,7 +33,7 @@ kine — рендер TSX-сцен без браузера
   settled          кадр «в эфире»: закончились все in первого play (по умолчанию)
   settled+0.5      смещение
   out  out+0.2     маркер таймлайна: момент, когда воспроизведение впервые его проходит
-  0..4             диапазон, для filmstrip; по умолчанию от 0 до конца сценария
+  0..4             диапазон, для filmstrip и video; по умолчанию от 0 до конца сценария
   --cue \"0 play; 125f stop\"   команды сценария в короткой форме (дополняют *.cues.ts)
 
 Общие флаги:
@@ -43,7 +49,9 @@ struct Args {
     flags: Vec<(String, Option<String>)>,
 }
 
-const VALUED: &[&str] = &["-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile"];
+const VALUED: &[&str] = &[
+    "-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile", "--codec", "--dir", "--port",
+];
 const SWITCHES: &[&str] = &["--dump", "--json", "-h", "--help"];
 
 impl Args {
@@ -138,7 +146,7 @@ fn call(args: &Args) -> Result<Option<Call>> {
     if matches!(cmd, "help") || args.flag("-h") || args.flag("--help") {
         return Ok(None);
     }
-    if !matches!(cmd, "render" | "dump" | "inspect" | "check" | "filmstrip") {
+    if !matches!(cmd, "render" | "dump" | "inspect" | "check" | "filmstrip" | "video") {
         bail!("неизвестная команда {cmd}\n\n{USAGE}");
     }
     let background = args.value("--bg").map(parse_hex).transpose()?;
@@ -149,8 +157,10 @@ fn call(args: &Args) -> Result<Option<Call>> {
     };
     let time = args.value("--t").map(time::parse).transpose().context("--t")?;
     match (&time, cmd) {
-        (Some(TimeSpec::Range(..)), c) if c != "filmstrip" => bail!("--t: диапазон {} принимает только filmstrip; здесь нужен момент", args.value("--t").unwrap_or("")),
-        (Some(TimeSpec::Moment(_)), "filmstrip") => bail!("--t: filmstrip принимает диапазон, например 0..2 или settled..settled+1"),
+        (Some(TimeSpec::Range(..)), c) if !matches!(c, "filmstrip" | "video") => {
+            bail!("--t: диапазон {} принимают filmstrip и video; здесь нужен момент", args.value("--t").unwrap_or(""))
+        }
+        (Some(TimeSpec::Moment(_)), c @ ("filmstrip" | "video")) => bail!("--t: {c} принимает диапазон, например 0..2 или settled..settled+1"),
         _ => {}
     }
     Ok(Some(Call {
@@ -165,6 +175,9 @@ fn call(args: &Args) -> Result<Option<Call>> {
 
 fn run() -> Result<ExitCode> {
     let args = Args::parse(std::env::args().skip(1).collect()).context(Failure::Usage)?;
+    if args.rest.first().map(String::as_str) == Some("view") {
+        return view_cmd(&args);
+    }
     let Some(call) = call(&args).context(Failure::Usage)? else {
         println!("{USAGE}");
         return Ok(ExitCode::SUCCESS);
@@ -174,6 +187,9 @@ fn run() -> Result<ExitCode> {
 
     if call.cmd == "filmstrip" {
         return filmstrip_cmd(&args, &call, session, &source);
+    }
+    if call.cmd == "video" {
+        return video_cmd(&args, &call, session, &source);
     }
 
     // Момент разрешается на пробной сессии: settled и маркеры продвигают её время вперёд.
@@ -224,15 +240,72 @@ fn run() -> Result<ExitCode> {
     Ok(if errors { ExitCode::from(1) } else { ExitCode::SUCCESS })
 }
 
-fn filmstrip_cmd(args: &Args, call: &Call, mut probe: Session, source: &str) -> Result<ExitCode> {
-    // Первая сессия разрешает границы (settled, конец сценария); кадры рендерит вторая с начала.
+fn view_cmd(args: &Args) -> Result<ExitCode> {
+    let background = args.value("--bg").map(parse_hex).transpose().context(Failure::Usage)?;
+    let mode = match args.value("--mode") {
+        None | Some("dev") => Mode::Dev,
+        Some("air") => Mode::Air,
+        Some(other) => return Err(anyhow::anyhow!("--mode: ожидается dev или air, получено {other}").context(Failure::Usage)),
+    };
+    let opts = kine_cli::view::ViewOptions {
+        entry: args.rest.get(1).map(PathBuf::from),
+        dir: PathBuf::from(args.value("--dir").unwrap_or("out")),
+        port: args.number("--port").context(Failure::Usage)?.unwrap_or(4747),
+        run: run_options(args).context(Failure::Usage)?,
+        extra: args.value("--cue").map(kine_cli::session::parse_cues).transpose().context(Failure::Usage)?.unwrap_or_default(),
+        eval: EvalOptions { mode, background },
+    };
+    if let Some(entry) = &opts.entry
+        && !entry.exists() {
+            return Err(anyhow::anyhow!("сцена {} не найдена", entry.display()).context(Failure::Usage));
+        }
+    kine_cli::view::serve(opts)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Диапазон из `--t a..b` или весь сценарий. Пробная сессия разрешает границы (settled,
+/// маркеры, конец сценария); кадры рендерит новая сессия с начала.
+fn range(call: &Call, probe: &mut Session) -> Result<(f64, f64)> {
     let (from, to) = match &call.time {
-        Some(TimeSpec::Range(a, b)) => (time::resolve(a, &mut probe).context(Failure::Usage)?, time::resolve(b, &mut probe).context(Failure::Usage)?),
-        _ => (time::resolve(&Moment::At(Offset::Seconds(0.0)), &mut probe)?, probe.end_time()?),
+        Some(TimeSpec::Range(a, b)) => (time::resolve(a, probe).context(Failure::Usage)?, time::resolve(b, probe).context(Failure::Usage)?),
+        _ => (0.0, probe.end_time()?),
     };
     if to < from {
         return Err(anyhow::anyhow!("--t: конец диапазона {to} раньше начала {from}").context(Failure::Usage));
     }
+    Ok((from, to))
+}
+
+fn video_cmd(args: &Args, call: &Call, mut probe: Session, source: &str) -> Result<ExitCode> {
+    let (from, to) = range(call, &mut probe)?;
+    let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| call.entry.with_extension("mov"));
+    let codec = match args.value("--codec") {
+        Some(c) => kine_cli::video::Codec::parse(c),
+        None => kine_cli::video::Codec::for_path(&out),
+    }
+    .context(Failure::Usage)?;
+    let opts = kine_cli::video::VideoOptions {
+        from,
+        to,
+        codec,
+        scale: args.number("--scale").context(Failure::Usage)?.unwrap_or(1.0),
+        background: call.eval.background,
+        out: out.clone(),
+    };
+    let mut session = Session::open(source, &call.opts, &call.extra)?;
+    let report = kine_cli::video::render(&mut session, call.eval, &opts)?;
+    for log in &session.logs {
+        eprintln!("js {}: {}", log.level, log.message);
+    }
+    eprintln!("written {} ({} кадров, {from:.2}..{to:.2} с, {})", out.display(), report.frames, codec.name());
+    if report.errors > 0 {
+        eprintln!("в кадрах {} ошибок диагностики: посмотри kine check --t <момент>", report.errors);
+    }
+    Ok(if report.errors > 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+}
+
+fn filmstrip_cmd(args: &Args, call: &Call, mut probe: Session, source: &str) -> Result<ExitCode> {
+    let (from, to) = range(call, &mut probe)?;
     let mut session = Session::open(source, &call.opts, &call.extra)?;
     let usage = |r: Result<Option<usize>>| r.context(Failure::Usage);
     let fopts = filmstrip::Options {

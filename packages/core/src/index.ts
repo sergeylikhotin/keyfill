@@ -85,6 +85,32 @@ export const seq: typeof S.seq = (...items) => motion({ motion: 'seq', items }, 
 export const par: typeof S.par = (...items) => motion({ motion: 'par', items }, Math.max(0, ...items.map((m) => m.duration)));
 export const delay: typeof S.delay = (seconds, m) => motion({ motion: 'delay', seconds, item: m }, seconds + m.duration);
 export const pulse: typeof S.pulse = (o) => motion({ motion: 'pulse', ...o }, o.period);
+export const stagger: typeof S.stagger = (step, m, o = {}) => motion({ motion: 'stagger', step, item: m, reverse: o.reverse ?? false }, m.duration);
+
+// ─── Числа и часы: значение ведёт ядро, JS сообщает только смену данных ─────
+
+type DynamicDesc = { __kine: 'dynamic'; describe: () => Record<string, unknown> };
+const isDynamic = (v: unknown): v is DynamicDesc => !!v && (v as DynamicDesc).__kine === 'dynamic';
+
+export const count: typeof S.count = (value, o = {}) =>
+  brand({
+    __kine: 'dynamic',
+    describe: () => ({ kind: 'count', value: read(value), easing: o.easing ?? tween(0.6, 'out'), format: o.format ?? '0' }),
+  });
+
+export const clock: typeof S.clock = (o) =>
+  brand({
+    __kine: 'dynamic',
+    describe: () => ({
+      kind: 'clock',
+      from: read(o.from),
+      rate: o.rate ?? 1,
+      running: read(o.running ?? true),
+      format: o.format ?? 'mm:ss',
+      min: o.min,
+      max: o.max,
+    }),
+  });
 
 export const timeline: typeof S.timeline = (target, build) => {
   const at = (t: number, part: string, targets: S.AnimTargets, easing?: S.Easing) => brand<never>({ t, part, targets, easing });
@@ -196,10 +222,12 @@ export function Text(p: Props): KineElement {
   }
   effect(() => {
     const runs = parts.map((c, i) => {
+      if (isDynamic(c)) return { text: '', dynamic: c.describe() };
       if (!isSpan(c)) return { text: String(read(c as string)) };
       const inner = flat(c.children).filter((x) => !isEmpty(x));
       for (const x of inner) {
         if (isElement(x) || isSpan(x)) throw new KineError('Span не вкладывается: внутри только строки и аксессоры', c.src);
+        if (isDynamic(x)) throw new KineError('count() и clock() пишутся прямо в <Text>, не внутри Span', c.src);
       }
       const text = inner.map((x) => String(read(x as string))).join('');
       const look = c.look === undefined ? undefined : flattenLook(read(c.look), `span[${i}]`, []);

@@ -298,7 +298,8 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
     let anim = anim.cloned();
     match node.kind {
         Kind::Text => {
-            let mut source = text_source(scene, id, &look, over, &mut frame.diagnostics);
+            let texts = anim.as_ref().map(|a| &a.texts);
+            let mut source = text_source(scene, id, &look, over, texts, &mut frame.diagnostics);
             if let Some(color @ V::C(_)) = anim.as_ref().and_then(|a| a.abs.get(&Channel::Color)) {
                 source.look.color = color.rgba();
             }
@@ -346,7 +347,14 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
     }
 }
 
-fn text_source(scene: &Scene, id: u32, look: &Look, over: Option<&ElseStep>, diags: &mut Diagnostics) -> TextSource {
+fn text_source(
+    scene: &Scene,
+    id: u32,
+    look: &Look,
+    over: Option<&ElseStep>,
+    texts: Option<&std::collections::BTreeMap<usize, String>>,
+    diags: &mut Diagnostics,
+) -> TextSource {
     let node = scene.node(id);
     let path = scene.path(id);
     let src = node.src.as_deref();
@@ -355,13 +363,16 @@ fn text_source(scene: &Scene, id: u32, look: &Look, over: Option<&ElseStep>, dia
     let runs = node
         .runs
         .iter()
-        .map(|run| {
+        .enumerate()
+        .map(|(i, run)| {
             let style = run.look.as_ref().and_then(Value::as_array).map(|layers| {
                 let span_src = run.src.as_deref().or(src);
                 let span_look = look::resolve_layers(scene, layers.iter(), Target::Span, "span", &path, span_src, diags);
                 look::span_style(&span_look, &path, span_src, diags)
             });
-            RunSpec { text: run.text.clone(), style }
+            // Кусок count()/clock() берёт текст, который ядро посчитало для этого момента.
+            let text = texts.and_then(|m| m.get(&i)).cloned().unwrap_or_else(|| run.text.clone());
+            RunSpec { text, style }
         })
         .collect();
 

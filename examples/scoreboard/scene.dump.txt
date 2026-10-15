@@ -8,7 +8,7 @@ events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм, 67′"  Inter 400 22px · color.muted · span×1
+   │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:13"  Inter 400 22px · color.muted · span×1
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2
    └─ Scoreboard#1/badge  box  (532,40 98×33)  bg color.accent · r 10 · pad 6,12
       └─ Scoreboard#1/badge/text[0]  text  (544,46 74×21)  "4K HDR"  Inter 600 18px · color.onAccent
