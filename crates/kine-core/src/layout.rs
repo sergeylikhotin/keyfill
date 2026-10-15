@@ -56,10 +56,10 @@ pub fn content_rect(rect: Rect, visual: &Visual) -> Rect {
     }
 }
 
-/// Шаг `else`, уже слитый с предыдущими (шаги накопительные).
+/// Вариант `else`. Варианты независимые: применяется ровно один, поверх собственных fit и look узла.
 #[derive(Debug, Clone, Default)]
 pub struct ElseStep {
-    /// `else[0..=k]` — какие шаги вошли.
+    /// `else[k]`.
     pub label: String,
     pub shrink_to: Option<f32>,
     pub lines: Option<usize>,

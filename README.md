@@ -44,7 +44,7 @@ npm run typecheck
 
 | Каталог | Что внутри |
 |---|---|
-| `packages/core` | `@kine/core` для JS: сигналы, JSX-рантайм, примитивы, мост команд |
+| `packages/core` | `@kine/core` для JS: сигналы, JSX-рантайм, примитивы, мост команд; `bundle.mjs` собирает сцену (шрифты — через import) |
 | `crates/kine-js` | QuickJS-хост: исполняет бандл, подменяет часы и случайность |
 | `crates/kine-core` | Дерево сцены, `look` с provenance, Taffy, текст (parley), дамп и inspect |
 | `crates/kine-render` | Рендер кадра через vello_cpu, PNG |

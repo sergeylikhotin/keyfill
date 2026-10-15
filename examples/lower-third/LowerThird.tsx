@@ -30,7 +30,7 @@ export const LowerThird = component({
           look={{ font: theme.font.display, size: 56, weight: 600, color: theme.color.text }}
           fit={{ shrinkTo: 32, then: 'ellipsis' }}
           must={{ fit: true, contrast: 4.5 }}
-          else={[{ shrinkTo: 28 }, { lines: 2 }, { ellipsis: true }]}
+          else={[{ shrinkTo: 28 }, { shrinkTo: 28, lines: 2 }, { shrinkTo: 28, lines: 2, ellipsis: true }]}
         >
           {name}
         </Text>

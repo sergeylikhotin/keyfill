@@ -21,7 +21,7 @@ export const Scoreboard = component({
           look={team}
           fit={{ shrinkTo: 26 }}
           must={{ fit: true, contrast: 4.5 }}
-          else={[{ lines: 2 }, { ellipsis: true }]}
+          else={[{ lines: 2 }, { lines: 2, ellipsis: true }]}
         >
           {home}
         </Text>
@@ -31,7 +31,7 @@ export const Scoreboard = component({
           look={team}
           fit={{ shrinkTo: 26 }}
           must={{ fit: true, contrast: 4.5 }}
-          else={[{ lines: 2 }, { ellipsis: true }]}
+          else={[{ lines: 2 }, { lines: 2, ellipsis: true }]}
         >
           {away}
         </Text>

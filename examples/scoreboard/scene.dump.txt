@@ -1,5 +1,5 @@
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
-fonts: Inter (../../assets/fonts/inter/Inter-Regular.otf) · Inter (../../assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
 └─ Scoreboard#1/panel  box stack  (96,54 520×184)  [must inside]
    ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
    │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]

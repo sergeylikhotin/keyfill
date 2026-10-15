@@ -134,7 +134,7 @@ pub struct Stage {
     pub action: f32,
     pub title: f32,
     pub fps: f32,
-    /// Пути к файлам шрифтов, относительно каталога файла сцены.
+    /// Абсолютные пути к файлам шрифтов (бандлер разрешает их из import).
     pub fonts: Vec<String>,
     pub system_fonts: bool,
 }

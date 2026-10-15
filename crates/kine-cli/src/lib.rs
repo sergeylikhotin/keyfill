@@ -1,6 +1,5 @@
 //! Конвейер сцены: TSX → esbuild → QuickJS → дерево → кадр.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -20,45 +19,26 @@ fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
-/// Собирает сцену в один IIFE-скрипт. JSX компилируется в dev-режиме, чтобы у каждого
-/// элемента было место в исходнике.
+/// Собирает сцену в один IIFE-скрипт через `packages/core/bundle.mjs`: dev-JSX с местами
+/// в исходнике, `@kine/core` из репозитория, импорты шрифтов как абсолютные пути к файлам.
 pub fn bundle(entry: &Path) -> Result<String> {
     let home = std::path::absolute(kine_home())?;
-    let esbuild = home.join("node_modules/esbuild/bin/esbuild");
-    if !esbuild.exists() {
+    if !home.join("node_modules/esbuild").exists() {
         bail!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home));
     }
     let entry = std::path::absolute(entry)?;
     if !entry.exists() {
         bail!("сцена {} не найдена", slash(&entry));
     }
-    let core = home.join("packages/core/src");
-    let stdin = format!("import scene from {:?};\nimport {{ mount }} from \"@kine/core\";\nmount(scene);\n", slash(&entry));
-
-    let mut child = Command::new("node")
-        .arg(&esbuild)
-        .args([
-            "--bundle",
-            "--format=iife",
-            "--platform=neutral",
-            "--target=es2020",
-            "--jsx=automatic",
-            "--jsx-dev",
-            "--jsx-import-source=@kine/core",
-            "--loader=ts",
-            "--sourcefile=kine-entry.ts",
-            "--log-level=warning",
-        ])
-        .arg(format!("--alias:@kine/core={}", slash(&core)))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("не удалось запустить node для esbuild")?;
-    child.stdin.take().expect("stdin piped").write_all(stdin.as_bytes())?;
-    let out = child.wait_with_output()?;
+    let out = Command::new("node")
+        .arg(home.join("packages/core/bundle.mjs"))
+        .arg(&entry)
+        .stdin(Stdio::null())
+        .output()
+        .context("не удалось запустить node для сборки сцены")?;
     if !out.status.success() {
-        bail!("esbuild:\n{}", String::from_utf8_lossy(&out.stderr));
+        bail!("сборка сцены:
+{}", String::from_utf8_lossy(&out.stderr).trim_end());
     }
     Ok(String::from_utf8(out.stdout)?)
 }
@@ -84,11 +64,10 @@ pub struct Rendered {
     pub logs: Vec<LogLine>,
 }
 
-/// Полный кадр: шрифты сцены (пути от каталога файла сцены), раскладка, `must` и `else`.
+/// Полный кадр: шрифты сцены, раскладка, `must` и `else`.
 pub fn frame(entry: &Path, opts: &RunOptions, eval: EvalOptions) -> Result<Rendered> {
     let Loaded { scene, logs } = load(entry, opts)?;
-    let dir = std::path::absolute(entry)?.parent().map(Path::to_path_buf).unwrap_or_default();
-    let mut engine = TextEngine::for_scene(&scene, &dir);
+    let mut engine = TextEngine::for_scene(&scene);
     let frame = kine_core::evaluate(&scene, &mut engine, eval)?;
     Ok(Rendered { scene, frame, logs })
 }

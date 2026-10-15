@@ -53,6 +53,10 @@ declare module '@kine/core' {
     | { readonly linear: { readonly angle: number; readonly stops: readonly GradientStop[] } }
     | { readonly radial: { readonly center?: Vec2; readonly radius?: Len; readonly stops: readonly GradientStop[] } };
 
+  const fontFileBrand: unique symbol;
+  /** Файл шрифта, полученный импортом: `import inter from './Inter-Regular.otf'`. */
+  export type FontFile = string & { readonly [fontFileBrand]: true };
+
   /** Семейство по имени: из файлов сцены (defineScene.fonts) или системное. */
   export type FontRef = Token<'font'> | { readonly family: string };
 
@@ -166,8 +170,10 @@ declare module '@kine/core' {
   }
 
   /**
-   * Шаги деградации. Накопительные: шаг k включает шаги 0..k-1. В dev нарушение must — ошибка
-   * с подсказкой, какой шаг её исправит; в эфире применяется первый помогающий шаг.
+   * Вариант деградации. Варианты независимые, как ViewThatFits: else[k] применяется сам по себе,
+   * без шагов перед ним (эскалацию пиши явно: [{ shrinkTo: 28 }, { shrinkTo: 28, lines: 2 }]).
+   * В dev нарушение must — ошибка с подсказкой, какой вариант её исправит; в эфире применяется
+   * первый подходящий, а если не подошёл ни один — последний.
    */
   export interface ElseStep<L> {
     readonly shrinkTo?: Len;
@@ -356,8 +362,8 @@ declare module '@kine/core' {
     readonly stage: StageConfig;
     readonly fps: number;
     readonly root: () => KineElement;
-    /** Файлы шрифтов, пути от каталога файла сцены. Семейства берутся из самих файлов. */
-    readonly fonts?: readonly string[];
+    /** Файлы шрифтов из импортов; путь разрешает бандлер. Семейства берутся из самих файлов. */
+    readonly fonts?: readonly FontFile[];
     /** Системные шрифты; для детерминированного рендера выключай и подключай файлы. По умолчанию true. */
     readonly systemFonts?: boolean;
   }
@@ -386,4 +392,22 @@ declare module '@kine/core/jsx-runtime' {
 declare module '@kine/core/jsx-dev-runtime' {
   export * from '@kine/core/jsx-runtime';
   export function jsxDEV(type: unknown, props: unknown, key: unknown, isStatic: boolean, source: { fileName: string; lineNumber: number; columnNumber: number }, self: unknown): import('@kine/core').KineElement;
+}
+
+// Импорт шрифта даёт FontFile: бандлер kine подставляет абсолютный путь к файлу.
+declare module '*.otf' {
+  const font: import('@kine/core').FontFile;
+  export default font;
+}
+declare module '*.ttf' {
+  const font: import('@kine/core').FontFile;
+  export default font;
+}
+declare module '*.woff' {
+  const font: import('@kine/core').FontFile;
+  export default font;
+}
+declare module '*.woff2' {
+  const font: import('@kine/core').FontFile;
+  export default font;
 }

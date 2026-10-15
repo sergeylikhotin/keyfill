@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use parley::fontique::{Blob, Collection, CollectionOptions, SourceCache};
 use parley::{
@@ -49,28 +49,28 @@ impl TextEngine {
         }
     }
 
-    /// Движок для сцены: системные шрифты по её настройке и файлы из `fonts`
-    /// (пути относительно каталога файла сцены).
-    pub fn for_scene(scene: &crate::Scene, scene_dir: &Path) -> Self {
+    /// Движок для сцены: системные шрифты по её настройке и файлы из `fonts`.
+    /// Пути абсолютные: их выдаёт бандлер из `import font from './Font.otf'`.
+    pub fn for_scene(scene: &crate::Scene) -> Self {
         let Some(stage) = &scene.stage else { return Self::default() };
         let mut engine = Self::new(stage.system_fonts);
         for file in &stage.fonts {
-            let path: PathBuf = scene_dir.join(file);
-            match std::fs::read(&path) {
+            let shown = display_path(Path::new(file));
+            match std::fs::read(file) {
                 Ok(bytes) => {
                     let families = engine.register_font(bytes);
                     if families.is_empty() {
-                        engine.diagnostics.push(Level::Error, "font.invalid", "stage", None, format!("{file}: не удалось прочитать шрифт"), None);
+                        engine.diagnostics.push(Level::Error, "font.invalid", "stage", None, format!("{shown}: не удалось прочитать шрифт"), None);
                     }
-                    engine.fonts.push(LoadedFont { file: file.clone(), families });
+                    engine.fonts.push(LoadedFont { file: shown, families });
                 }
                 Err(e) => engine.diagnostics.push(
                     Level::Error,
                     "font.file-missing",
                     "stage",
                     None,
-                    format!("{file}: {e}"),
-                    Some("пути в fonts считаются от каталога файла сцены"),
+                    format!("{shown}: {e}"),
+                    Some("шрифт подключается импортом: import inter from './Inter.otf', затем defineScene({ fonts: [inter] })"),
                 ),
             }
         }
@@ -140,6 +140,12 @@ impl TextEngine {
             fitted_for: None,
         }
     }
+}
+
+/// Путь для дампа и сообщений: относительно рабочего каталога, если файл внутри него.
+fn display_path(path: &Path) -> String {
+    let rel = std::env::current_dir().ok().and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf));
+    rel.as_deref().unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 fn family_stack(family: Option<&str>) -> FontFamily<'static> {

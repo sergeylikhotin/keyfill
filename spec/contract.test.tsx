@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, component, hex, timeline, tween } from '@kine/core';
+import { Box, Text, component, defineScene, hex, timeline, tween } from '@kine/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 
 // Таймлайн адресует несуществующую часть.
@@ -43,6 +43,15 @@ const Card = component({
 // Неверная кривая изинга.
 // @ts-expect-error 'bounce' не EaseCurve
 tween(0.2, 'bounce');
+
+// Шрифт подключается импортом, строковый путь не принимается.
+defineScene({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  // @ts-expect-error fonts принимает FontFile из import, а не строку
+  fonts: ['../assets/fonts/inter/Inter-Regular.otf'],
+  root: () => <Box />,
+});
 
 // Цвет только через конструкторы или токены.
 // @ts-expect-error hex требует ведущий #

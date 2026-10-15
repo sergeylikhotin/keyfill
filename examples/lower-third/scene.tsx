@@ -1,4 +1,6 @@
 import { defineScene, signal } from '@kine/core';
+import interRegular from '../../assets/fonts/inter/Inter-Regular.otf';
+import interSemiBold from '../../assets/fonts/inter/Inter-SemiBold.otf';
 import { LowerThird } from './LowerThird';
 
 const live = signal(true);
@@ -6,7 +8,7 @@ const live = signal(true);
 export default defineScene({
   stage: { ref: [1920, 1080] },
   fps: 50,
-  fonts: ['../../assets/fonts/inter/Inter-Regular.otf', '../../assets/fonts/inter/Inter-SemiBold.otf'],
+  fonts: [interRegular, interSemiBold],
   systemFonts: false,
   root: () => <LowerThird name="Анна Смирнова" role="Ведущая" live={live} tags={[]} />,
 });

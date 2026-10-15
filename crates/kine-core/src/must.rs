@@ -2,7 +2,8 @@
 //!
 //! В dev нарушение — ошибка, а в подсказке сказано, какой шаг `else` его исправил бы.
 //! В эфире (air) шаги перебираются по порядку и применяется первый, при котором `must`
-//! выполнен; если ни один не помог — последний. Шаги накопительные: `else[1]` включает `else[0]`.
+//! выполнен; если ни один не помог — последний. Шаги независимые, как варианты ViewThatFits:
+//! `else[k]` применяется сам по себе, без шагов перед ним.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -116,31 +117,20 @@ fn default_hint(rule: &str) -> &'static str {
     }
 }
 
-/// Шаги `else` узла, каждый уже слит с предыдущими.
+/// Шаги `else` узла в порядке перебора; каждый — самостоятельный вариант.
 pub fn else_steps(scene: &Scene, id: u32) -> Vec<ElseStep> {
     let Some(raw) = scene.node(id).props.get("else").and_then(Value::as_array) else { return Vec::new() };
-    let mut acc = ElseStep::default();
-    let mut out = Vec::new();
-    for (k, step) in raw.iter().enumerate() {
-        if let Some(v) = step.get("shrinkTo").and_then(Value::as_f64) {
-            acc.shrink_to = Some(v as f32);
-        }
-        if let Some(v) = step.get("lines").and_then(Value::as_u64) {
-            acc.lines = Some(v as usize);
-        }
-        if step.get("ellipsis").and_then(Value::as_bool) == Some(true) {
-            acc.ellipsis = true;
-        }
-        if step.get("hide").and_then(Value::as_bool) == Some(true) {
-            acc.hide = true;
-        }
-        if let Some(layers) = step.get("look").and_then(Value::as_array) {
-            acc.look.extend(layers.iter().cloned());
-        }
-        acc.label = if k == 0 { "else[0]".into() } else { format!("else[0..={k}]") };
-        out.push(acc.clone());
-    }
-    out
+    raw.iter()
+        .enumerate()
+        .map(|(k, step)| ElseStep {
+            label: format!("else[{k}]"),
+            shrink_to: step.get("shrinkTo").and_then(Value::as_f64).map(|v| v as f32),
+            lines: step.get("lines").and_then(Value::as_u64).map(|v| v as usize),
+            ellipsis: step.get("ellipsis").and_then(Value::as_bool) == Some(true),
+            look: step.get("look").and_then(Value::as_array).cloned().unwrap_or_default(),
+            hide: step.get("hide").and_then(Value::as_bool) == Some(true),
+        })
+        .collect()
 }
 
 fn first_fix(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, id: u32, base: &Overrides, steps: &[ElseStep]) -> Result<Option<ElseStep>> {
@@ -323,6 +313,19 @@ fn contrast(scene: &Scene, frame: &Frame, id: u32, background: Option<Rgba>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn else_variants_are_independent() {
+        let mut scene = Scene::default();
+        scene
+            .apply_batch(r#"[{"op":"create","id":1,"kind":"text"},{"op":"set","id":1,"key":"else","value":[{"shrinkTo":28},{"lines":2}]}]"#)
+            .unwrap();
+        let steps = else_steps(&scene, 1);
+        assert_eq!(steps.len(), 2);
+        assert_eq!((steps[0].label.as_str(), steps[0].shrink_to, steps[0].lines), ("else[0]", Some(28.0), None));
+        // Второй вариант не наследует shrinkTo первого.
+        assert_eq!((steps[1].label.as_str(), steps[1].shrink_to, steps[1].lines), ("else[1]", None, Some(2)));
+    }
 
     #[test]
     fn wcag_contrast_extremes() {
