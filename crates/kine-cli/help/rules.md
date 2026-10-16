@@ -245,8 +245,9 @@ error · импорт не найден
 ## build.setup
 error · сборка не запустилась
 
-Нет node в PATH или `node_modules/esbuild` в корне kine. Выполни `npm install` в корне kine;
-`kine doctor` (M3c) проверит окружение целиком.
+Нет node в PATH, не найден `@kine/core` (бандлер `bundle.mjs`) или esbuild рядом с ним.
+В проекте: `npm i -D @kine/cli`; в репозитории kine: `npm install`. `kine doctor` проверит
+окружение целиком и соберёт пробную сцену.
 
 ## build.error
 error · бандлер упал

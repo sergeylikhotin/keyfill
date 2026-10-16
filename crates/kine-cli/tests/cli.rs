@@ -247,3 +247,74 @@ fn bad_config_is_usage_error() {
     assert_eq!(out.status.code(), Some(2), "{j}");
     assert!(j["error"]["message"].as_str().unwrap().contains("profiles"), "{j}");
 }
+
+/// `kine … --json` в каталоге `dir` с переменными окружения.
+fn kine_in(dir: &std::path::Path, args: &[&str], env: &[(&str, &std::path::Path)]) -> (i32, Value) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_kine"));
+    cmd.args(args).arg("--json").current_dir(dir);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("не JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
+    (out.status.code().unwrap(), json)
+}
+
+#[test]
+fn doctor_checks_the_pipeline() {
+    let Some((code, j)) = kine(&["doctor"]) else { return };
+    assert_eq!(code, 0, "{j}");
+    let checks = j["result"]["checks"].as_array().unwrap();
+    let status = |name: &str| checks.iter().find(|c| c["name"] == name).map(|c| c["status"].as_str().unwrap().to_string());
+    for name in ["node", "@kine/core", "esbuild", "pipeline"] {
+        assert_eq!(status(name).as_deref(), Some("ok"), "{name}: {j}");
+    }
+}
+
+#[test]
+fn cache_reports_and_cleans() {
+    let Some(home) = home() else { return };
+    let cache = std::env::temp_dir().join(format!("kine-cache-test-{}", std::process::id()));
+    let env = [("KINE_CACHE_DIR", cache.as_path())];
+    let (code, _) = kine_in(&home, &["schema", "lower"], &env);
+    assert_eq!(code, 0);
+    let (_, j) = kine_in(&home, &["cache"], &env);
+    assert!(j["result"]["files"].as_u64().unwrap() >= 2, "сцена и конфиг: {j}");
+    let (code, j) = kine_in(&home, &["cache", "clean"], &env);
+    assert_eq!(code, 0);
+    assert_eq!(j["result"]["cleaned"], true);
+    assert!(!cache.exists());
+    let (code, _) = kine_in(&home, &["cache", "purge"], &env);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn new_scene_passes_check_and_test() {
+    let Some(_) = home() else { return };
+    // Вне репозитория: там нет ни package.json, ни kine.config.ts — kine new создаёт проект.
+    let dir = std::env::temp_dir().join(format!("kine-new-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (code, j) = kine_in(&dir, &["new", "lower-third"], &[]);
+    assert_eq!(code, 0, "{j}");
+    let files: Vec<&str> = j["result"]["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    for f in ["lower-third/LowerThird.tsx", "lower-third/lower-third.kine.test.ts", "fonts/inter/Inter-Regular.otf", "tsconfig.json", "kine.config.ts"] {
+        assert!(files.contains(&f), "{f}: {files:?}");
+    }
+    assert_eq!(j["next"][0], "kine check lower-third/scene.cues.ts");
+
+    let (code, j) = kine_in(&dir, &["check", "lower-third"], &[]);
+    assert_eq!(code, 0, "каталог сцены — точка входа: {j}");
+    let (code, j) = kine_in(&dir, &["test"], &[]);
+    assert_eq!(code, 0, "{j}");
+    assert_eq!(j["result"]["counts"]["written"], 3);
+
+    let (code, j) = kine_in(&dir, &["new", "title", "--template", "blank"], &[]);
+    assert_eq!(code, 0, "{j}");
+    assert!(j["result"]["kept"].as_array().unwrap().iter().any(|f| f == "kine.config.ts"), "проект уже есть: {j}");
+    let (code, _) = kine_in(&dir, &["test", "title"], &[]);
+    assert_eq!(code, 0);
+
+    assert_eq!(kine_in(&dir, &["new", "lower-third"], &[]).0, 2, "каталог уже есть");
+    assert_eq!(kine_in(&dir, &["new", "x", "--template", "nope"], &[]).0, 2);
+    std::fs::remove_dir_all(&dir).ok();
+}

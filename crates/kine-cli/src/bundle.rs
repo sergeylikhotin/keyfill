@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sourcemap::SourceMap;
-use crate::{Failure, kine_home, slash};
+use crate::{Failure, slash};
 
 /// Собранная сцена.
 #[derive(Clone)]
@@ -66,7 +66,8 @@ fn hash_file(path: &Path) -> Option<String> {
     std::fs::read(path).ok().map(|b| hash_bytes(&b))
 }
 
-fn cache_dir() -> Option<PathBuf> {
+/// Каталог кэша; `None` — кэш выключен.
+pub fn cache_dir() -> Option<PathBuf> {
     if std::env::var_os("KINE_NO_CACHE").is_some() {
         return None;
     }
@@ -149,23 +150,36 @@ fn build_diagnostic(e: EsbuildError) -> Diagnostic {
     }
 }
 
-/// Собирает сцену в один IIFE-скрипт через `packages/core/bundle.mjs`: dev-JSX с местами
-/// в исходнике, `@kine/core` из репозитория, импорты шрифтов как абсолютные пути к файлам.
-/// Точка входа — сцена (`defineScene`) или сценарий (`cues`).
+/// Собирает сцену в один IIFE-скрипт через `bundle.mjs` из `@kine/core`: dev-JSX с местами
+/// в исходнике, импорты шрифтов как абсолютные пути к файлам. Точка входа — сцена, сценарий,
+/// файл тестов или `kine.config.ts`. Бандл кэшируется.
 pub fn bundle(entry: &Path) -> Result<Bundle> {
-    let home = std::path::absolute(kine_home())?;
+    bundle_with(entry, cache_dir())
+}
+
+/// Сборка без кэша: `kine doctor` проверяет сам бандлер.
+pub fn build(entry: &Path) -> Result<Bundle> {
+    bundle_with(entry, None)
+}
+
+fn bundle_with(entry: &Path, cache_dir: Option<PathBuf>) -> Result<Bundle> {
+    let core = std::path::absolute(crate::core_dir().0)?;
     let entry = std::path::absolute(entry)?;
     if !entry.exists() {
         return Err(crate::usage(format!("сцена {} не найдена", slash(&entry))));
     }
-    let script = home.join("packages/core/bundle.mjs");
+    let script = core.join("bundle.mjs");
     let stamp = stamp(&script);
-    let cache = cache_dir().map(|d| cache_file(&d, &entry));
+    let cache = cache_dir.map(|d| cache_file(&d, &entry));
     if let Some(hit) = cache.as_deref().and_then(|f| read_cache(f, &stamp)) {
         return Ok(hit);
     }
-    if !home.join("node_modules/esbuild").exists() {
-        let msg = format!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home));
+    if !script.is_file() {
+        let msg = format!("нет бандлера {}: установи @kine/cli (npm i -D @kine/cli) или задай KINE_CORE; проверка — kine doctor", slash(&script));
+        return Err(tool_error("build.setup", msg));
+    }
+    if crate::esbuild_dir(&core).is_none() {
+        let msg = format!("esbuild не найден рядом с {}: выполни `npm install`; проверка — kine doctor", slash(&core));
         return Err(tool_error("build.setup", msg));
     }
     // С запасом на грубое разрешение времени файловой системы.

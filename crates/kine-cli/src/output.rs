@@ -13,7 +13,9 @@ use kine_js::{JsException, LogLine};
 use serde::Serialize;
 
 use crate::Failure;
+use crate::doctor::{self, Cache, Doctor, Status};
 use crate::help::{RuleDoc, Topic};
+use crate::scaffold::Created;
 use crate::ops::{At, Check, Counts, Filmstrip, Perf, Rendered, Schema, Video};
 use crate::suite::{self, Report, SnapStatus};
 
@@ -404,6 +406,44 @@ fn snap_line(out: &mut String, t: &str, kind: &str, status: SnapStatus, file: &s
         SnapStatus::Changed => "изменился",
     };
     let _ = writeln!(out, "      @{t} {kind} {what}: {file}");
+}
+
+pub fn new_text(c: &Created) -> String {
+    let mut out = format!("создана сцена {} (шаблон {})
+", c.dir, c.template);
+    for f in &c.files {
+        let _ = writeln!(out, "  + {f}");
+    }
+    if !c.kept.is_empty() {
+        let _ = writeln!(out, "  уже были: {}", c.kept.join(", "));
+    }
+    out
+}
+
+pub fn doctor_text(d: &Doctor) -> String {
+    let mut out = format!("kine {} · {} · {}
+", d.version, d.build, d.platform);
+    for c in &d.checks {
+        let mark = match c.status {
+            Status::Ok => "ok  ",
+            Status::Warn => "warn",
+            Status::Error => "FAIL",
+        };
+        let _ = writeln!(out, "  {mark}  {:<11} {}", c.name, c.detail);
+        if let Some(h) = &c.hint {
+            let _ = writeln!(out, "        {:<11} → {h}", "");
+        }
+    }
+    out
+}
+
+pub fn cache_text(c: &Cache) -> String {
+    let Some(dir) = &c.dir else { return "кэш выключен (KINE_NO_CACHE)
+".into() };
+    let what = format!("{} · {}", doctor::files(c.files), doctor::bytes(c.bytes));
+    if c.cleaned { format!("удалён {dir} ({what})
+") } else { format!("{dir} · {what}
+") }
 }
 
 /// Аргумент для командной строки в кавычках, если нужно.

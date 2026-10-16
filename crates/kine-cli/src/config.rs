@@ -81,14 +81,18 @@ pub fn read(file: &Path) -> Result<Config> {
 }
 
 impl Config {
-    /// Файл сцены: путь как есть или имя сцены из конфига (`kine render lower`).
+    /// Файл сцены: путь к файлу, имя сцены из конфига (`kine render lower`) или каталог
+    /// со `scene.cues.ts` или `scene.tsx` (так их создаёт `kine new`).
     pub fn entry(&self, arg: &str) -> Result<PathBuf> {
         let path = PathBuf::from(arg);
-        if path.exists() {
+        if path.is_file() {
             return Ok(path);
         }
         if let Some(p) = self.scenes.get(arg) {
             return Ok(relative(p));
+        }
+        if let Some(file) = ["scene.cues.ts", "scene.tsx"].iter().map(|f| path.join(f)).find(|f| f.is_file()) {
+            return Ok(file);
         }
         let named = if self.scenes.is_empty() {
             String::new()

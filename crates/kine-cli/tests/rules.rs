@@ -30,7 +30,9 @@ fn literals(text: &str, quote: char, out: &mut BTreeSet<String>) {
         }
         let Some((ns, name)) = s.split_once('.') else { continue };
         let ok_name = !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        if NAMESPACES.contains(&ns) && ok_name {
+        // `"theme.ts"` — имя файла, а не правило.
+        let file = ["ts", "tsx", "rs", "mjs", "js", "json", "md", "txt", "otf", "png"].contains(&name);
+        if NAMESPACES.contains(&ns) && ok_name && !file {
             out.insert(s.to_string());
         }
     }

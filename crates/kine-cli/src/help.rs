@@ -11,6 +11,7 @@ const RULES: &str = include_str!("../help/rules.md");
 /// Темы `kine docs` в порядке списка.
 const TOPICS: &[(&str, &str)] = &[
     ("start", include_str!("../help/docs/start.md")),
+    ("project", include_str!("../help/docs/project.md")),
     ("cli", include_str!("../help/docs/cli.md")),
     ("time", include_str!("../help/docs/time.md")),
     ("scene", include_str!("../help/docs/scene.md")),

@@ -2,7 +2,9 @@
   "name": "kine-workspace",
   "private": true,
   "scripts": {
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "npm:pack": "node scripts/npm.mjs --pack",
+    "npm:smoke": "node scripts/npm.mjs --smoke"
   },
   "devDependencies": {
     "esbuild": "0.25.10",

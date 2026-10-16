@@ -42,6 +42,12 @@ kine — рендер TSX-сцен без браузера
   kine schema <entry>                 пропсы сцены, компоненты, части, команды, маркеры, сценарий
   kine explain [правило]              что значит диагностика и как её исправить
   kine docs [тема]                    справка: время, сцена, look, раскладка, must, движение, тесты
+Создать и обслужить:
+  kine new <имя> [--template lower-third|blank]
+                                      каталог сцены из шаблона; tsconfig, kine.config.ts и шрифт —
+                                      если их ещё нет
+  kine doctor                         node, @kine/core, esbuild, ffmpeg, конфиг и пробная сборка
+  kine cache [clean]                  кэш бандлов: размер или очистка
 
 <entry> — сцена (defineScene), сценарий *.cues.ts (cues) или имя сцены из kine.config.ts.
 Без сценария сцена получает play в 0.
@@ -75,7 +81,10 @@ now, каталог вывода out и именованные сцены; фл�
 Коды выхода: 0 успех, 1 ошибки в диагностиках или упавшие тесты, 2 неверный вызов, 3 сборка,
 4 исключение JS, 5 сбой kine.";
 
-const COMMANDS: &[&str] = &["render", "dump", "inspect", "check", "filmstrip", "video", "view", "test", "perf", "schema", "explain", "docs"];
+const COMMANDS: &[&str] =
+    &["render", "dump", "inspect", "check", "filmstrip", "video", "view", "test", "perf", "schema", "explain", "docs", "new", "doctor", "cache"];
+/// Команды, которые не принимают сцену вторым словом.
+const SCENELESS: &[&str] = &["test", "explain", "docs", "new", "doctor", "cache"];
 
 struct Args {
     rest: Vec<String>,
@@ -84,7 +93,7 @@ struct Args {
 
 const VALUED: &[&str] = &[
     "-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile", "--codec", "--dir", "--port",
-    "--props", "--set", "--path", "--depth", "--name",
+    "--props", "--set", "--path", "--depth", "--name", "--template",
 ];
 const SWITCHES: &[&str] = &["--dump", "--json", "--update", "-h", "--help"];
 
@@ -348,7 +357,7 @@ fn main() -> ExitCode {
             // Второе слово — сцена, кроме команд, которые сцену не принимают.
             let entry = Args::parse(&raw)
                 .ok()
-                .filter(|a| !matches!(a.rest.first().map(String::as_str), Some("explain" | "docs" | "test")))
+                .filter(|a| !a.rest.first().is_some_and(|c| SCENELESS.contains(&c.as_str())))
                 .and_then(|a| a.rest.get(1).cloned());
             let (exit, env) = output::failure(&command, entry.as_deref(), &e);
             if json {
@@ -416,10 +425,24 @@ fn run(raw: &[String]) -> Result<Option<Done>> {
     if !COMMANDS.contains(&cmd) {
         return Err(kine_cli::usage(format!("неизвестная команда {cmd}; команды: {}", COMMANDS.join(", "))));
     }
-    // Справка не зависит от проекта: конфиг не нужен.
+    // Справка и обслуживание не зависят от конфига: doctor проверяет его сам.
     match cmd {
         "explain" => return explain(&args).map(Some),
         "docs" => return docs(&args).map(Some),
+        "new" => return new_cmd(&args).map(Some),
+        "doctor" => {
+            let report = kine_cli::doctor::run();
+            let errors = report.errors();
+            return Done::plain(Outcome { errors, ..Outcome::new(report) }, output::doctor_text).map(Some);
+        }
+        "cache" => {
+            let clean = match args.rest.get(1).map(String::as_str) {
+                None => false,
+                Some("clean") => true,
+                Some(other) => return Err(kine_cli::usage(format!("kine cache: {other}? есть kine cache и kine cache clean"))),
+            };
+            return Done::plain(Outcome::new(kine_cli::doctor::cache(clean)?), output::cache_text).map(Some);
+        }
         _ => {}
     }
     let config = config::load()?;
@@ -453,6 +476,15 @@ fn scene_cmd(args: &Args, cmd: &str, config: &Config) -> Result<Done> {
         Command::Perf { scale } => Done::new(&job, ops::perf(&job, spec, *scale)?, output::perf_text),
         Command::Schema => Done::new(&job, ops::schema(&job)?, output::schema_text),
     }
+}
+
+fn new_cmd(args: &Args) -> Result<Done> {
+    let name = args.rest.get(1).ok_or_else(|| kine_cli::usage("kine new <имя>: не указано имя сцены"))?;
+    let created = kine_cli::scaffold::create(name, args.value("--template").unwrap_or("lower-third"))?;
+    let entry = quote(&created.entry);
+    let mut o = Outcome::new(created);
+    o.next = vec![format!("kine check {entry}"), format!("kine test {}", quote(&o.result.dir))];
+    Done::plain(o, output::new_text)
 }
 
 fn explain(args: &Args) -> Result<Done> {

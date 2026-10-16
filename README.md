@@ -4,7 +4,19 @@
 
 Замысел, принципы и план — в [DESIGN.md](DESIGN.md). Контракт API — [spec/kine.d.ts](spec/kine.d.ts).
 
-## Быстрый старт
+## Установка в проект
+
+```bash
+npm i -D @kine/cli typescript
+```
+
+```bash
+npx kine new lower-third
+```
+
+`@kine/cli` ставит команду `kine`, `@kine/core` (API сцен, рантайм, бандлер), esbuild и нативный бинарь под платформу. `kine new` создаёт сцену из шаблона, а в новом проекте ещё `tsconfig.json`, `kine.config.ts` и шрифт Inter; дальше `npx kine check lower-third`, `npx kine test`, `npx tsc -p .`. Окружение проверяет `npx kine doctor`. Пакеты собираются из репозитория (`npm run npm:pack`, проверка установки в чистый проект — `npm run npm:smoke`); в npm они пока не опубликованы.
+
+## Быстрый старт в репозитории
 
 Нужны Rust (stable, MSVC на Windows) и Node.
 
@@ -43,8 +55,11 @@ cargo run -q --release -p kine-cli -- view examples/scoreboard/scene.cues.ts
 | `kine perf <entry> [--t a..b] [--scale N]` | Время кадра по стадиям (script, motion, layout, raster) против бюджета `1/fps` |
 | `kine explain [правило]` | Что значит правило диагностики и как его исправить; без аргумента — все правила |
 | `kine docs [тема]` | Встроенная справка: время, сцена, сценарий, look, раскладка, must, движение, таймлайны, тесты, конфиг |
+| `kine new <имя> [--template lower-third\|blank]` | Каталог сцены из шаблона; `tsconfig.json`, `kine.config.ts`, `.gitignore` и шрифт — если их ещё нет |
+| `kine doctor` | node, `@kine/core`, esbuild, ffmpeg, конфиг, typescript, кэш и пробная сборка сцены |
+| `kine cache [clean]` | Кэш бандлов: каталог и размер или очистка |
 
-`<entry>` — сцена (`defineScene`), сценарий `*.cues.ts` (`cues(scene, ({ at }) => [...])`) или имя сцены из `kine.config.ts`. Без сценария сцена получает `play` в момент 0.
+`<entry>` — сцена (`defineScene`), сценарий `*.cues.ts` (`cues(scene, ({ at }) => [...])`), имя сцены из `kine.config.ts` или каталог со `scene.cues.ts` / `scene.tsx`. Без сценария сцена получает `play` в момент 0.
 
 Время — одна грамматика для `--t` и `--cue`: `1.2` (секунды), `60f` (кадры), `settled` (кадр «в эфире», когда закончились все `in`; по умолчанию), `settled+0.5`, маркеры таймлайна `goalHome+0.1`, диапазон `0..2` или `ready..out` для `check`, `filmstrip` и `video`. Там, где нужен диапазон, имя без смещения — сегмент: `in` (от play до settled), маркер таймлайна (до следующего маркера), `out` без такого маркера (от stop до конца). `--cue "0 play; 1.2 next; 125f stop Scoreboard"` — команды в короткой форме: play, stop, next, с компонентом — только его экземпляры; `update` и `invoke` с параметрами — в `*.cues.ts`.
 
@@ -99,7 +114,8 @@ npm run typecheck
 | `crates/kine-js` | QuickJS-хост: исполняет бандл, подменяет часы и случайность |
 | `crates/kine-core` | Дерево сцены, `look` с provenance, Taffy, текст (parley), движение (`motion.rs`), display list, дамп и inspect |
 | `crates/kine-render` | CPU-бэкенд: исполняет display list через vello_cpu, PNG |
-| `crates/kine-cli` | Сессия (JS-хост, сценарий, часы), слой операций (`ops.rs`), вывод и JSON-конверт (`output.rs`), сборка с кэшем и sourcemap, конфиг, тесты сцен (`suite.rs`), раскадровка, видео, просмотрщик и команды `kine`; справка `explain` и `docs` — в `help/` |
+| `crates/kine-cli` | Сессия (JS-хост, сценарий, часы), слой операций (`ops.rs`), вывод и JSON-конверт (`output.rs`), сборка с кэшем и sourcemap, конфиг, тесты сцен (`suite.rs`), `doctor` и кэш, `new` (`scaffold.rs`), раскадровка, видео, просмотрщик и команды `kine`; справка `explain` и `docs` — в `help/`, шаблоны `kine new` — в `templates/` |
+| `scripts/npm.mjs` | Сборка npm-пакетов `@kine/core`, `@kine/cli`, `@kine/cli-<платформа>` и проверка установки; `.github/workflows/release.yml` — то же под все платформы |
 | `spec` | Типы публичного API и контракт-тест для tsc |
 | `examples/lower-third` | Плашка: компонент, presence, transition, тема, сцена, сценарий `scene.cues.ts`, тесты `lower-third.kine.test.ts`, золотые дампы |
 | `examples/scoreboard` | Табло: grid, stack, Span, `fit`/`must`/`else`, таймлайн с hold, циклом и сегментами, команда `goal`, эфирный сценарий, сцена с переполнением, тесты `scoreboard.kine.test.ts` |

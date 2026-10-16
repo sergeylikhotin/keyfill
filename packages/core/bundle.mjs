@@ -70,7 +70,8 @@ try {
   const map = JSON.parse(result.outputFiles.find((f) => f.path.endsWith('.map')).text);
   map.sources = map.sources.map((s) => shown(path.resolve(cwd, s)));
   const inputs = Object.keys(result.metafile.inputs)
-    .filter((p) => p !== '<stdin>')
+    // Точка входа из stdin — не файл: в кэше её не проверить.
+    .filter((p) => p !== '<stdin>' && p !== 'kine-entry.ts')
     .map((p) => slash(path.resolve(cwd, p)));
   process.stdout.write(JSON.stringify({ code, map, inputs }));
 } catch (e) {

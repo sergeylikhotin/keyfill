@@ -1,0 +1,67 @@
+# Сборка npm-пакетов kine под все платформы. Пакет бинаря собирается на своей платформе;
+# @kine/core и @kine/cli одинаковы в каждом job (одинаковые .tgz сливаются при загрузке),
+# каждый job проверяет установку всех трёх на своей ОС. На теге v* пакеты публикуются в npm
+# (нужен секрет NPM_TOKEN с правом публикации в области @kine).
+#
+# Не проверено: у репозитория пока нет удалённого адреса и CI. Локальная проверка того же
+# пути — `node scripts/npm.mjs --smoke`.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win32-x64, binary: target/release/kine.exe }
+          - { os: ubuntu-latest, target: linux-x64, binary: target/release/kine }
+          - { os: macos-14, target: darwin-arm64, binary: target/release/kine }
+          - { os: macos-13, target: darwin-x64, binary: target/release/kine }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: fontconfig (шрифты системы для parley)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+      - run: npm ci
+      - run: cargo build --release -p kine-cli
+      - run: cargo test --workspace --release
+      - run: npx tsc -p .
+      - name: пакеты и проверка установки
+        run: node scripts/npm.mjs --target ${{ matrix.target }} --binary ${{ matrix.binary }} --smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.target }}
+          path: dist/npm/*.tgz
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # Сначала пакеты бинарей и @kine/core, последним — @kine/cli, который на них ссылается.
+      - name: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -e
+          for f in dist/kine-cli-*-*.tgz dist/kine-core-*.tgz; do npm publish "$f" --access public; done
+          npm publish dist/kine-cli-[0-9]*.tgz --access public
