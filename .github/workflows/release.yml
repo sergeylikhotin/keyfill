@@ -1,10 +1,11 @@
 # Сборка npm-пакетов keyfill под все платформы. Пакет бинаря собирается на своей платформе;
 # @keyfill/core и @keyfill/cli одинаковы в каждом job (одинаковые .tgz сливаются при загрузке),
 # каждый job проверяет установку всех трёх на своей ОС. На теге v* пакеты публикуются в npm
-# (нужен секрет NPM_TOKEN с правом публикации в области @keyfill).
+# (секрет NPM_TOKEN окружения npm с правом публикации в области @keyfill; публикация ждёт
+# подтверждения в окружении).
 #
-# Не проверено: у репозитория пока нет удалённого адреса и CI. Локальная проверка того же
-# пути — `node scripts/npm.mjs --smoke`.
+# Локальная проверка того же пути — `node scripts/npm.mjs --smoke`. Сторонние actions
+# закреплены по SHA коммита; версия — в комментарии.
 
 name: release
 
@@ -25,8 +26,8 @@ jobs:
           - { os: macos-13, target: darwin-x64, binary: target/release/keyfill }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Rust из rust-toolchain.toml
@@ -43,7 +44,7 @@ jobs:
       - run: npx tsc -p .
       - name: пакеты и проверка установки
         run: node scripts/npm.mjs --target ${{ matrix.target }} --binary ${{ matrix.binary }} --smoke
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: npm-${{ matrix.target }}
           path: dist/npm/*.tgz
@@ -52,16 +53,19 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    # Окружение npm: NPM_TOKEN — его секрет, публикация ждёт подтверждения владельца,
+    # окружение доступно только тегам v*.
+    environment: npm
     permissions:
       contents: read
       id-token: write  # npm provenance: пакет связан с этим workflow и коммитом
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist/npm
           merge-multiple: true
