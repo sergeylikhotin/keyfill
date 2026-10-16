@@ -9,11 +9,19 @@ export type Cmd =
   /** Уйти через out и удалиться после ухода: элемент For, экземпляр канала после stop. */
   | { op: 'release'; id: number }
   /** Файл — канал: каталог компонентов для слоёв. */
-  | { op: 'channel'; components: string[] }
+  | {
+      op: 'channel';
+      components: string[];
+      layers: Record<string, number>;
+      states: Record<string, Record<number, string>>;
+      props: unknown[];
+      data: Record<string, unknown>;
+    }
   /** Ответ канала на команду ядра. */
   | { op: 'layer'; reply: 'mounted'; inst: string; root: number }
   | { op: 'layer'; reply: 'values'; inst: string; props: Record<string, unknown> }
   | { op: 'layer'; reply: 'rejected'; errors: string[] }
+  | { op: 'layer'; reply: 'data'; props: Record<string, unknown> }
   | { op: 'text'; id: number; runs: { text: string; look?: unknown; src?: string; dynamic?: unknown }[] }
   | { op: 'theme'; values: Record<string, unknown> }
   | {

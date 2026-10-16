@@ -26,9 +26,45 @@
 | `update` слой {props} | новые данные; изменения идут через `transition` |
 | `invoke` слой команда {params} | команда компонента |
 | `clear` [слой] | убрать без анимации: слой или весь канал |
+| `state` имя | перейти в состояние канала (ниже) |
+| `update` {props} без слоя | новые данные канала |
 
 Пропсы и параметры проверяются по типам (`keyfill docs props`); каталог и схема —
 `keyfill schema channel.tsx`.
+
+## Состояния и данные
+
+Оператор переключает не плашки, а состояние сцены. У канала есть данные (`props`) и состояния:
+что стоит на слоях состояний в каждом из них.
+
+    export default defineChannel({
+      stage, fps, fonts,
+      props: { home: prop.string({ default: 'Динамо' }), homeScore: prop.number({ default: 0 }), guest: prop.string({ default: '' }) },
+      layers: { score: 10, lower: 20 },
+      states: (d) => ({
+        live:      { score: Scoreboard.with({ home: d.home, homeScore: d.homeScore, period: '1-й тайм' }) },
+        interview: { score: Scoreboard.with({ home: d.home, homeScore: d.homeScore, period: '1-й тайм' }),
+                     lower: LowerThird.with({ name: d.guest, role: 'Гость', live: true }) },
+      }),
+    });
+
+- `state interview` — переход как разница двух состояний: что ушло из состояния, уходит через
+  `out`; что пришло — входит; тот же компонент на том же слое остаётся тем же экземпляром и
+  переходит на пропсы нового состояния через `transition` (и `transition.layout`).
+- Пропсы в `with` — значения или аксессоры данных (`d.guest` или функция: ``() => `${d.home()} — ${d.away()}` ``):
+  `update {"homeScore": 2}` без слоя меняет данные, и все плашки, которые на них смотрят,
+  обновляются сами.
+- Прерывание: новый `state` посреди перехода считается от того, что сейчас на слоях. Уходящая
+  плашка, которая снова нужна, разворачивается с текущего места — второй копии нет.
+- Слои из `layers` ведут состояния: `load`, `play`, `stop`, `update`, `clear` с этим слоем
+  отклоняются с подсказкой; `invoke` (гол) и `next` работают. `clear` без слоя снимает всё.
+- Привязки проверяются при загрузке канала: состояние, которому не хватает пропса, — ошибка
+  канала с местом (`состояние on, слой main: не задан обязательный пропс "text"`).
+- У каждого пропса данных нужно начальное значение (`default` или `defaults`).
+- Снимок (`/state`, preview, `--resume`) — данные и имя состояния: восстановление — это
+  `update` данных и `state <имя>` сразу «в эфир».
+
+Пример — `examples/match` (`keyfill filmstrip examples/match/show.journal.jsonl --t 0..11`).
 
 ## Журнал
 

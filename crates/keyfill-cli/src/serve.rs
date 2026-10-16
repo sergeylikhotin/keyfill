@@ -337,6 +337,8 @@ impl Runner {
             "t": self.program.frame_time(self.frame_no),
             "fps": self.fps(),
             "layers": self.program.state().map(|s| &s.layers),
+            "state": self.program.state().and_then(|s| s.state.as_deref()),
+            "data": self.program.state().map(|s| &s.data),
             "preview": self.preview_json(),
             "journal": slash(&self.journal_path),
         })
@@ -353,10 +355,18 @@ impl Runner {
 
     fn schema_json(&self) -> Value {
         let scene = &self.program.scene;
-        let catalog = scene.channel.clone().unwrap_or_default();
-        let components: Vec<_> = scene.components.iter().filter(|c| catalog.contains(&c.name)).collect();
+        let def = scene.channel.clone().unwrap_or_default();
+        let components: Vec<_> = scene.components.iter().filter(|c| def.components.contains(&c.name)).collect();
         let stage = scene.stage.as_ref().map(|s| json!({ "size": s.size, "fps": s.fps }));
-        json!({ "channel": self.number, "stage": stage, "catalog": catalog, "components": components })
+        json!({
+            "channel": self.number,
+            "stage": stage,
+            "catalog": def.components,
+            "components": components,
+            "props": def.props,
+            "layers": def.layers,
+            "states": def.states,
+        })
     }
 
     fn monitor(&mut self, scale: f32, preview: bool) -> Result<Vec<u8>> {
@@ -395,7 +405,15 @@ impl Runner {
     }
 
     fn broadcast_state(&self) {
-        self.hub.send(&json!({ "type": "state", "channel": self.number, "frame": self.frame_no, "layers": self.program.state().map(|s| &s.layers) }));
+        let s = self.program.state();
+        self.hub.send(&json!({
+            "type": "state",
+            "channel": self.number,
+            "frame": self.frame_no,
+            "layers": s.map(|s| &s.layers),
+            "state": s.and_then(|s| s.state.as_deref()),
+            "data": s.map(|s| &s.data),
+        }));
     }
 
     fn broadcast_preview(&self) {
@@ -585,7 +603,8 @@ impl Server {
         let req = match cmd.as_str() {
             "take" => Req::Take { reply: tx },
             "discard" => Req::Discard { reply: tx },
-            "state" => Req::State { reply: tx },
+            // state с именем — переход в состояние канала, без имени — снимок.
+            "state" if !obj.contains_key("name") => Req::State { reply: tx },
             "schema" => Req::Schema { reply: tx },
             "batch" => {
                 let cmds = match obj.remove("cmds").map(serde_json::from_value::<Vec<Entry>>) {
@@ -597,7 +616,7 @@ impl Server {
             }
             _ => match serde_json::from_value::<Entry>(Value::Object(obj.clone())) {
                 Ok(e) => Req::Commands { cmds: vec![e], to, reply: tx },
-                Err(e) => return fail(format!("команда не разобралась: {e}; команды: load, play, next, stop, update, invoke, clear, batch, take, discard, state, schema")),
+                Err(e) => return fail(format!("команда не разобралась: {e}; команды: load, play, next, stop, update, invoke, clear, state <имя>, batch, take, discard, state, schema")),
             },
         };
         if ch.send(req).is_err() {

@@ -33,8 +33,12 @@ impl Drop for Serve {
 }
 
 fn serve(home: &Path, journal: &Path, extra: &[&str]) -> Serve {
+    serve_channel(home, "examples/channel/channel.tsx", journal, extra)
+}
+
+fn serve_channel(home: &Path, channel: &str, journal: &Path, extra: &[&str]) -> Serve {
     let mut child = Command::new(env!("CARGO_BIN_EXE_keyfill"))
-        .args(["serve", "examples/channel/channel.tsx", "--port", "0", "--journal"])
+        .args(["serve", channel, "--port", "0", "--journal"])
         .arg(journal)
         .args(extra)
         .current_dir(home)
@@ -215,6 +219,56 @@ fn serve_takes_commands_preview_and_writes_journal() {
     let mut c = Client::connect(&server.addr, "");
     let st = c.ask(json!({ "cmd": "state" }), "s1");
     assert_eq!(st["layers"]["20"]["current"]["state"], "playing", "{st}");
+}
+
+#[test]
+fn serve_switches_states_through_preview() {
+    let Some(home) = home() else { return };
+    let journal = home.join("target/tmp-serve/states");
+    let _ = std::fs::remove_dir_all(&journal);
+    let server = serve_channel(&home, "examples/match/channel.tsx", &journal, &[]);
+    let addr = server.addr.clone();
+    let schema = json_get(&addr, "/schema");
+    let ch = &schema["channels"]["1"];
+    assert_eq!(ch["layers"], json!({ "lower": 20, "score": 10 }), "{ch}");
+    assert_eq!(ch["states"]["interview"], json!({ "10": "Scoreboard", "20": "LowerThird" }), "{ch}");
+    assert!(ch["props"].as_array().unwrap().iter().any(|p| p["name"] == "guest"), "{ch}");
+
+    let mut c = Client::connect(&addr, "");
+    let ack = c.ask(json!({ "cmd": "batch", "cmds": [
+        { "cmd": "update", "props": { "guest": "Анна Смирнова", "guestRole": "Комментатор" } },
+        { "cmd": "state", "name": "live" },
+    ] }), "a1");
+    assert!(ack["results"].as_array().unwrap().iter().all(|r| r["status"] == "ok"), "{ack}");
+    c.wait(|v| v["type"] == "event" && v["source"] == "channel" && v["kind"] == "state" && v["name"] == "live");
+
+    // Состояние готовится в preview: эфир не меняется, take переводит одной пачкой.
+    let ack = c.ask(json!({ "cmd": "state", "name": "interview", "to": "preview" }), "p1");
+    assert_eq!(ack["results"][0]["status"], "ok", "{ack}");
+    let st = json_get(&addr, "/state");
+    let ch = &st["channels"]["1"];
+    assert_eq!(ch["state"], "live", "{ch}");
+    assert_eq!(ch["preview"]["staged"], json!(["state interview"]), "{ch}");
+    let (_, program) = http(&addr, "/monitor/1.png?scale=0.25");
+    let (_, preview) = http(&addr, "/monitor/1.png?scale=0.25&preview=1");
+    assert_ne!(program, preview, "в preview — гость");
+    let ack = c.ask(json!({ "cmd": "take" }), "t1");
+    assert_eq!(ack["results"][0]["status"], "ok", "{ack}");
+    let st = json_get(&addr, "/state");
+    let ch = &st["channels"]["1"];
+    assert_eq!(ch["state"], "interview", "{ch}");
+    assert_eq!(ch["layers"]["20"]["current"]["props"]["name"], "Анна Смирнова", "{ch}");
+    assert_eq!(ch["data"]["guestRole"], "Комментатор", "{ch}");
+    drop(c);
+    drop(server);
+
+    // Подъём: данные и состояние из журнала, сразу «в эфир».
+    let server = serve_channel(&home, "examples/match/channel.tsx", &journal, &["--resume"]);
+    let st = json_get(&server.addr, "/state");
+    let ch = &st["channels"]["1"];
+    assert_eq!(ch["state"], "interview", "{st}");
+    assert_eq!(ch["data"]["guest"], "Анна Смирнова", "{st}");
+    assert_eq!(ch["layers"]["10"]["current"]["state"], "playing", "{st}");
 }
 
 #[test]

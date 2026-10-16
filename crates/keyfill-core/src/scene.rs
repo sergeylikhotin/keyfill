@@ -75,8 +75,8 @@ pub enum Cmd {
     },
     /// Описание компонента: пропсы, части, команды.
     Component(ComponentInfo),
-    /// Файл — канал (`defineChannel`): каталог компонентов для слоёв.
-    Channel { components: Vec<String> },
+    /// Файл — канал (`defineChannel`): каталог, слои состояний, состояния и данные.
+    Channel(ChannelDef),
     /// Ответ канала на команду: экземпляр создан, его текущие пропсы или отказ.
     Layer(LayerReply),
 }
@@ -91,6 +91,49 @@ pub enum LayerReply {
     Values { inst: String, props: Value },
     /// Команда отклонена до исполнения: неверные пропсы или параметры. Состояние не менялось.
     Rejected { errors: Vec<String> },
+    /// Данные канала после `update` без слоя.
+    Data { props: Value },
+}
+
+/// Канал (`defineChannel`): что можно ставить на свободные слои, какие слои ведут состояния и
+/// что на них стоит в каждом состоянии, данные канала.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+pub struct ChannelDef {
+    /// Каталог: компоненты из `components` и из `states`.
+    pub components: Vec<String>,
+    /// Слои состояний: имя → номер.
+    #[serde(default)]
+    pub layers: BTreeMap<String, u32>,
+    /// Состояния: имя → номер слоя → компонент.
+    #[serde(default, deserialize_with = "layer_keys")]
+    pub states: BTreeMap<String, BTreeMap<u32, String>>,
+    /// Схема данных канала.
+    #[serde(default)]
+    pub props: Vec<PropInfo>,
+    /// Начальные данные.
+    #[serde(default)]
+    pub data: Value,
+}
+
+/// Номера слоёв приходят из JS ключами объекта, то есть строками.
+fn layer_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, BTreeMap<u32, String>>, D::Error> {
+    let raw = BTreeMap::<String, BTreeMap<String, String>>::deserialize(d)?;
+    raw.into_iter()
+        .map(|(state, items)| {
+            let items = items
+                .into_iter()
+                .map(|(k, v)| k.parse().map(|n| (n, v)).map_err(|_| serde::de::Error::custom(format!("состояние {state}: слой {k:?} — не число"))))
+                .collect::<Result<_, _>>()?;
+            Ok((state, items))
+        })
+        .collect()
+}
+
+impl ChannelDef {
+    /// Имя слоя, если его ведут состояния.
+    pub fn state_layer(&self, layer: u32) -> Option<&str> {
+        self.layers.iter().find(|(_, n)| **n == layer).map(|(name, _)| name.as_str())
+    }
 }
 
 /// Пропс сцены, компонента или параметр команды.
@@ -318,8 +361,8 @@ pub struct Scene {
     /// Ошибки входных пропсов: неизвестное имя, неверный тип, не задан обязательный.
     pub props_errors: Vec<String>,
     pub components: Vec<ComponentInfo>,
-    /// Каталог канала (`defineChannel({ components })`); `None` — обычная сцена.
-    pub channel: Option<Vec<String>>,
+    /// Канал (`defineChannel`); `None` — обычная сцена.
+    pub channel: Option<ChannelDef>,
     /// Ответы канала на последнюю команду; их забирает сессия.
     pub replies: Vec<LayerReply>,
     /// Узлы, удалённые командами `remove`; их забирает сессия, чтобы движение их забыло.
@@ -373,7 +416,7 @@ impl Scene {
                 self.node_mut(id)?;
                 self.released.push(id);
             }
-            Cmd::Channel { components } => self.channel = Some(components),
+            Cmd::Channel(def) => self.channel = Some(def),
             Cmd::Layer(r) => self.replies.push(r),
             Cmd::Text { id, runs } => {
                 let node = self.node_mut(id)?;

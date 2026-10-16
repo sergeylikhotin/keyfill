@@ -216,6 +216,22 @@ pub fn schema_text(s: &Schema) -> String {
     if let Some(c) = &s.channel {
         let catalog = if c.catalog.is_empty() { "пуст".to_string() } else { c.catalog.join(", ") };
         let _ = writeln!(out, "channel  каталог: {catalog}");
+        if !c.layers.is_empty() {
+            let layers: Vec<String> = c.layers.iter().map(|(name, n)| format!("{name} {n}")).collect();
+            let _ = writeln!(out, "layers   {} (ведут состояния)", layers.join(", "));
+        }
+        for (name, items) in &c.states {
+            let what: Vec<String> = items.iter().map(|(layer, comp)| format!("{layer}: {comp}")).collect();
+            let what = if what.is_empty() { "пусто".to_string() } else { what.join(", ") };
+            let _ = writeln!(out, "state    {name}  {what}");
+        }
+        if !s.props.is_empty() {
+            out.push_str("data  (update без слоя)
+");
+            for p in &s.props {
+                let _ = writeln!(out, "  {}", prop_line(p));
+            }
+        }
     } else if s.props.is_empty() {
         out.push_str("props  — (сцена без данных)\n");
     } else {

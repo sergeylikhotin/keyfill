@@ -39,8 +39,13 @@ pub enum Command {
     Next { layer: u32 },
     /// Увести экземпляр слоя через `out`; после ухода он удаляется.
     Stop { layer: u32 },
-    /// Новые значения пропсов; изменения идут через `transition`.
-    Update { layer: u32, props: Map<String, Value> },
+    /// Новые значения пропсов экземпляра слоя; без слоя — данные канала. Изменения идут через
+    /// `transition`.
+    Update {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layer: Option<u32>,
+        props: Map<String, Value>,
+    },
     /// Команда компонента с параметрами.
     Invoke {
         layer: u32,
@@ -52,6 +57,14 @@ pub enum Command {
     Clear {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layer: Option<u32>,
+    },
+    /// Перейти в состояние канала: ушедшее из состояния уходит, пришедшее входит, оставшееся
+    /// переходит на новые пропсы.
+    State {
+        name: String,
+        /// Сразу «в эфир», без in и out: подъём после сбоя и preview.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        instant: bool,
     },
 }
 
@@ -65,6 +78,7 @@ impl Command {
             Command::Update { .. } => "update",
             Command::Invoke { .. } => "invoke",
             Command::Clear { .. } => "clear",
+            Command::State { .. } => "state",
         }
     }
 
@@ -74,9 +88,9 @@ impl Command {
             | Command::Play { layer, .. }
             | Command::Next { layer }
             | Command::Stop { layer }
-            | Command::Update { layer, .. }
             | Command::Invoke { layer, .. } => Some(*layer),
-            Command::Clear { layer } => *layer,
+            Command::Update { layer, .. } | Command::Clear { layer } => *layer,
+            Command::State { .. } => None,
         }
     }
 
@@ -86,6 +100,8 @@ impl Command {
         let what = match self {
             Command::Load { component, .. } | Command::Play { component: Some(component), .. } => format!(" {component}"),
             Command::Invoke { command, .. } => format!(" {command}"),
+            Command::State { name, .. } => format!(" {name}"),
+            Command::Update { layer: None, .. } => " data".to_string(),
             _ => String::new(),
         };
         format!("{}{layer}{what}", self.name())
@@ -281,15 +297,30 @@ impl Layer {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct State {
     pub layers: BTreeMap<u32, Layer>,
+    /// Состояние канала (`state live`); `None` — ни одного ещё не было или после `clear`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// Данные канала.
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub data: Value,
+    /// Слои, которые ведут состояния: их восстанавливает `state`, а не `play`.
+    #[serde(skip)]
+    pub managed: std::collections::BTreeSet<u32>,
 }
 
 impl State {
-    /// Команды, которые восстанавливают показанное и загруженное (уходящие уже не нужны).
-    /// Показанные встают сразу «в эфир» (`instant`): зритель не видит повторного выхода.
+    /// Команды, которые восстанавливают данные, состояние, показанное и загруженное (уходящие
+    /// уже не нужны). Всё встаёт сразу «в эфир» (`instant`): зритель не видит повторного выхода.
     pub fn to_batch(&self, frame: u64) -> Batch {
         let mut cmds = Vec::new();
+        if let Some(data) = self.data.as_object().filter(|d| !d.is_empty()) {
+            cmds.push(Command::Update { layer: None, props: data.clone() }.into());
+        }
+        if let Some(name) = &self.state {
+            cmds.push(Command::State { name: name.clone(), instant: true }.into());
+        }
         let props = |i: &Inst| i.props.as_object().cloned().unwrap_or_default();
-        for (&layer, l) in &self.layers {
+        for (&layer, l) in self.layers.iter().filter(|(l, _)| !self.managed.contains(l)) {
             if let Some(i) = &l.current {
                 cmds.push(Command::Play { layer, component: Some(i.component.clone()), props: props(i), instant: true }.into());
             }

@@ -573,7 +573,8 @@ export const component: typeof S.component = (def) => {
     applyPlacement(root.id, p);
     return root;
   };
-  return brand(Object.assign(C, { keyfillName: def.name, keyfillSchema: schema }));
+  const withProps = (props: Props) => brand({ $with: true, component: C, props: props ?? {} });
+  return brand(Object.assign(C, { keyfillName: def.name, keyfillSchema: schema, with: withProps }));
 };
 
 // ─── Сцена и сценарий ───────────────────────────────────────────────────────
@@ -694,35 +695,111 @@ export const defineChannel: typeof S.defineChannel = (def) => brand({ ...def, $c
 
 type CatalogItem = ((p: Props) => KeyfillElement) & { keyfillName: string; keyfillSchema: Record<string, PropDesc> };
 
+/** Компонент на слое состояния: пропсы — значения или аксессоры данных канала. */
+type Binding = { component: CatalogItem; props: Props };
+
 /**
- * Состояние канала на стороне JS: каталог и живые экземпляры. Слоями, порядком и движением
- * ведает ядро; сюда приходят только монтирование, данные, команды и снятие.
+ * Состояние канала на стороне JS: каталог, живые экземпляры, данные и состояния. Слоями,
+ * порядком и движением ведает ядро; сюда приходят монтирование, данные, команды и снятие.
  */
 const channel = {
   stage: 0,
   catalog: new Map<string, CatalogItem>(),
   live: new Map<string, { inst: Instance; created: Instance[]; dispose: () => void }>(),
+  /** Данные канала: ячейки пропсов, как у сцены. */
+  data: undefined as undefined | { schema: Record<string, PropDesc>; update: (patch: Props) => void; current: () => Props },
+  /** Состояния: имя → номер слоя → компонент с пропсами. */
+  states: new Map<string, Map<number, Binding>>(),
 };
+
+/** Значения привязки сейчас: аксессоры данных вычисляются без подписки. */
+const evaluate = (props: Props) => untrack(() => Object.fromEntries(Object.entries(props).map(([k, v]) => [k, read(v)])));
+
+function addToCatalog(c: unknown, where: string) {
+  const name = (c as Partial<CatalogItem> | undefined)?.keyfillName;
+  if (typeof name !== 'string') throw new KeyfillError(`defineChannel: в ${where} — компоненты из component()`);
+  const known = channel.catalog.get(name);
+  if (known && known !== c) throw new KeyfillError(`defineChannel: два разных компонента с именем ${name}`);
+  channel.catalog.set(name, c as CatalogItem);
+  return name;
+}
 
 function mountChannel(def: Props) {
   const stage = host.create('stage');
   channel.stage = stage;
   host.emit({ op: 'stage', id: stage, ref: def.stage.ref, safe: def.stage.safe, fps: def.fps, fonts: def.fonts ?? [], systemFonts: def.systemFonts ?? true });
+  const names = new Set<string>();
   for (const c of def.components ?? []) {
-    const name = (c as Partial<CatalogItem> | undefined)?.keyfillName;
-    if (typeof name !== 'string') throw new KeyfillError('defineChannel: в components — компоненты из component()');
-    if (channel.catalog.has(name)) throw new KeyfillError(`defineChannel: ${name} в components дважды`);
-    channel.catalog.set(name, c as CatalogItem);
+    const name = addToCatalog(c, 'components');
+    if (names.has(name)) throw new KeyfillError(`defineChannel: ${name} в components дважды`);
+    names.add(name);
   }
-  host.emit({ op: 'channel', components: [...channel.catalog.keys()] });
+
+  // Данные канала: у каждого пропса есть начальное значение, иначе первое состояние не построить.
+  const schema = descAll(def.props, 'defineChannel: пропс');
+  const defaults: Props = def.defaults ?? {};
+  const errors: string[] = [];
+  const initial = fields(schema, {}, '', errors, true, defaults, 'канала');
+  if (errors.length) throw new KeyfillError(`defineChannel: ${errors.join('; ')}: данным канала нужно начальное значение — default в prop.* или defaults`);
+  const data = propSlots(schema, initial, 'канала');
+  channel.data = { schema, update: data.update, current: data.current };
+
+  const layers: Record<string, number> = def.layers ?? {};
+  const byNumber = new Map<number, string>();
+  for (const [name, n] of Object.entries(layers)) {
+    if (!Number.isInteger(n) || n < 0) throw new KeyfillError(`defineChannel: слой ${name} — целое число ≥ 0, получено ${n}`);
+    if (byNumber.has(n)) throw new KeyfillError(`defineChannel: слои ${byNumber.get(n)} и ${name} с одним номером ${n}`);
+    byNumber.set(n, name);
+  }
+  if (def.states && typeof def.states !== 'function') throw new KeyfillError('defineChannel: states — функция данных канала: states: (d) => ({ live: { ... } })');
+  const table = (def.states ? def.states(brand(data.accessors)) : {}) as Record<string, Record<string, Props>>;
+  const states: Record<string, Record<number, string>> = {};
+  for (const [state, items] of Object.entries(table)) {
+    const map = new Map<number, Binding>();
+    states[state] = {};
+    for (const [layer, item] of Object.entries(items ?? {})) {
+      const where = `defineChannel: состояние ${state}, слой ${layer}`;
+      if (!(layer in layers)) throw new KeyfillError(`${where}: такого слоя нет в layers; есть: ${Object.keys(layers).join(', ') || 'ничего'}`);
+      if (!item) continue;
+      if (!item.$with) throw new KeyfillError(`${where}: ожидается Компонент.with({ ... })`);
+      const name = addToCatalog(item.component, 'states');
+      const C = item.component as CatalogItem;
+      // Привязка проверяется сразу: состояние, которое нельзя построить, — ошибка канала, а не эфира.
+      const errs: string[] = [];
+      fields(C.keyfillSchema, evaluate(item.props), '', errs, true, {}, name);
+      if (errs.length) throw new KeyfillError(`${where}: ${errs.join('; ')}`);
+      map.set(layers[layer], { component: C, props: item.props });
+      states[state][layers[layer]] = name;
+    }
+    channel.states.set(state, map);
+  }
+  host.emit({ op: 'channel', components: [...channel.catalog.keys()], layers, states, props: infos(schema, defaults), data: data.current() });
   if (def.timelines?.length) host.emit({ op: 'timelines', items: def.timelines });
   host.flush();
 }
 
+/** Привязка состояния к слою и все пропсы экземпляра по ней: недостающие — из default. */
+function binding(state: string, layer: number): Binding {
+  const b = channel.states.get(state)?.get(layer);
+  if (!b) throw new KeyfillError(`канал: в состоянии ${state} на слое ${layer} ничего нет`);
+  return b;
+}
+
+function boundProps(b: Binding): Props {
+  const out: Props = {};
+  for (const [k, d] of Object.entries(b.component.keyfillSchema)) {
+    if (k in b.props) out[k] = b.props[k];
+    else if (d.default !== undefined) out[k] = d.default;
+  }
+  return out;
+}
+
 type LayerCmd =
-  | { op: 'mount'; component: string; props?: Props; before?: number }
+  | { op: 'mount'; component: string; props?: Props; before?: number; state?: string; layer?: number }
   | { op: 'update'; inst: string; props: Props }
   | { op: 'invoke'; inst: string; command: string; params?: Props }
+  | { op: 'bind'; inst: string; state: string; layer: number }
+  | { op: 'data'; props: Props }
   | { op: 'release'; inst: string }
   | { op: 'unmount'; inst: string };
 
@@ -742,15 +819,17 @@ function layerCmd(c: LayerCmd) {
       if (!C) {
         return reject([`в каталоге канала нет компонента "${c.component}"; есть: ${[...channel.catalog.keys()].join(', ') || 'ничего'}`]);
       }
+      // Экземпляр состояния берёт пропсы из привязки: они следят за данными канала.
+      const given = c.state !== undefined ? boundProps(binding(c.state, c.layer!)) : (c.props ?? {});
       const errors: string[] = [];
-      fields(C.keyfillSchema, c.props ?? {}, '', errors, true, {}, c.component);
+      if (c.state === undefined) fields(C.keyfillSchema, given, '', errors, true, {}, c.component);
       if (errors.length) return reject(errors);
       // Исключение в view: отбрасываем недостроенное дерево, экземпляр в каталог живых не попадает.
       const mark = host.mark();
       const count = instances.length;
       let mounted: { value: KeyfillElement; dispose: () => void };
       try {
-        mounted = createRoot(() => C({ ...(c.props ?? {}) }));
+        mounted = createRoot(() => C({ ...given }));
       } catch (e) {
         host.rollback(mark);
         instances = instances.slice(0, count);
@@ -777,6 +856,22 @@ function layerCmd(c: LayerCmd) {
       if (errors.length) return reject(errors);
       inst.invoke(c.command, c.params ?? {});
       return values(inst);
+    }
+    // Тот же компонент остался в новом состоянии: пропсы переходят на новую привязку.
+    case 'bind': {
+      const inst = liveInstance(c.inst);
+      inst.update(boundProps(binding(c.state, c.layer)));
+      return values(inst);
+    }
+    case 'data': {
+      const data = channel.data!;
+      const errors: string[] = [];
+      fields(data.schema, c.props ?? {}, '', errors, false, {}, 'канала');
+      if (errors.length) return reject(errors);
+      data.update(c.props ?? {});
+      host.emit({ op: 'layer', reply: 'data', props: data.current() });
+      for (const { inst } of channel.live.values()) values(inst);
+      return;
     }
     // release — уйти через out (узлы удалит ядро после ухода), unmount — убрать сразу.
     case 'release':

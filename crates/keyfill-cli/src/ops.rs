@@ -487,6 +487,12 @@ pub struct Schema {
 pub struct ChannelSchema {
     /// Компоненты, которые можно ставить на слои; их пропсы и команды — в `components`.
     pub catalog: Vec<String>,
+    /// Слои, которые ведут состояния: имя → номер.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layers: BTreeMap<String, u32>,
+    /// Состояния: имя → номер слоя → компонент.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub states: BTreeMap<String, BTreeMap<u32, String>>,
     /// Пачки журнала: `кадр 0: play 20 LowerThird`.
     pub journal: Vec<String>,
 }
@@ -528,7 +534,7 @@ pub fn schema(job: &Job) -> Result<Outcome<Schema>> {
     let components = scene
         .components
         .iter()
-        .filter(|c| catalog.is_none_or(|names| names.contains(&c.name)))
+        .filter(|c| catalog.is_none_or(|def| def.components.contains(&c.name)))
         .map(|c| {
             let mut instances: Vec<String> =
                 scene.nodes.values().filter_map(|n| n.instance()).filter(|i| component_of(i) == c.name).map(String::from).collect();
@@ -543,11 +549,14 @@ pub fn schema(job: &Job) -> Result<Outcome<Schema>> {
         .collect();
     Ok(Outcome::new(Schema {
         stage: StageSchema { size: stage.size, fps: stage.fps },
-        props: scene.props.clone(),
+        // У канала пропсы — его данные (`update` без слоя).
+        props: catalog.map_or_else(|| scene.props.clone(), |def| def.props.clone()),
         components,
         cues: session.cues().iter().map(|c| c.label()).collect(),
-        channel: catalog.map(|names| ChannelSchema {
-            catalog: names.clone(),
+        channel: catalog.map(|def| ChannelSchema {
+            catalog: def.components.clone(),
+            layers: def.layers.clone(),
+            states: def.states.clone(),
             journal: session
                 .batches()
                 .iter()

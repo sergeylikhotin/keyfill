@@ -33,6 +33,29 @@ timeline(LowerThird, ({ at }) => ({
   keys: [at(0, 'panel', { layout: 1 })],
 }));
 
+// Состояния канала: слой — из layers, пропсы — по типам компонента, данные — из props канала.
+defineChannel({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  props: { guest: prop.string({ default: '' }), score: prop.number({ default: 0 }) },
+  layers: { lower: 20 },
+  states: (d) => ({
+    on: { lower: LowerThird.with({ name: d.guest, role: 'Гость', live: true }) },
+    // @ts-expect-error score — число, а name — строка
+    wrong: { lower: LowerThird.with({ name: d.score, role: 'Гость', live: true }) },
+    // @ts-expect-error в данных канала нет guestRole
+    missing: { lower: LowerThird.with({ name: d.guest, role: d.guestRole, live: true }) },
+  }),
+});
+
+defineChannel({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  layers: { lower: 20 },
+  // @ts-expect-error слоя score нет в layers
+  states: () => ({ bad: { score: LowerThird.with({ name: 'x', role: 'Гость', live: true }) } }),
+});
+
 // Неверный тип пропса компонента.
 // @ts-expect-error live — boolean
 <LowerThird name="x" role="y" live="yes" tags={[]} />;

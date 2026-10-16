@@ -245,5 +245,5 @@ fn schema_describes_props_for_a_panel() {
     let lower = s.scene.components.iter().find(|c| c.name == "LowerThird").unwrap();
     let tags = lower.props.iter().find(|p| p.name == "tags").unwrap();
     assert_eq!(tags.schema, json!({ "type": "array", "items": { "type": "string" }, "default": [] }));
-    assert_eq!(s.scene.channel.as_deref(), Some(&["Scoreboard".to_string(), "LowerThird".to_string()][..]));
+    assert_eq!(s.scene.channel.as_ref().map(|c| c.components.as_slice()), Some(&["Scoreboard".to_string(), "LowerThird".to_string()][..]));
 }

@@ -52,6 +52,9 @@ pub struct Session {
     next_batch: usize,
     /// Отпущенные корни (элементы `For`, экземпляры после stop): удаляются, когда кончится уход.
     releasing: Vec<u32>,
+    /// Уходящие экземпляры состояний: живы в JS, пока не кончится уход; их может развернуть
+    /// следующее состояние.
+    parked: Vec<u32>,
     /// Пачки, принятые `command` с прошлого `take_recorded`: их дописывает в журнал `serve`.
     recorded: Vec<Batch>,
     pub logs: Vec<LogLine>,
@@ -83,7 +86,11 @@ impl Session {
         }
         let engine = TextEngine::for_scene(&scene);
         let mut motion = MotionState::default();
-        let channel = scene.channel.is_some().then(State::default);
+        let channel = scene.channel.as_ref().map(|c| State {
+            managed: c.layers.values().copied().collect(),
+            data: c.data.clone(),
+            ..State::default()
+        });
         if channel.is_some() {
             if !extra.is_empty() {
                 return Err(crate::usage("--cue — для сцен; командами канала управляет журнал *.journal.jsonl"));
@@ -124,6 +131,7 @@ impl Session {
             batches: batches.to_vec(),
             next_batch: 0,
             releasing: Vec::new(),
+            parked: Vec::new(),
             recorded: Vec::new(),
             logs: first.logs,
             fps,
@@ -365,7 +373,7 @@ impl Session {
     /// Когда всё запущенное к этому моменту улеглось: кончились in и уходы. Кадр preview.
     pub fn quiet_time(&mut self) -> Result<f64> {
         let settled = self.settled_time()?;
-        let leaving = self.releasing.iter().filter_map(|r| self.motion.hide_time(*r)).fold(settled, f64::max);
+        let leaving = self.releasing.iter().chain(&self.parked).filter_map(|r| self.motion.hide_time(*r)).fold(settled, f64::max);
         // Соседи ушедших переезжают после ухода.
         self.advance(self.snap(leaving).max(self.now))?;
         let moved = self.motion.layout_end().map_or(leaving, |e| e.max(leaving));
@@ -398,9 +406,21 @@ impl Session {
 
     fn layer_command(&mut self, cmd: &Command, t: f64) -> Result<(), CmdError> {
         let reject = |m: String| Err(CmdError::Rejected(vec![m]));
+        // Слоями состояний управляют состояния: прямые команды показа и данных на них — отказ.
+        let direct = matches!(cmd, Command::Load { .. } | Command::Play { .. } | Command::Stop { .. } | Command::Update { .. } | Command::Clear { .. });
+        if let Some(layer) = cmd.layer().filter(|_| direct)
+            && let Some(name) = self.scene.channel.as_ref().and_then(|c| c.state_layer(layer))
+        {
+            return reject(format!(
+                "{} {layer}: слой {name} ведут состояния канала; переключай state <имя>, данные — update без слоя",
+                cmd.name()
+            ));
+        }
         match cmd {
+            Command::State { name, instant } => self.enter_state(name, *instant, t),
+            Command::Update { layer: None, props } => self.layer_js(serde_json::json!({ "op": "data", "props": props }), t),
             Command::Load { layer, component, props } => {
-                let inst = self.mount(*layer, component, props, t)?;
+                let inst = self.mount(*layer, component, props, None, t)?;
                 let slot = self.layer_mut(*layer);
                 let old = slot.loaded.replace(inst);
                 if let Some(old) = old {
@@ -450,7 +470,7 @@ impl Session {
                 }
                 Ok(())
             }
-            Command::Update { layer, props } => {
+            Command::Update { layer: Some(layer), props } => {
                 let inst = self.target(*layer, "update")?.name.clone();
                 self.layer_js(serde_json::json!({ "op": "update", "inst": inst, "props": props }), t)
             }
@@ -466,12 +486,102 @@ impl Session {
                 for l in layers {
                     let Some(slot) = self.channel.as_mut().and_then(|c| c.layers.remove(&l)) else { continue };
                     for inst in slot.all() {
+                        self.parked.retain(|r| *r != inst.root);
                         self.unmount(inst, t)?;
                     }
+                }
+                if layer.is_none()
+                    && let Some(c) = &mut self.channel
+                {
+                    c.state = None;
                 }
                 Ok(())
             }
         }
+    }
+
+    /// Переход в состояние канала — разница с текущим по слоям состояний: ушедшее уходит через
+    /// `out`, пришедшее входит, тот же компонент на том же слое остаётся и переходит на пропсы
+    /// нового состояния (через `transition`). Уходящий экземпляр, который снова нужен,
+    /// разворачивается с того места, где он сейчас.
+    fn enter_state(&mut self, name: &str, instant: bool, t: f64) -> Result<(), CmdError> {
+        let def = self.scene.channel.clone().unwrap_or_default();
+        let Some(target) = def.states.get(name) else {
+            let known: Vec<&str> = def.states.keys().map(String::as_str).collect();
+            let known = if known.is_empty() { "ни одного: defineChannel({ states })".to_string() } else { known.join(", ") };
+            return Err(CmdError::Rejected(vec![format!("state {name}: такого состояния нет; есть: {known}")]));
+        };
+        if !instant && self.channel.as_ref().and_then(|c| c.state.as_deref()) == Some(name) {
+            self.event(t, "channel", "ignored", format!("state {name}: канал уже в этом состоянии"));
+            return Ok(());
+        }
+        let mut layers: Vec<u32> = def.layers.values().copied().collect();
+        layers.sort_unstable();
+        for layer in layers {
+            let want = target.get(&layer);
+            let current = self.layer_mut(layer).current.take();
+            match (current, want) {
+                (Some(cur), Some(w)) if &cur.component == w => {
+                    let inst = cur.name.clone();
+                    self.layer_mut(layer).current = Some(cur);
+                    self.layer_js(serde_json::json!({ "op": "bind", "inst": inst, "state": name, "layer": layer }), t)?;
+                }
+                (current, want) => {
+                    if let Some(cur) = current {
+                        self.park(layer, cur, instant, t)?;
+                    }
+                    if let Some(w) = want {
+                        self.show_state(layer, w, name, instant, t)?;
+                    }
+                }
+            }
+        }
+        if let Some(c) = &mut self.channel {
+            c.state = Some(name.to_string());
+        }
+        self.event(t, "channel", "state", name.to_string());
+        Ok(())
+    }
+
+    /// Показать компонент состояния на слое: развернуть уходящий такой же или смонтировать новый.
+    fn show_state(&mut self, layer: u32, component: &str, state: &str, instant: bool, t: f64) -> Result<(), CmdError> {
+        let slot = self.layer_mut(layer);
+        let back = slot.leaving.iter().position(|i| i.component == component).filter(|_| !instant);
+        let mut inst = match back {
+            Some(i) => {
+                let inst = slot.leaving.remove(i);
+                self.parked.retain(|r| *r != inst.root);
+                inst
+            }
+            None => self.mount(layer, component, &Default::default(), Some(state), t)?,
+        };
+        let (name, root) = (inst.name.clone(), inst.root);
+        inst.state = InstState::Playing;
+        self.layer_mut(layer).current = Some(inst);
+        self.event(t, &name, "state", "playing".into());
+        if back.is_some() {
+            self.layer_js(serde_json::json!({ "op": "bind", "inst": name, "state": state, "layer": layer }), t)?;
+            self.motion.revive(&self.scene, &[root], t);
+        } else if instant {
+            self.motion.play_settled(&self.scene, &[root], t);
+        } else {
+            self.motion.play(&self.scene, Some(&[root]), t);
+        }
+        Ok(())
+    }
+
+    /// Экземпляр состояния уходит через `out`, но в JS остаётся живым: новое состояние может
+    /// его развернуть. Снимается, когда уход кончится; `instant` — сразу.
+    fn park(&mut self, layer: u32, mut inst: Inst, instant: bool, t: f64) -> Result<(), CmdError> {
+        if instant {
+            return self.unmount(&inst, t);
+        }
+        self.event(t, &inst.name, "state", "stopping".into());
+        self.motion.stop(&self.scene, Some(&[inst.root]), t);
+        inst.state = InstState::Leaving;
+        self.parked.push(inst.root);
+        self.layer_mut(layer).leaving.push(inst);
+        Ok(())
     }
 
     fn layer_mut(&mut self, layer: u32) -> &mut Layer {
@@ -507,18 +617,32 @@ impl Session {
     fn sweep(&mut self, t: f64) -> Result<()> {
         let mut gone = BTreeMap::new();
         let motion = &self.motion;
-        self.releasing.retain(|&root| match motion.hide_time(root) {
+        let due = |root: &u32, gone: &mut BTreeMap<u32, f64>| match motion.hide_time(*root) {
             Some(at) if at <= t + 1e-9 => {
-                gone.insert(root, at);
+                gone.insert(*root, at);
                 false
             }
             _ => true,
-        });
+        };
+        self.releasing.retain(|r| due(r, &mut gone));
+        let mut parked = BTreeMap::new();
+        self.parked.retain(|r| due(r, &mut parked));
         for &root in gone.keys() {
             if self.scene.nodes.contains_key(&root) {
                 self.scene.remove(root)?;
             }
         }
+        // Экземпляры состояний живут в JS до конца ухода: снимает их JS, со своими эффектами.
+        for &root in parked.keys() {
+            let inst = self.channel.as_ref().and_then(|c| c.layers.values().flat_map(|l| l.leaving.iter()).find(|i| i.root == root)).map(|i| i.name.clone());
+            if let Some(inst) = inst {
+                self.layer_js_replies(serde_json::json!({ "op": "unmount", "inst": inst }), t).map_err(|e| match e {
+                    CmdError::Failed(e) => e,
+                    CmdError::Rejected(errors) => anyhow::anyhow!(errors.join("; ")),
+                })?;
+            }
+        }
+        gone.extend(parked);
         let removed = std::mem::take(&mut self.scene.removed);
         if !removed.is_empty() {
             self.motion.forget(&removed);
@@ -543,7 +667,7 @@ impl Session {
 
     /// Монтирует экземпляр компонента на слой: в дереве он встаёт над нижними слоями и под
     /// верхними, на своём слое — поверх прежних.
-    fn mount(&mut self, layer: u32, component: &str, props: &serde_json::Map<String, serde_json::Value>, t: f64) -> Result<Inst, CmdError> {
+    fn mount(&mut self, layer: u32, component: &str, props: &serde_json::Map<String, serde_json::Value>, state: Option<&str>, t: f64) -> Result<Inst, CmdError> {
         let above: Vec<u32> = self
             .channel
             .as_ref()
@@ -551,7 +675,12 @@ impl Session {
             .unwrap_or_default();
         let stage = self.scene.stage.as_ref().map(|s| s.id).unwrap_or(0);
         let before = self.scene.nodes.get(&stage).and_then(|s| s.children.iter().find(|c| above.contains(c)).copied());
-        let replies = self.layer_js_replies(serde_json::json!({ "op": "mount", "component": component, "props": props, "before": before }), t)?;
+        let mut arg = serde_json::json!({ "op": "mount", "component": component, "props": props, "before": before });
+        if let Some(state) = state {
+            arg["state"] = state.into();
+            arg["layer"] = layer.into();
+        }
+        let replies = self.layer_js_replies(arg, t)?;
         let mut inst = None;
         for r in replies {
             match r {
@@ -563,7 +692,7 @@ impl Session {
                         i.props = props;
                     }
                 }
-                LayerReply::Rejected { .. } => {}
+                LayerReply::Rejected { .. } | LayerReply::Data { .. } => {}
             }
         }
         let inst = inst.ok_or_else(|| CmdError::Failed(anyhow::anyhow!("канал: JS не сообщил о монтировании {component}")))?;
@@ -586,6 +715,9 @@ impl Session {
     fn take_values(&mut self, replies: &[LayerReply]) {
         let Some(c) = &mut self.channel else { return };
         for r in replies {
+            if let LayerReply::Data { props } = r {
+                c.data = props.clone();
+            }
             let LayerReply::Values { inst, props } = r else { continue };
             for l in c.layers.values_mut() {
                 for i in l.current.iter_mut().chain(l.loaded.iter_mut()) {

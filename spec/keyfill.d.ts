@@ -397,6 +397,8 @@ declare module '@keyfill/core' {
   /** `P` — пропсы внутри компонента, `I` — что передают снаружи (пропсы с `default` необязательны). */
   export interface Component<P, N extends string, C = {}, I = P> {
     (props: ReactiveProps<I> & NodePlacement): KeyfillElement;
+    /** Компонент на слое состояния канала (`defineChannel({ states })`): значения или аксессоры данных. */
+    with(props: ReactiveProps<I>): StateItem;
     readonly [componentBrand]: { readonly props: P; readonly parts: N; readonly commands: C; readonly input: I };
   }
   export type PartsOf<C> = C extends Component<any, infer N, any, any> ? N : never;
@@ -554,17 +556,42 @@ declare module '@keyfill/core' {
    * команды: `play 20 LowerThird { name }`, `update 20 { … }`, `stop 20`. Слой — число,
    * порядок наложения; на слое один экземпляр (при замене старый уходит через out).
    * Команды подаёт журнал (`*.journal.jsonl`), а с M4b — `keyfill serve`.
+   *
+   * С M5b у канала есть данные (`props`) и состояния (`states`): оператор переключает не плашки,
+   * а состояние сцены (`state live`), и ядро само решает, что уходит, что приходит и что
+   * остаётся с новыми пропсами. Данные меняет `update` без слоя; все плашки видят одни данные.
    */
-  export interface ChannelDef {
+  export interface ChannelDef<S extends PropSchema = {}, L extends string = string> {
     readonly stage: StageConfig;
     readonly fps: number;
-    /** Каталог: какие компоненты можно ставить на слои. Схему их пропсов показывает `keyfill schema`. */
-    readonly components: readonly Component<any, any, any, any>[];
+    /**
+     * Каталог: какие компоненты можно ставить на свободные слои командами `play`/`load`.
+     * Компоненты из `states` добавляются сами. Схему пропсов показывает `keyfill schema`.
+     */
+    readonly components?: readonly Component<any, any, any, any>[];
+    /** Данные канала: счёт, команды, гость. Меняются командой `update` без слоя. */
+    readonly props?: S;
+    /** Начальные данные; у каждого пропса канала должно быть значение (здесь или `default`). */
+    readonly defaults?: NoInfer<Partial<InferProps<S>>>;
+    /**
+     * Слои, которые ведут состояния: имя → номер (порядок наложения). Прямые `play`, `load`,
+     * `stop`, `update`, `clear` на них отклоняются; `invoke` и `next` работают.
+     */
+    readonly layers?: { readonly [K in L]: number };
+    /**
+     * Состояния сцены: имя → что стоит на слоях. Пропсы компонентов — значения или аксессоры
+     * данных канала: `Scoreboard.with({ homeScore: d.homeScore, size: 'compact' })`.
+     */
+    readonly states?: (data: PropAccessors<InferProps<S>>) => { readonly [state: string]: { readonly [K in NoInfer<L>]?: StateItem } };
     readonly fonts?: readonly FontFile[];
     readonly systemFonts?: boolean;
     readonly timelines?: readonly Timeline<any>[];
   }
-  export function defineChannel(def: ChannelDef): ChannelDef;
+  export function defineChannel<const S extends PropSchema = {}, const L extends string = string>(def: ChannelDef<S, L>): ChannelDef<S, L>;
+
+  const stateItemBrand: unique symbol;
+  /** Компонент с пропсами для слоя состояния канала: `Scoreboard.with({ ... })`. */
+  export type StateItem = { readonly [stateItemBrand]: true };
 
   // ─── Сценарий (*.cues.ts) ─────────────────────────────────────────────────
 

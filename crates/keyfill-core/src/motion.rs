@@ -1534,6 +1534,27 @@ impl MotionState {
         self.settled_at = Some(saved.map_or(t, |s| s.max(t)));
     }
 
+    /// Уходящий экземпляр снова нужен: узлы посреди `out` играют `in` с того места, где они
+    /// сейчас (как любое прерывание), уже ушедшие — `in` с объявленных значений; снятие
+    /// отменяется, таймлайн играет заново.
+    pub fn revive(&mut self, scene: &Scene, roots: &[u32], t: f64) {
+        self.settled_at.get_or_insert(t);
+        for &root in roots {
+            for id in Self::subtree(scene, root) {
+                let Some(st) = self.nodes.get_mut(&id) else { continue };
+                st.hide_at = None;
+                st.stopped = false;
+                let back = matches!(st.phase, Phase::Out { .. }) || (st.phase == Phase::Gone && st.visible);
+                if back {
+                    self.enter(id, t);
+                }
+            }
+        }
+        for i in self.runs_of(roots) {
+            self.run_play(i, t);
+        }
+    }
+
     /// stop: узлы с `out` начинают его, таймлайны прыгают на маркер `out`; сцена (или экземпляр)
     /// снимается, когда закончится последний. Узлы без `out` остаются на экране до снятия.
     pub fn stop(&mut self, scene: &Scene, roots: Option<&[u32]>, t: f64) {
@@ -1734,6 +1755,10 @@ impl MotionState {
                 }
                 let track = st.geo[k].take().filter(|tr| tr.running(t));
                 let from = track.as_ref().map_or(0.0, |tr| tr.value(t).n()) + change;
+                // Перестройки в один момент погасили друг друга: узел уже на месте.
+                if from.abs() < 1e-3 {
+                    continue;
+                }
                 let v0 = match (&track, easing) {
                     (Some(tr), Easing::Spring { .. }) if from.abs() > 1e-9 => -tr.velocity(t) / from,
                     _ => 0.0,

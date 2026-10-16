@@ -46,9 +46,20 @@ package version.
   when a node leaves, not on rendered frames. `must` checks the layout, not the in-between frame.
   Dumps show `(shown → layout)  [layout 40%]`. The standings and lower-third examples use it.
 
+- Channel states: `defineChannel({ props, layers, states: (d) => ({ live: { score: Scoreboard.with({ homeScore: d.homeScore }) } }) })`.
+  `state live` switches the scene: what left the state plays `out`, what came plays `in`, the
+  same component on the same layer stays the same instance and moves to the new props. `update`
+  without a layer changes the channel data, and every panel bound to it follows. A leaving panel
+  that is needed again turns back from where it is. State layers refuse direct `load`, `play`,
+  `stop`, `update` and `clear`; `invoke` and `next` work. Snapshots, preview and `--resume` restore
+  data and state. Example `examples/match`.
+
 ### Changed
 
 - **Breaking:** `prop<T>()` is replaced by `prop.json<T>()`.
+- `defineChannel({ components })` is optional: components used in `states` join the catalog.
+- `keyfill serve`: `{"cmd":"state","name":…}` switches the channel state; `{"cmd":"state"}`
+  without a name still returns the snapshot.
 
 ## [0.1.0-alpha.1] - 2026-10-16
 
