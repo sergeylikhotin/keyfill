@@ -773,9 +773,123 @@ function mountChannel(def: Props) {
     }
     channel.states.set(state, map);
   }
-  host.emit({ op: 'channel', components: [...channel.catalog.keys()], layers, states, props: infos(schema, defaults), data: data.current() });
+  const transitions = compileTransitions(def.transitions, layers, states);
+  host.emit({ op: 'channel', components: [...channel.catalog.keys()], layers, states, props: infos(schema, defaults), data: data.current(), ...transitions });
   if (def.timelines?.length) host.emit({ op: 'timelines', items: def.timelines });
   host.flush();
+}
+
+// ─── Переходы ───────────────────────────────────────────────────────────────
+
+type StepKind = 'in' | 'out' | 'update';
+type StepJson = { layer: number; kind: StepKind; anchor?: { rel: 'after' | 'with'; layer: number; kind: StepKind }; at?: number; offset: number };
+type RuleJson = { kind: 'together' } | { kind: 'sequence'; gap: number } | { kind: 'steps'; steps: StepJson[] };
+
+const rule = (r: RuleJson): S.TransitionRule => brand({ $rule: true, ...r });
+export const together: typeof S.together = () => rule({ kind: 'together' });
+export const sequence: typeof S.sequence = (gap = 0) => {
+  if (typeof gap !== 'number' || !Number.isFinite(gap)) throw new KeyfillError(`sequence(gap): gap — число секунд, получено ${gap}`);
+  return rule({ kind: 'sequence', gap });
+};
+export const overlap: typeof S.overlap = (seconds) => {
+  if (typeof seconds !== 'number' || !(seconds >= 0)) throw new KeyfillError(`overlap(seconds): seconds — число ≥ 0, получено ${seconds}`);
+  return rule({ kind: 'sequence', gap: -seconds });
+};
+
+const KINDS: StepKind[] = ['in', 'out', 'update'];
+
+/**
+ * Правила переходов в JSON для ядра. Ошибки — при загрузке канала: слой, которого нет; шаг,
+ * которого в этом переходе не бывает (по таблице состояний); цикл зависимостей.
+ */
+function compileTransitions(raw: Props | undefined, layers: Record<string, number>, states: Record<string, Record<number, string>>) {
+  const names = Object.fromEntries(Object.entries(layers).map(([k, v]) => [v, k]));
+  const label = (s: { layer: number; kind: StepKind }) => `${names[s.layer]}:${s.kind}`;
+  /** Шаги перехода между двумя названными состояниями: по слоям — уход, вход, обновление. */
+  const diff = (from: string, to: string) => {
+    const out = new Set<string>();
+    for (const n of Object.values(layers)) {
+      const a = states[from]?.[n];
+      const b = states[to]?.[n];
+      if (a && b && a === b) out.add(label({ layer: n, kind: 'update' }));
+      else {
+        if (a) out.add(label({ layer: n, kind: 'out' }));
+        if (b) out.add(label({ layer: n, kind: 'in' }));
+      }
+    }
+    return out;
+  };
+  const compile = (where: string, r: unknown, possible?: Set<string>): RuleJson => {
+    if ((r as Props | undefined)?.$rule) {
+      const { $rule: _, ...json } = r as Props;
+      return json as RuleJson;
+    }
+    if (typeof r !== 'function') throw new KeyfillError(`${where}: ожидается together(), sequence(), overlap() или функция шагов ({ out, enter, update }) => [...]`);
+    const ref = (s: unknown, rel: 'after' | 'with') => {
+      const m = typeof s === 'string' ? /^([^:]+):(in|out|update)$/.exec(s) : null;
+      if (!m || !(m[1] in layers)) throw new KeyfillError(`${where}: ${rel}: '${String(s)}' — ожидается 'слой:in', 'слой:out' или 'слой:update' со слоем из layers`);
+      return { rel, layer: layers[m[1]], kind: m[2] as StepKind };
+    };
+    const make = (kind: StepKind, fn: string) => (layer: string, timing: Props = {}) => {
+      if (!(layer in layers)) throw new KeyfillError(`${where}: ${fn}('${layer}') — такого слоя нет в layers; есть: ${Object.keys(layers).join(', ')}`);
+      if (timing.after && timing.with) throw new KeyfillError(`${where}: ${fn}('${layer}') — after или with, не оба`);
+      const step: StepJson = { layer: layers[layer], kind, offset: timing.offset ?? 0 };
+      if (timing.after) step.anchor = ref(timing.after, 'after');
+      if (timing.with) step.anchor = ref(timing.with, 'with');
+      if (timing.at !== undefined) {
+        if (step.anchor) throw new KeyfillError(`${where}: ${fn}('${layer}') — at задаёт момент сам, вместе с after/with не нужен`);
+        step.at = timing.at;
+      }
+      for (const [k, v] of Object.entries({ offset: step.offset, at: step.at })) {
+        if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v))) throw new KeyfillError(`${where}: ${fn}('${layer}') — ${k}: число секунд`);
+      }
+      return brand({ $step: true, ...step });
+    };
+    const steps = (r as (s: unknown) => unknown)({ out: make('out', 'out'), enter: make('in', 'enter'), update: make('update', 'update') });
+    if (!Array.isArray(steps) || steps.some((s) => !s?.$step)) throw new KeyfillError(`${where}: функция шагов возвращает массив out(...)/enter(...)/update(...)`);
+    const list = steps.map(({ $step: _, ...s }) => s as StepJson);
+    const seen = new Set<string>();
+    for (const s of list) {
+      const id = label(s);
+      if (seen.has(id)) throw new KeyfillError(`${where}: шаг ${id} дважды`);
+      seen.add(id);
+      for (const x of [s, ...(s.anchor ? [s.anchor] : [])]) {
+        if (possible && !possible.has(label(x))) {
+          const kinds = KINDS.filter((k) => possible.has(`${names[x.layer]}:${k}`));
+          const what = kinds.length ? `на слое ${names[x.layer]} здесь только ${kinds.join(', ')}` : `слой ${names[x.layer]} в этом переходе не меняется`;
+          throw new KeyfillError(`${where}: шага ${label(x)} в этом переходе нет — ${what}`);
+        }
+      }
+    }
+    // Цикл: шаг ждёт шаг, который (через других) ждёт его.
+    const deps = new Map(list.map((s) => [label(s), s.anchor ? label(s.anchor) : undefined]));
+    for (const start of deps.keys()) {
+      const path = [start];
+      for (let cur = deps.get(start); cur !== undefined; cur = deps.get(cur)) {
+        if (cur === start) throw new KeyfillError(`${where}: цикл — ${path.map((p, i) => `${p} ждёт ${path[i + 1] ?? start}`).join(', ')}`);
+        if (path.includes(cur)) break;
+        path.push(cur);
+      }
+    }
+    return { kind: 'steps', steps: list };
+  };
+
+  const out: { transitions: { from: string; to: string; rule: RuleJson }[]; default?: RuleJson } = { transitions: [] };
+  for (const [key, r] of Object.entries(raw ?? {})) {
+    if (key === 'default') {
+      out.default = compile('defineChannel: transitions.default', r);
+      continue;
+    }
+    const m = /^\s*([^\s>-]+)\s*->\s*([^\s>-]+)\s*$/.exec(key);
+    if (!m) throw new KeyfillError(`defineChannel: transitions['${key}'] — ключ вида 'live -> replay' (или * вместо состояния)`);
+    const [, from, to] = m;
+    for (const s of [from, to]) {
+      if (s !== '*' && !(s in states)) throw new KeyfillError(`defineChannel: transitions['${key}']: состояния ${s} нет; есть: ${Object.keys(states).join(', ')}`);
+    }
+    const possible = from !== '*' && to !== '*' ? diff(from, to) : undefined;
+    out.transitions.push({ from, to, rule: compile(`defineChannel: переход ${from} -> ${to}`, r, possible) });
+  }
+  return out;
 }
 
 /** Привязка состояния к слою и все пропсы экземпляра по ней: недостающие — из default. */

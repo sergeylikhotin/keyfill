@@ -597,7 +597,7 @@ enum Phase {
     Gone,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct NodeState {
     presence: Option<Presence>,
     phase: Phase,
@@ -739,7 +739,7 @@ impl MotionEvent {
 
 /// Анимационное состояние сцены. События обрабатываются строго по времени, поэтому
 /// кадр в момент `t` один и тот же, как бы мы к нему ни пришли.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MotionState {
     nodes: BTreeMap<u32, NodeState>,
     /// (время, порядковый номер, событие), по возрастанию.
@@ -922,6 +922,9 @@ pub struct Clock {
     pub log: Vec<String>,
     /// События до момента кадра включительно.
     pub events: Vec<String>,
+    /// Расписание перехода канала, пока он идёт.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition: Option<crate::transition::TransitionPlan>,
 }
 
 /// Всё, что движение добавляет к кадру.
@@ -1258,6 +1261,23 @@ impl MotionState {
     }
 
     /// Экземпляр загружен на слой: не виден, пока его не запустит play.
+    /// Когда закончится `in` экземпляра, начатый в `t`: узлы с presence и таймлайн до первой
+    /// остановки. Для расписания перехода (по копии состояния, см. `Session`).
+    pub fn in_end(&self, scene: &Scene, root: u32, t: f64) -> f64 {
+        let mut end = t;
+        for id in Self::subtree(scene, root) {
+            if let Some(NodeState { phase: Phase::In { end: e, .. }, .. }) = self.nodes.get(&id)
+                && e.is_finite()
+            {
+                end = end.max(*e);
+            }
+        }
+        for i in self.runs_of(&[root]) {
+            end = end.max(t + self.runs[i].def.settle_tau());
+        }
+        end
+    }
+
     /// Узел уходит из кадра в момент `at` (снятие экземпляра).
     fn hide(&mut self, id: u32, at: f64) {
         let st = self.nodes.get_mut(&id).expect("node state");

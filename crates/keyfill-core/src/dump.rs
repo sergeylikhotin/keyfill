@@ -474,6 +474,10 @@ pub fn lines(d: &Dump) -> Vec<Line> {
             let earlier = if skip > 0 { format!(" (+{skip} ранее)") } else { String::new() };
             out.push(plain(format!("events{earlier}: {}", c.events[skip..].join(" · "))));
         }
+        // Идущий переход канала: расписание шагов, как его свело ядро.
+        if let Some(p) = &c.transition {
+            out.extend(p.lines().into_iter().map(plain));
+        }
     }
     if d.removed {
         out.push(plain("сцена снята: в кадре ничего нет".into()));

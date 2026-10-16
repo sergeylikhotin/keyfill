@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, For, Text, clock, component, count, cues, defineChannel, defineConfig, defineScene, hex, prop, stagger, test, timeline, tween } from '@keyfill/core';
+import { Box, For, Text, clock, component, count, cues, defineChannel, defineConfig, defineScene, hex, overlap, prop, sequence, stagger, test, timeline, tween } from '@keyfill/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
@@ -54,6 +54,23 @@ defineChannel({
   layers: { lower: 20 },
   // @ts-expect-error слоя score нет в layers
   states: () => ({ bad: { score: LowerThird.with({ name: 'x', role: 'Гость', live: true }) } }),
+});
+
+// Хореография: шаги по слоям из layers, якоря — 'слой:in|out|update'.
+defineChannel({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  layers: { lower: 20, score: 10 },
+  states: () => ({ a: { lower: LowerThird.with({ name: 'x', role: 'y', live: true }) }, b: {} }),
+  transitions: {
+    default: overlap(0.15),
+    'a -> b': sequence(0.1),
+    'b -> a': ({ enter, update }) => [enter('lower', { after: 'score:out', offset: -0.1 }), update('score', { at: 0.2 })],
+    // @ts-expect-error слоя replay нет в layers
+    '* -> a': ({ enter }) => [enter('replay')],
+    // @ts-expect-error якорь — 'слой:in|out|update'
+    'a -> *': ({ out }) => [out('lower', { after: 'score:hold' })],
+  },
 });
 
 // Неверный тип пропса компонента.

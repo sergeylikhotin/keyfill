@@ -16,6 +16,8 @@ export type Cmd =
       states: Record<string, Record<number, string>>;
       props: unknown[];
       data: Record<string, unknown>;
+      transitions: unknown[];
+      default?: unknown;
     }
   /** Ответ канала на команду ядра. */
   | { op: 'layer'; reply: 'mounted'; inst: string; root: number }

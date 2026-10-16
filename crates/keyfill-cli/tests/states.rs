@@ -71,17 +71,21 @@ fn state_is_a_diff_of_layers() {
     let props = &s.state().unwrap().layers[&20].current.as_ref().unwrap().props;
     assert_eq!(props["name"], "Динамо Москва — Зенит");
 
-    // pregame → live: плашка уходит, табло входит.
+    // pregame → live (sequence(0.1)): плашка уходит, табло загружено и входит после неё.
     s.advance(1.0).unwrap();
     s.command(vec![state("live")]).unwrap();
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Leaving)]);
+    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Loaded), (20, "LowerThird#1".into(), InstState::Leaving)]);
     assert_eq!(s.state().unwrap().state.as_deref(), Some("live"));
+    s.frame_at(1.4, dev()).unwrap();
+    assert_eq!(layers(&s)[0], (10, "Scoreboard#1".into(), InstState::Playing));
 
     // live → interview: табло — тот же экземпляр, гость входит снизу.
     s.advance(2.0).unwrap();
     let acks = s.command(vec![data(json!({ "guest": "Иван Петров", "guestRole": "Тренер", "homeScore": 2 })), state("interview")]).unwrap();
     assert!(acks.iter().all(|a| a.status == AckStatus::Ok), "{acks:?}");
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#2".into(), InstState::Playing)]);
+    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#2".into(), InstState::Loaded)]);
+    s.frame_at(2.4, dev()).unwrap();
+    assert_eq!(layers(&s)[1], (20, "LowerThird#2".into(), InstState::Playing), "гость вошёл через 0.3 с");
     let c = s.state().unwrap();
     assert_eq!(c.layers[&10].current.as_ref().unwrap().props["homeScore"], 2, "данные дошли до табло");
     assert_eq!(c.layers[&20].current.as_ref().unwrap().props["name"], "Иван Петров");
@@ -155,7 +159,7 @@ fn leaving_panel_turns_back() {
     let mut s = open(MATCH, &[]);
     s.command(vec![data(json!({ "guest": "Иван Петров", "guestRole": "Тренер" })), state("interview")]).unwrap();
     s.advance(2.0).unwrap();
-    s.command(vec![state("live")]).unwrap();
+    s.command(vec![state("break")]).unwrap();
     s.advance(2.1).unwrap();
     let f = s.frame_at(2.1, dev()).unwrap();
     let panel = s.scene.find("LowerThird#1/panel").unwrap();
@@ -238,4 +242,100 @@ fn state_that_cannot_be_built_fails_the_channel() {
     let bundle = keyfill_cli::bundle(Path::new("crates/keyfill-cli/tests/fixtures/states/bad.tsx")).unwrap();
     let err = Session::open(&bundle, &RunOptions::default(), &[], &[]).err().expect("канал не открывается").to_string();
     assert!(err.contains("состояние on, слой main") && err.contains("text"), "{err}");
+}
+
+/// (момент, источник, событие) жизненного цикла.
+fn timeline(s: &Session) -> Vec<(f64, String, String)> {
+    s.motion.events_log.iter().filter(|e| e.kind == "state").map(|e| ((e.t * 1000.0).round() / 1000.0, e.source.clone(), e.name.clone())).collect()
+}
+
+#[test]
+fn transition_follows_its_plan() {
+    if home().is_none() {
+        return;
+    }
+    // pregame → live — sequence(0.1): табло входит через 0.1 с после конца ухода представления.
+    let mut s = open(MATCH, &[]);
+    s.command(vec![state("pregame")]).unwrap();
+    s.advance(1.0).unwrap();
+    s.command(vec![state("live")]).unwrap();
+    let f = s.frame_at(1.1, dev()).unwrap();
+    let plan = f.clock.as_ref().unwrap().transition.clone().expect("расписание в кадре");
+    assert_eq!(plan.rule, "sequence +0.1 (pregame -> live)");
+    let lines = plan.lines().join("\n");
+    assert!(lines.contains("lower  out     0–0.25") && lines.contains("score  in      0.35–") && lines.contains("(после всех out +0.1)"), "{lines}");
+    s.frame_at(2.0, dev()).unwrap();
+    let ev = timeline(&s);
+    assert!(ev.contains(&(1.0, "LowerThird#1".into(), "stopping".into())), "{ev:?}");
+    assert!(ev.contains(&(1.35, "Scoreboard#1".into(), "playing".into())), "табло вошло по расписанию: {ev:?}");
+    let f = s.frame_at(4.0, dev()).unwrap();
+    assert!(!keyfill_core::dump::dump(&s.scene, &f).contains("переход pregame"), "после перехода расписания в дампе нет");
+}
+
+#[test]
+fn interrupted_transition_cancels_steps_not_started() {
+    if home().is_none() {
+        return;
+    }
+    // live пришёл, табло ждёт своего шага (1.35), а оператор вернул pregame в 1.1: табло так и не
+    // показали, представление разворачивается с текущего места.
+    let mut s = open(MATCH, &[]);
+    s.command(vec![state("pregame")]).unwrap();
+    s.advance(1.0).unwrap();
+    s.command(vec![state("live")]).unwrap();
+    s.advance(1.1).unwrap();
+    s.command(vec![state("pregame")]).unwrap();
+    s.frame_at(2.0, dev()).unwrap();
+    assert_eq!(layers(&s), [(20, "LowerThird#1".into(), InstState::Playing)]);
+    let ev = timeline(&s);
+    assert!(ev.contains(&(1.1, "Scoreboard#1".into(), "removed".into())), "{ev:?}");
+    assert!(!ev.iter().any(|(_, src, name)| src == "Scoreboard#1" && name == "playing"), "табло не показывали: {ev:?}");
+    assert!(ev.contains(&(1.1, "LowerThird#1".into(), "playing".into())), "{ev:?}");
+
+    // Разворот тоже ждёт своего шага: в live → interview гость входит через 0.3 с, а его прежний
+    // out уже кончился — та же плашка входит заново, её не сняли.
+    let mut s = open(MATCH, &[]);
+    s.command(vec![data(json!({ "guest": "Иван Петров", "guestRole": "Тренер" })), state("interview")]).unwrap();
+    s.advance(2.0).unwrap();
+    s.command(vec![state("live")]).unwrap();
+    s.advance(2.1).unwrap();
+    s.command(vec![state("interview")]).unwrap();
+    s.frame_at(3.0, dev()).unwrap();
+    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Playing)]);
+    let ev = timeline(&s);
+    assert!(ev.contains(&(2.4, "LowerThird#1".into(), "playing".into())), "{ev:?}");
+    assert!(!ev.iter().any(|(_, src, name)| src == "LowerThird#1" && name == "removed"), "{ev:?}");
+}
+
+#[test]
+fn overlapping_panels_warn_and_sequence_fixes_it() {
+    if home().is_none() {
+        return;
+    }
+    let mut s = open("crates/keyfill-cli/tests/fixtures/states/overlap.tsx", &[]);
+    s.command(vec![state("one")]).unwrap();
+    s.advance(1.0).unwrap();
+    s.command(vec![state("two")]).unwrap();
+    s.advance(2.0).unwrap();
+    s.command(vec![state("one")]).unwrap();
+    let f = s.frame_at(3.0, dev()).unwrap();
+    let warns: Vec<_> = f.diagnostics.0.iter().filter(|d| d.rule == "transition.overlap").collect();
+    assert_eq!(warns.len(), 1, "one → two наложение, two → one по очереди: {warns:?}");
+    assert!(warns[0].message.contains("b (B#1) входит в 0 с, пока a (A#1) уходит до 0.4 с"), "{}", warns[0].message);
+    assert!(warns[0].hint.as_deref().unwrap().contains("enter('b', { after: 'a:out' })"));
+}
+
+#[test]
+fn transition_rules_are_checked_when_the_channel_loads() {
+    if home().is_none() {
+        return;
+    }
+    let err = |file: &str| {
+        let bundle = keyfill_cli::bundle(Path::new(file)).unwrap();
+        Session::open(&bundle, &RunOptions::default(), &[], &[]).err().expect("канал не открывается").to_string()
+    };
+    let e = err("crates/keyfill-cli/tests/fixtures/states/cycle.tsx");
+    assert!(e.contains("переход one -> two: цикл — a:out ждёт b:in, b:in ждёт a:out"), "{e}");
+    let e = err("crates/keyfill-cli/tests/fixtures/states/no-step.tsx");
+    assert!(e.contains("шага a:in в этом переходе нет — на слое a здесь только out"), "{e}");
 }

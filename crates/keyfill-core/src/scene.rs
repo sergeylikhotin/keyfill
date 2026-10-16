@@ -113,6 +113,12 @@ pub struct ChannelDef {
     /// Начальные данные.
     #[serde(default)]
     pub data: Value,
+    /// Правила переходов для пар состояний.
+    #[serde(default)]
+    pub transitions: Vec<crate::transition::TransitionDef>,
+    /// Правило, если для пары ничего не задано.
+    #[serde(default)]
+    pub default: Option<crate::transition::Rule>,
 }
 
 /// Номера слоёв приходят из JS ключами объекта, то есть строками.
@@ -130,6 +136,11 @@ fn layer_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String,
 }
 
 impl ChannelDef {
+    /// Правило перехода и откуда оно.
+    pub fn rule(&self, from: Option<&str>, to: &str) -> (crate::transition::Rule, String) {
+        crate::transition::pick(&self.transitions, self.default.as_ref(), from, to)
+    }
+
     /// Имя слоя, если его ведут состояния.
     pub fn state_layer(&self, layer: u32) -> Option<&str> {
         self.layers.iter().find(|(_, n)| **n == layer).map(|(name, _)| name.as_str())

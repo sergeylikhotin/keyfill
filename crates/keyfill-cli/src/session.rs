@@ -13,6 +13,9 @@ use keyfill_core::scene::{Cue, CueCmd};
 use keyfill_core::text::{RunSpec, TextBlock, TextSource};
 use keyfill_core::layout::Overrides;
 use keyfill_core::motion::GeoMap;
+use keyfill_core::scene::ChannelDef;
+use keyfill_core::transition::{self, Act, PlanStep, StepKind, TransitionPlan};
+use keyfill_core::Rect;
 use keyfill_core::{EvalOptions, Frame, Hints, MotionState, Scene, TextEngine, build_frame_with, evaluate_at, geometry};
 use keyfill_js::{JsException, JsHost, LogLine, RunOptions};
 
@@ -55,6 +58,11 @@ pub struct Session {
     /// Уходящие экземпляры состояний: живы в JS, пока не кончится уход; их может развернуть
     /// следующее состояние.
     parked: Vec<u32>,
+    /// Шаги перехода, которые ждут своего момента, по времени.
+    pending: Vec<Pending>,
+    seq: u64,
+    /// Расписание последнего перехода — для дампа.
+    plan: Option<TransitionPlan>,
     /// Пачки, принятые `command` с прошлого `take_recorded`: их дописывает в журнал `serve`.
     recorded: Vec<Batch>,
     pub logs: Vec<LogLine>,
@@ -132,6 +140,9 @@ impl Session {
             next_batch: 0,
             releasing: Vec::new(),
             parked: Vec::new(),
+            pending: Vec::new(),
+            seq: 0,
+            plan: None,
             recorded: Vec::new(),
             logs: first.logs,
             fps,
@@ -206,13 +217,16 @@ impl Session {
         loop {
             let cue = self.cues.get(self.next).filter(|c| c.t <= t).map(|c| c.t);
             let batch = self.batches.get(self.next_batch).map(|b| self.batch_time(b)).filter(|bt| *bt <= t + 1e-9);
-            let horizon = match (cue, batch) {
-                (Some(a), Some(b)) => a.min(b),
-                (a, b) => a.or(b).unwrap_or(t),
-            };
+            let step = self.pending.first().map(|p| p.at).filter(|at| *at <= t + 1e-9);
+            let horizon = [cue, batch, step].into_iter().flatten().reduce(f64::min).unwrap_or(t);
             // Узел ушёл из раскладки до следующей команды: соседи переезжают в этот момент.
             if let Some(et) = self.motion.next_layout_event().filter(|et| *et <= horizon + 1e-9) {
                 self.layout_event(et)?;
+                continue;
+            }
+            // Шаг перехода, назначенный раньше, идёт до команды в тот же момент.
+            if step.is_some_and(|s| s <= horizon + 1e-9) {
+                self.run_pending()?;
                 continue;
             }
             self.sweep(horizon)?;
@@ -288,8 +302,19 @@ impl Session {
 
     /// Раскладка в момент `t` без анимации геометрии.
     fn geometry(&mut self, t: f64) -> Result<GeoMap> {
+        self.geometry_with(t, &[])
+    }
+
+    /// То же, но экземпляры `reveal`, загруженные и ещё не показанные, стоят в раскладке.
+    fn geometry_with(&mut self, t: f64, reveal: &[u32]) -> Result<GeoMap> {
         let mut anim = self.motion.values(t);
         anim.clear_geo();
+        for root in reveal {
+            if let Some(nv) = anim.nodes.get_mut(root) {
+                nv.gone = None;
+                nv.show = None;
+            }
+        }
         let frame = build_frame_with(&self.scene, &mut self.engine, &Overrides::new(), &anim)?;
         Ok(geometry(&frame))
     }
@@ -374,6 +399,8 @@ impl Session {
     pub fn quiet_time(&mut self) -> Result<f64> {
         let settled = self.settled_time()?;
         let leaving = self.releasing.iter().chain(&self.parked).filter_map(|r| self.motion.hide_time(*r)).fold(settled, f64::max);
+        // Шаги перехода, которые ещё впереди, тоже должны отыграть.
+        let leaving = self.plan.as_ref().map_or(leaving, |p| p.end().max(leaving));
         // Соседи ушедших переезжают после ухода.
         self.advance(self.snap(leaving).max(self.now))?;
         let moved = self.motion.layout_end().map_or(leaving, |e| e.max(leaving));
@@ -490,10 +517,12 @@ impl Session {
                         self.unmount(inst, t)?;
                     }
                 }
-                if layer.is_none()
-                    && let Some(c) = &mut self.channel
-                {
-                    c.state = None;
+                if layer.is_none() {
+                    self.pending.clear();
+                    self.plan = None;
+                    if let Some(c) = &mut self.channel {
+                        c.state = None;
+                    }
                 }
                 Ok(())
             }
@@ -503,38 +532,64 @@ impl Session {
     /// Переход в состояние канала — разница с текущим по слоям состояний: ушедшее уходит через
     /// `out`, пришедшее входит, тот же компонент на том же слое остаётся и переходит на пропсы
     /// нового состояния (через `transition`). Уходящий экземпляр, который снова нужен,
-    /// разворачивается с того места, где он сейчас.
+    /// разворачивается с того места, где он сейчас. Когда начинается каждый шаг, решает правило
+    /// перехода (`transitions`): расписание сводится сразу, шаги не с начала ждут своего момента.
     fn enter_state(&mut self, name: &str, instant: bool, t: f64) -> Result<(), CmdError> {
         let def = self.scene.channel.clone().unwrap_or_default();
-        let Some(target) = def.states.get(name) else {
+        if !def.states.contains_key(name) {
             let known: Vec<&str> = def.states.keys().map(String::as_str).collect();
             let known = if known.is_empty() { "ни одного: defineChannel({ states })".to_string() } else { known.join(", ") };
             return Err(CmdError::Rejected(vec![format!("state {name}: такого состояния нет; есть: {known}")]));
-        };
-        if !instant && self.channel.as_ref().and_then(|c| c.state.as_deref()) == Some(name) {
+        }
+        let from = self.channel.as_ref().and_then(|c| c.state.clone());
+        if !instant && from.as_deref() == Some(name) {
             self.event(t, "channel", "ignored", format!("state {name}: канал уже в этом состоянии"));
             return Ok(());
         }
-        let mut layers: Vec<u32> = def.layers.values().copied().collect();
-        layers.sort_unstable();
-        for layer in layers {
-            let want = target.get(&layer);
-            let current = self.layer_mut(layer).current.take();
-            match (current, want) {
-                (Some(cur), Some(w)) if &cur.component == w => {
-                    let inst = cur.name.clone();
-                    self.layer_mut(layer).current = Some(cur);
-                    self.layer_js(serde_json::json!({ "op": "bind", "inst": inst, "state": name, "layer": layer }), t)?;
-                }
-                (current, want) => {
-                    if let Some(cur) = current {
-                        self.park(layer, cur, instant, t)?;
-                    }
-                    if let Some(w) = want {
-                        self.show_state(layer, w, name, instant, t)?;
-                    }
+        // Прерывание: чего ещё не было, того не было — неначатые шаги прежнего перехода отменяются.
+        self.cancel_pending(t)?;
+        let steps = self.diff_steps(&def, name, instant, t)?;
+        if instant {
+            for s in &steps {
+                self.run_step(s, name, true, t)?;
+            }
+            self.plan = None;
+        } else {
+            let durations = self.durations(&steps, t);
+            let (rule, source) = def.rule(from.as_deref(), name);
+            let names: BTreeMap<u32, String> = def.layers.iter().map(|(n, l)| (*l, n.clone())).collect();
+            let acts: Vec<Act> = steps.iter().zip(&durations).map(|(s, d)| Act { layer: s.layer, kind: s.kind, dur: *d }).collect();
+            let timed = transition::resolve(&rule, &acts, &names);
+            self.check_overlap(&steps, &acts, &timed, &names, t);
+            let plan = TransitionPlan {
+                from,
+                to: name.to_string(),
+                t,
+                rule: format!("{} ({source})", rule.label()),
+                steps: steps
+                    .iter()
+                    .zip(acts.iter().zip(&timed))
+                    .map(|(s, (a, tm))| PlanStep {
+                        layer: s.layer,
+                        name: names.get(&s.layer).cloned().unwrap_or_default(),
+                        kind: s.kind,
+                        inst: s.inst.clone(),
+                        start: tm.start,
+                        end: tm.start + a.dur,
+                        why: tm.why.clone(),
+                    })
+                    .collect(),
+            };
+            for (s, tm) in steps.into_iter().zip(timed) {
+                if tm.start <= 1e-9 {
+                    self.run_step(&s, name, false, t)?;
+                } else {
+                    self.seq += 1;
+                    self.pending.push(Pending { at: t + tm.start, seq: self.seq, step: s, state: name.to_string() });
                 }
             }
+            self.pending.sort_by(|a, b| (a.at, a.seq).partial_cmp(&(b.at, b.seq)).expect("время шага"));
+            self.plan = Some(plan);
         }
         if let Some(c) = &mut self.channel {
             c.state = Some(name.to_string());
@@ -543,45 +598,180 @@ impl Session {
         Ok(())
     }
 
-    /// Показать компонент состояния на слое: развернуть уходящий такой же или смонтировать новый.
-    fn show_state(&mut self, layer: u32, component: &str, state: &str, instant: bool, t: f64) -> Result<(), CmdError> {
-        let slot = self.layer_mut(layer);
-        let back = slot.leaving.iter().position(|i| i.component == component).filter(|_| !instant);
-        let mut inst = match back {
-            Some(i) => {
-                let inst = slot.leaving.remove(i);
-                self.parked.retain(|r| *r != inst.root);
-                inst
+    /// Шаги перехода по слоям состояний в порядке номеров; учёт слоёв сразу ставится в цель:
+    /// входящий смонтирован и ждёт своего шага, уходящий — среди уходящих, но ещё на экране.
+    fn diff_steps(&mut self, def: &ChannelDef, name: &str, instant: bool, t: f64) -> Result<Vec<Step>, CmdError> {
+        let target = &def.states[name];
+        let mut layers: Vec<u32> = def.layers.values().copied().collect();
+        layers.sort_unstable();
+        let mut steps = Vec::new();
+        for layer in layers {
+            let want = target.get(&layer);
+            let slot = self.layer_mut(layer);
+            if let (Some(cur), Some(w)) = (&slot.current, want)
+                && &cur.component == w
+            {
+                steps.push(Step { layer, kind: StepKind::Update, inst: cur.name.clone(), root: cur.root, revive: false });
+                continue;
             }
-            None => self.mount(layer, component, &Default::default(), Some(state), t)?,
-        };
-        let (name, root) = (inst.name.clone(), inst.root);
-        inst.state = InstState::Playing;
-        self.layer_mut(layer).current = Some(inst);
-        self.event(t, &name, "state", "playing".into());
-        if back.is_some() {
-            self.layer_js(serde_json::json!({ "op": "bind", "inst": name, "state": state, "layer": layer }), t)?;
-            self.motion.revive(&self.scene, &[root], t);
-        } else if instant {
-            self.motion.play_settled(&self.scene, &[root], t);
-        } else {
-            self.motion.play(&self.scene, Some(&[root]), t);
+            if let Some(cur) = slot.current.take() {
+                steps.push(Step { layer, kind: StepKind::Out, inst: cur.name.clone(), root: cur.root, revive: false });
+                slot.leaving.push(cur);
+            }
+            let Some(w) = want else { continue };
+            let back = slot.leaving.iter().position(|i| &i.component == w && i.state == InstState::Leaving).filter(|_| !instant);
+            match back {
+                Some(i) => {
+                    let inst = slot.leaving.remove(i);
+                    steps.push(Step { layer, kind: StepKind::In, inst: inst.name.clone(), root: inst.root, revive: true });
+                    // Ждёт разворота: снимать его по концу out уже нельзя, даже если шаг позже.
+                    let root = inst.root;
+                    slot.current = Some(inst);
+                    self.parked.retain(|r| *r != root);
+                }
+                None => {
+                    let inst = self.mount(layer, w, &Default::default(), Some(name), t)?;
+                    steps.push(Step { layer, kind: StepKind::In, inst: inst.name.clone(), root: inst.root, revive: false });
+                    self.layer_mut(layer).current = Some(inst);
+                }
+            }
+        }
+        Ok(steps)
+    }
+
+    /// Длительности шагов: те же команды движения на копии состояния. `update` — мгновенный шаг.
+    fn durations(&self, steps: &[Step], t: f64) -> Vec<f64> {
+        let mut probe = self.motion.clone();
+        steps
+            .iter()
+            .map(|s| match (s.kind, s.revive) {
+                (StepKind::Out, _) => {
+                    probe.stop(&self.scene, Some(&[s.root]), t);
+                    probe.hide_time(s.root).unwrap_or(t) - t
+                }
+                (StepKind::In, revive) => {
+                    if revive {
+                        probe.revive(&self.scene, &[s.root], t);
+                    } else {
+                        probe.play(&self.scene, Some(&[s.root]), t);
+                    }
+                    probe.in_end(&self.scene, s.root, t) - t
+                }
+                (StepKind::Update, _) => 0.0,
+            })
+            .collect()
+    }
+
+    /// Шаг перехода в момент `t`.
+    fn run_step(&mut self, s: &Step, state: &str, instant: bool, t: f64) -> Result<(), CmdError> {
+        match s.kind {
+            StepKind::Update => self.layer_js(serde_json::json!({ "op": "bind", "inst": s.inst, "state": state, "layer": s.layer }), t),
+            StepKind::Out => {
+                let slot = self.layer_mut(s.layer);
+                let Some(i) = slot.leaving.iter().position(|i| i.root == s.root) else { return Ok(()) };
+                if instant {
+                    let inst = slot.leaving.remove(i);
+                    return self.unmount(&inst, t);
+                }
+                // Уходит без release: в JS экземпляр жив до конца out, его может развернуть
+                // следующее состояние; снимает его sweep.
+                slot.leaving[i].state = InstState::Leaving;
+                self.event(t, &s.inst, "state", "stopping".into());
+                self.motion.stop(&self.scene, Some(&[s.root]), t);
+                self.parked.push(s.root);
+                Ok(())
+            }
+            StepKind::In => {
+                if let Some(cur) = self.layer_mut(s.layer).current.as_mut().filter(|c| c.root == s.root) {
+                    cur.state = InstState::Playing;
+                }
+                self.event(t, &s.inst, "state", "playing".into());
+                if s.revive {
+                    self.parked.retain(|r| *r != s.root);
+                    self.layer_js(serde_json::json!({ "op": "bind", "inst": s.inst, "state": state, "layer": s.layer }), t)?;
+                    self.motion.revive(&self.scene, &[s.root], t);
+                } else if instant {
+                    self.motion.play_settled(&self.scene, &[s.root], t);
+                } else {
+                    self.motion.play(&self.scene, Some(&[s.root]), t);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Отменяет неначатые шаги перехода: невошедший снимается (его не видели), неушедший
+    /// возвращается на слой, неразвёрнутый остаётся уходить, необновлённый — на прежней привязке.
+    fn cancel_pending(&mut self, t: f64) -> Result<(), CmdError> {
+        let pending = std::mem::take(&mut self.pending);
+        for p in pending.iter().filter(|p| p.step.kind == StepKind::In) {
+            let s = &p.step;
+            let Some(mut inst) = self.layer_mut(s.layer).current.take_if(|c| c.root == s.root) else { continue };
+            if s.revive {
+                inst.state = InstState::Leaving;
+                self.layer_mut(s.layer).leaving.push(inst);
+                self.parked.push(s.root);
+            } else {
+                self.unmount(&inst, t)?;
+            }
+        }
+        for p in pending.iter().filter(|p| p.step.kind == StepKind::Out) {
+            let slot = self.layer_mut(p.step.layer);
+            if let Some(i) = slot.leaving.iter().position(|i| i.root == p.step.root) {
+                let inst = slot.leaving.remove(i);
+                slot.current = Some(inst);
+            }
         }
         Ok(())
     }
 
-    /// Экземпляр состояния уходит через `out`, но в JS остаётся живым: новое состояние может
-    /// его развернуть. Снимается, когда уход кончится; `instant` — сразу.
-    fn park(&mut self, layer: u32, mut inst: Inst, instant: bool, t: f64) -> Result<(), CmdError> {
-        if instant {
-            return self.unmount(&inst, t);
+    /// Следующий отложенный шаг перехода, в свой момент.
+    fn run_pending(&mut self) -> Result<()> {
+        let p = self.pending.remove(0);
+        self.motion.advance_to(p.at);
+        self.sweep(p.at)?;
+        self.relayout(p.at, |s| {
+            s.run_step(&p.step, &p.state, false, p.at).map_err(|e| match e {
+                CmdError::Failed(e) => e,
+                CmdError::Rejected(errors) => anyhow::anyhow!(errors.join("; ")),
+            })
+        })
+    }
+
+    /// Конфликт расписания: входящий въезжает в область, которую ещё занимает уходящий на
+    /// другом слое (warn `transition.overlap`).
+    fn check_overlap(&mut self, steps: &[Step], acts: &[Act], timed: &[transition::Timed], names: &BTreeMap<u32, String>, t: f64) {
+        let ins: Vec<usize> = (0..steps.len()).filter(|i| steps[*i].kind == StepKind::In).collect();
+        let outs: Vec<usize> = (0..steps.len()).filter(|i| steps[*i].kind == StepKind::Out).collect();
+        if ins.is_empty() || outs.is_empty() {
+            return;
         }
-        self.event(t, &inst.name, "state", "stopping".into());
-        self.motion.stop(&self.scene, Some(&[inst.root]), t);
-        inst.state = InstState::Leaving;
-        self.parked.push(inst.root);
-        self.layer_mut(layer).leaving.push(inst);
-        Ok(())
+        let reveal: Vec<u32> = ins.iter().map(|i| steps[*i].root).collect();
+        let Ok(geo) = self.geometry_with(t, &reveal) else { return };
+        let rect = |root: u32| geo.get(&root).map(|g| Rect { x: g.rel[0], y: g.rel[1], w: g.rel[2], h: g.rel[3] });
+        for &i in &ins {
+            for &o in &outs {
+                let (a, b) = (&steps[i], &steps[o]);
+                let out_end = timed[o].start + acts[o].dur;
+                if a.layer == b.layer || timed[i].start >= out_end - 1e-9 {
+                    continue;
+                }
+                let (Some(ra), Some(rb)) = (rect(a.root), rect(b.root)) else { continue };
+                if !ra.intersects(&rb) {
+                    continue;
+                }
+                let (la, lb) = (names.get(&a.layer).cloned().unwrap_or_default(), names.get(&b.layer).cloned().unwrap_or_default());
+                let msg = format!(
+                    "{la} ({}) входит в {} с, пока {lb} ({}) уходит до {} с: их области пересекаются",
+                    a.inst,
+                    keyfill_core::look::num(timed[i].start as f32),
+                    b.inst,
+                    keyfill_core::look::num(out_end as f32)
+                );
+                let hint = format!("начни вход после ухода: enter('{la}', {{ after: '{lb}:out' }}) или sequence()");
+                self.motion.diagnostics.push(Level::Warn, "transition.overlap", &a.inst, None, msg, Some(&hint));
+            }
+        }
     }
 
     fn layer_mut(&mut self, layer: u32) -> &mut Layer {
@@ -833,7 +1023,9 @@ impl Session {
         } else {
             Default::default()
         };
-        anim.clock = Some(Clock { t, frame: self.frame_index(t), scene: self.motion.scene_phase(), log, events });
+        // Расписание перехода — пока он идёт.
+        let transition = self.plan.clone().filter(|p| self.labels && t + 1e-9 >= p.t && t <= p.end() + 1e-9);
+        anim.clock = Some(Clock { t, frame: self.frame_index(t), scene: self.motion.scene_phase(), log, events, transition });
         let motion = start.elapsed() - script;
         let frame = evaluate_at(&self.scene, &mut self.engine, eval, &anim, &mut self.hints)?;
         let layout = start.elapsed() - script - motion;
@@ -884,6 +1076,27 @@ impl Session {
         block.fit_to(&mut self.engine, None);
         Some(block)
     }
+}
+
+/// Шаг перехода на слое состояния.
+#[derive(Debug, Clone)]
+struct Step {
+    layer: u32,
+    kind: StepKind,
+    inst: String,
+    root: u32,
+    /// Вход — разворот уходящего, а не новый экземпляр.
+    revive: bool,
+}
+
+/// Шаг, который ждёт своего момента.
+#[derive(Debug, Clone)]
+struct Pending {
+    at: f64,
+    seq: u64,
+    step: Step,
+    /// Состояние, ради которого шаг: по нему привязка пропсов.
+    state: String,
 }
 
 /// Почему команда слою не прошла.

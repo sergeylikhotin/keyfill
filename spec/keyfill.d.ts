@@ -583,11 +583,52 @@ declare module '@keyfill/core' {
      * данных канала: `Scoreboard.with({ homeScore: d.homeScore, size: 'compact' })`.
      */
     readonly states?: (data: PropAccessors<InferProps<S>>) => { readonly [state: string]: { readonly [K in NoInfer<L>]?: StateItem } };
+    /**
+     * Как идут переходы: `default` и пары `'live -> replay'` (`*` — любое состояние). Без правила —
+     * `together()`: всё в момент команды. Шаги — `out`/`enter`/`update` слоя со стартом
+     * относительно других шагов: `enter('replay', { after: 'lower:out', offset: -0.1 })`.
+     * Ядро сводит переход в одно расписание до начала; дамп показывает его диаграммой.
+     */
+    readonly transitions?: {
+      readonly default?: TransitionRule;
+      readonly [pair: `${string} -> ${string}`]: TransitionRule | ((steps: TransitionSteps<NoInfer<L>>) => readonly TransitionStep[]);
+    };
     readonly fonts?: readonly FontFile[];
     readonly systemFonts?: boolean;
     readonly timelines?: readonly Timeline<any>[];
   }
   export function defineChannel<const S extends PropSchema = {}, const L extends string = string>(def: ChannelDef<S, L>): ChannelDef<S, L>;
+
+  const ruleBrand: unique symbol;
+  /** Готовое правило перехода. */
+  export type TransitionRule = { readonly [ruleBrand]: true };
+  /** Всё сразу, в момент команды (по умолчанию). */
+  export function together(): TransitionRule;
+  /** Сначала уходит ушедшее, затем входит пришедшее: `in` через `gap` секунд после конца всех `out`. */
+  export function sequence(gap?: number): TransitionRule;
+  /** Как `sequence`, но `in` начинается за `seconds` до конца всех `out`. */
+  export function overlap(seconds: number): TransitionRule;
+
+  const stepBrand: unique symbol;
+  export type TransitionStep = { readonly [stepBrand]: true };
+  /** Шаг перехода: `слой:in`, `слой:out`, `слой:update`. */
+  export type StepRef<L extends string> = `${L}:${'in' | 'out' | 'update'}`;
+  /**
+   * Когда начать шаг: `after` — от конца другого шага, `with` — от его начала, `at` — секунд от
+   * начала перехода; `offset` сдвигает (может быть отрицательным). Без них — в начале перехода.
+   */
+  export interface StepTiming<L extends string> {
+    readonly after?: StepRef<L>;
+    readonly with?: StepRef<L>;
+    readonly at?: number;
+    readonly offset?: number;
+  }
+  /** Шаги перехода по слоям. Шаги, не названные в правиле, начинаются в момент команды. */
+  export interface TransitionSteps<L extends string> {
+    out(layer: L, timing?: StepTiming<L>): TransitionStep;
+    enter(layer: L, timing?: StepTiming<L>): TransitionStep;
+    update(layer: L, timing?: StepTiming<L>): TransitionStep;
+  }
 
   const stateItemBrand: unique symbol;
   /** Компонент с пропсами для слоя состояния канала: `Scoreboard.with({ ... })`. */

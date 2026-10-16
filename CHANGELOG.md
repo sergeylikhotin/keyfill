@@ -53,6 +53,13 @@ package version.
   that is needed again turns back from where it is. State layers refuse direct `load`, `play`,
   `stop`, `update` and `clear`; `invoke` and `next` work. Snapshots, preview and `--resume` restore
   data and state. Example `examples/match`.
+- Transition choreography: `transitions: { default: overlap(0.15), 'pregame -> live': sequence(0.1),
+  'live -> replay': ({ out, enter, update }) => [enter('replay', { after: 'lower:out', offset: -0.1 })] }`.
+  Steps start after or with other steps, or at a time; the core resolves one schedule at the
+  `state` command, runs delayed steps at their exact moments (journals replay them the same) and
+  shows the schedule in dumps while it runs. A new `state` cancels steps that have not started.
+  Cycles and steps a transition never has fail when the channel loads; panels entering over a
+  leaving one on another layer warn `transition.overlap`.
 
 ### Changed
 
