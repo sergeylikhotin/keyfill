@@ -36,7 +36,9 @@ package version.
   JSON Schema), `/state` and `/monitor/<N>.png`. Preview is the program snapshot plus staged
   commands, checked before air. Accepted commands are journaled as the show runs; `--resume`
   brings channels back from the last journal straight to air (`play` with `instant`). Loopback only
-  unless a token is given. Help topic `keyfill docs serve`.
+  unless a token is given. Help topic `keyfill docs serve`. `/monitor` reports the frame number
+  (`X-Keyfill-Frame`); a test plays a show over WebSocket and checks that replaying its journal
+  gives the same frames, pixel for pixel.
 
 ### Changed
 

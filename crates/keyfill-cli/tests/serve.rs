@@ -49,6 +49,12 @@ fn serve(home: &Path, journal: &Path, extra: &[&str]) -> Serve {
 }
 
 fn http(addr: &str, path: &str) -> (u16, Vec<u8>) {
+    let (status, _, body) = http_full(addr, path);
+    (status, body)
+}
+
+/// Ответ HTTP целиком: код, заголовки (имена в нижнем регистре) и тело.
+fn http_full(addr: &str, path: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     let mut s = TcpStream::connect(addr).unwrap();
     write!(s, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
     let mut buf = Vec::new();
@@ -56,7 +62,8 @@ fn http(addr: &str, path: &str) -> (u16, Vec<u8>) {
     let split = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
     let head = String::from_utf8_lossy(&buf[..split]).to_string();
     let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
-    (status, buf[split + 4..].to_vec())
+    let headers = head.lines().skip(1).filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))).collect();
+    (status, headers, buf[split + 4..].to_vec())
 }
 
 fn json_get(addr: &str, path: &str) -> Value {
@@ -233,4 +240,90 @@ fn serve_needs_token_off_loopback_and_checks_it() {
     let mut c = Client::connect(&server.addr, "?token=s3cret");
     let st = c.ask(json!({ "cmd": "state" }), "s1");
     assert_eq!(st["channel"], 1, "{st}");
+}
+
+/// Живой кадр эфира: номер кадра и пиксели.
+fn capture(addr: &str) -> (u64, keyfill_render::Image) {
+    let (status, headers, png) = http_full(addr, "/monitor/1.png?scale=1");
+    assert_eq!(status, 200);
+    let frame = headers.iter().find(|(k, _)| k == "x-keyfill-frame").map(|(_, v)| v.parse().unwrap()).expect("X-Keyfill-Frame");
+    (frame, keyfill_render::decode_png(&png).unwrap())
+}
+
+/// Веха M4: скриптовая сессия через API даёт ожидаемые события, а журнал этой сессии,
+/// воспроизведённый заново, даёт те же кадры, что видел эфир, — пиксель в пиксель.
+#[test]
+fn live_show_matches_its_journal() {
+    let Some(home) = home() else { return };
+    let journal = home.join("target/tmp-serve/journal-show");
+    let _ = std::fs::remove_dir_all(&journal);
+    let server = serve(&home, &journal, &[]);
+    let addr = server.addr.clone();
+    let mut c = Client::connect(&addr, "");
+    let board = |c: &mut Client, name: &'static str| c.wait(move |v| v["type"] == "event" && v["source"] == "Scoreboard#1" && v["name"] == name);
+    let mut shots = Vec::new();
+
+    let ack = c.ask(
+        json!({ "cmd": "play", "layer": 10, "component": "Scoreboard", "props": {
+            "home": "Динамо Москва", "away": "Крылья Советов Самара", "homeScore": 2, "awayScore": 1,
+            "period": "2-й тайм", "clockFrom": 4032, "live": true } }),
+        "1",
+    );
+    assert_eq!(ack["results"][0]["status"], "ok", "{ack}");
+    board(&mut c, "hold");
+    shots.push(capture(&addr));
+    c.ask(json!({ "cmd": "next", "layer": 10 }), "2");
+    board(&mut c, "loop");
+    shots.push(capture(&addr));
+    c.ask(json!({ "cmd": "invoke", "layer": 10, "command": "goal", "params": { "side": "home" } }), "3");
+    board(&mut c, "goal");
+    shots.push(capture(&addr));
+    // Плашка через preview: проверена до эфира, в эфир — take.
+    let staged = c.ask(json!({ "cmd": "play", "layer": 20, "component": "LowerThird", "props": { "name": "Анна Смирнова", "role": "Ведущая", "live": true }, "to": "preview" }), "4");
+    assert_eq!(staged["results"][0]["status"], "ok", "{staged}");
+    let take = c.ask(json!({ "cmd": "take" }), "5");
+    assert_eq!(take["results"][0]["status"], "ok", "{take}");
+    c.wait(|v| v["type"] == "event" && v["source"] == "LowerThird#1" && v["name"] == "playing");
+    std::thread::sleep(Duration::from_millis(150));
+    shots.push(capture(&addr));
+    c.ask(json!({ "cmd": "batch", "cmds": [{ "cmd": "stop", "layer": 20 }, { "cmd": "stop", "layer": 10 }] }), "6");
+    std::thread::sleep(Duration::from_millis(120));
+    shots.push(capture(&addr));
+    board(&mut c, "removed");
+    c.wait(|v| v["type"] == "event" && v["source"] == "LowerThird#1" && v["name"] == "removed");
+
+    // События табло — в ожидаемом порядке (между ними могут быть и другие).
+    let got: Vec<String> = c
+        .seen
+        .iter()
+        .filter(|v| v["type"] == "event" && v["source"] == "Scoreboard#1")
+        .map(|v| format!("{}:{}", v["kind"].as_str().unwrap(), v["name"].as_str().unwrap()))
+        .collect();
+    let want = ["state:loaded 10", "state:playing", "state:in", "marker:ready", "state:hold", "state:loop", "marker:goalHome", "emit:goal", "state:stopping", "state:removed"];
+    let mut rest = got.iter();
+    for w in want {
+        assert!(rest.any(|g| g == w), "нет {w} по порядку в {got:?}");
+    }
+    drop(c);
+    drop(server);
+
+    // Воспроизведение журнала: те же кадры в те же моменты.
+    let file = std::fs::read_dir(&journal).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with(".journal.jsonl")).unwrap();
+    let j = keyfill_cli::channel::Journal::read(&file).unwrap();
+    let bundle = keyfill_cli::bundle(&j.channel_path(&file)).unwrap();
+    let run = keyfill_js::RunOptions { seed: j.header.seed, now_ms: j.header.now, ..Default::default() };
+    let air = keyfill_core::EvalOptions { mode: keyfill_core::Mode::Air, background: None };
+    assert_eq!(j.batches.len(), 5, "play, next, invoke, take, batch stop: {:?}", j.batches);
+    for (n, live) in &shots {
+        let mut replay = keyfill_cli::Session::open(&bundle, &run, &[], &j.batches).unwrap();
+        let t = replay.frame_time(*n);
+        let frame = replay.frame_at(t, air).unwrap();
+        let pixmap = keyfill_render::render(&frame, &keyfill_render::RenderOptions::default()).unwrap();
+        let img = keyfill_render::image(&pixmap);
+        assert_eq!((img.width, img.height), (live.width, live.height));
+        let diff = img.rgba.iter().zip(&live.rgba).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "кадр {n}: {diff} байт отличаются от эфира");
+    }
+    let frames: Vec<u64> = shots.iter().map(|(n, _)| *n).collect();
+    assert!(frames.windows(2).all(|w| w[0] < w[1]), "снимки по ходу эфира: {frames:?}");
 }

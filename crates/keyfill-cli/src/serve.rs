@@ -123,7 +123,8 @@ enum Req {
     Discard { reply: Sender<Value> },
     State { reply: Sender<Value> },
     Schema { reply: Sender<Value> },
-    Monitor { scale: f32, preview: bool, reply: Sender<Result<Vec<u8>, String>> },
+    /// Кадр эфира (или preview) PNG и номер кадра эфира, к которому он относится.
+    Monitor { scale: f32, preview: bool, reply: Sender<Result<(Vec<u8>, u64), String>> },
 }
 
 struct RunnerContext {
@@ -304,7 +305,8 @@ impl Runner {
                 let _ = reply.send(self.schema_json());
             }
             Req::Monitor { scale, preview, reply } => {
-                let _ = reply.send(self.monitor(scale, preview).map_err(|e| format!("{e:#}")));
+                let frame = self.frame_no;
+                let _ = reply.send(self.monitor(scale, preview).map(|png| (png, frame)).map_err(|e| format!("{e:#}")));
             }
         }
     }
@@ -493,7 +495,8 @@ impl Server {
                 let (reply, rx) = mpsc::channel();
                 ch.send(Req::Monitor { scale, preview, reply })?;
                 match rx.recv()? {
-                    Ok(png) => respond(&mut stream, 200, "image/png", &png, &[]),
+                    // Номер кадра: живой кадр можно сверить с воспроизведением журнала.
+                    Ok((png, frame)) => respond(&mut stream, 200, "image/png", &png, &[("X-Keyfill-Frame", frame.to_string())]),
                     Err(e) => respond(&mut stream, 500, "text/plain; charset=utf-8", e.as_bytes(), &[]),
                 }
             }
