@@ -15,6 +15,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("cli", include_str!("../help/docs/cli.md")),
     ("time", include_str!("../help/docs/time.md")),
     ("scene", include_str!("../help/docs/scene.md")),
+    ("props", include_str!("../help/docs/props.md")),
+    ("channel", include_str!("../help/docs/channel.md")),
     ("cues", include_str!("../help/docs/cues.md")),
     ("look", include_str!("../help/docs/look.md")),
     ("layout", include_str!("../help/docs/layout.md")),

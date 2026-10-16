@@ -13,7 +13,7 @@
 //!   графики в покое, а не промежуточный кадр появления.
 //! - **transition** анимирует само значение `look`, когда данные изменились.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -739,6 +739,12 @@ pub struct MotionState {
     seq: u64,
     scene: ScenePhase,
     initialized: bool,
+    /// Канал: экземпляры появляются и уходят командами, сцена играет с момента 0.
+    channel: bool,
+    /// Корни экземпляров, загруженных на слой и ещё не показанных.
+    pending: BTreeSet<u32>,
+    /// Корни экземпляров, для которых уже созданы воспроизведения таймлайнов.
+    with_runs: BTreeSet<u32>,
     /// Воспроизведения таймлайнов, по одному на экземпляр компонента.
     runs: Vec<Run>,
     /// `count()` и `clock()`: (узел Text, номер куска) → состояние.
@@ -835,6 +841,8 @@ pub enum Gone {
     InstanceStopped,
     /// Таймлайн экземпляра доиграл `out` и снял его.
     TimelineRemoved,
+    /// Экземпляр загружен на слой канала (`load`) и ждёт play.
+    Loaded,
 }
 
 /// Слой presence: сдвиги и множители поверх `look`, не участвуют в `must`.
@@ -1032,24 +1040,28 @@ impl MotionState {
         for id in leave {
             self.leave(id, t);
         }
-        if !self.initialized {
-            self.build_runs(scene);
-        }
+        self.build_runs(scene);
         self.initialized = true;
     }
 
+    /// Воспроизведения таймлайнов для экземпляров, у которых их ещё нет: при монтировании
+    /// сцены — для всех, на канале — для каждого нового экземпляра.
     fn build_runs(&mut self, scene: &Scene) {
-        self.diagnostics.0.extend(scene.timeline_diagnostics.0.iter().cloned());
+        if !self.initialized {
+            self.diagnostics.0.extend(scene.timeline_diagnostics.0.iter().cloned());
+        }
         for def in &scene.timelines {
             let roots: Vec<(u32, String)> = scene
                 .nodes
                 .values()
                 .filter_map(|n| n.instance().filter(|i| component_of(i) == def.component).map(|i| (n.id, i.to_string())))
+                .filter(|(id, _)| !self.with_runs.contains(id))
                 .collect();
-            if roots.is_empty() {
+            if roots.is_empty() && !self.initialized && !self.channel {
                 self.diagnostics.push(Level::Warn, "timeline.unused", &def.component, None, "в сцене нет экземпляров этого компонента", None);
             }
             for (root, inst) in roots {
+                self.with_runs.insert(root);
                 let parts: BTreeMap<String, u32> = scene
                     .nodes
                     .values()
@@ -1091,9 +1103,43 @@ impl MotionState {
         }
     }
 
-    fn push_event(&mut self, e: MotionEvent) {
+    /// Событие в журнал по времени. Канал пишет сюда жизненный цикл экземпляров на слоях.
+    pub fn push_event(&mut self, e: MotionEvent) {
         let pos = self.events_log.partition_point(|x| x.t <= e.t);
         self.events_log.insert(pos, e);
+    }
+
+    /// Режим канала: сцена играет с момента `t`, экземпляры появляются по командам.
+    pub fn start_channel(&mut self, t: f64) {
+        self.channel = true;
+        self.scene = ScenePhase::Playing;
+        self.scene_event(t, "playing");
+    }
+
+    /// Экземпляр загружен на слой: не виден, пока его не запустит play.
+    pub fn hold_loaded(&mut self, root: u32) {
+        self.pending.insert(root);
+    }
+
+    /// Когда экземпляр, которому дали stop, уйдёт с экрана целиком.
+    pub fn hide_time(&self, root: u32) -> Option<f64> {
+        self.nodes.get(&root)?.hide_at
+    }
+
+    /// Забыть удалённые узлы: состояние движения, числа и часы, таймлайны их экземпляров.
+    pub fn forget(&mut self, ids: &[u32]) {
+        for id in ids {
+            self.nodes.remove(id);
+            self.pending.remove(id);
+            self.with_runs.remove(id);
+        }
+        self.dyns.retain(|(id, _), _| !ids.contains(id));
+        for run in &mut self.runs {
+            if ids.contains(&run.root) {
+                run.dead = true;
+            }
+        }
+        self.events.retain(|(_, _, ev)| !matches!(ev, Event::InEnd(id) | Event::OutEnd(id) if ids.contains(id)));
     }
 
     fn scene_event(&mut self, t: f64, name: &str) {
@@ -1254,7 +1300,12 @@ impl MotionState {
     }
 
     fn runs_of(&self, roots: &[u32]) -> Vec<usize> {
-        (0..self.runs.len()).filter(|i| roots.contains(&self.runs[*i].root)).collect()
+        (0..self.runs.len()).filter(|i| !self.runs[*i].dead && roots.contains(&self.runs[*i].root)).collect()
+    }
+
+    /// Воспроизведения живых экземпляров.
+    fn live_runs(&self) -> Vec<usize> {
+        (0..self.runs.len()).filter(|i| !self.runs[*i].dead).collect()
     }
 
     /// play: узлы с presence начинают `in` (или сразу `loop`), таймлайны — воспроизведение.
@@ -1272,7 +1323,7 @@ impl MotionState {
             for id in ids {
                 self.enter(id, t);
             }
-            for i in 0..self.runs.len() {
+            for i in self.live_runs() {
                 self.run_play(i, t);
             }
             return;
@@ -1282,6 +1333,9 @@ impl MotionState {
             self.scene_event(t, "playing");
         }
         self.settled_at.get_or_insert(t);
+        for root in roots {
+            self.pending.remove(root);
+        }
         for &root in roots {
             for id in Self::subtree(scene, root) {
                 let Some(st) = self.nodes.get_mut(&id) else { continue };
@@ -1332,7 +1386,7 @@ impl MotionState {
             until = until.max(self.leave(id, t));
         }
         let runs = match roots {
-            None => (0..self.runs.len()).collect(),
+            None => self.live_runs(),
             Some(roots) => self.runs_of(roots),
         };
         for i in runs {
@@ -1360,7 +1414,7 @@ impl MotionState {
     /// next: снять остановку таймлайна (hold или цикл).
     pub fn next(&mut self, roots: Option<&[u32]>, t: f64) {
         let runs = match roots {
-            None => (0..self.runs.len()).collect(),
+            None => self.live_runs(),
             Some(roots) => self.runs_of(roots),
         };
         if runs.is_empty() {
@@ -1430,7 +1484,8 @@ impl MotionState {
                     }
                 }
                 Event::Timeline(i, generation) => {
-                    if self.runs[i].generation == generation
+                    if !self.runs[i].dead
+                        && self.runs[i].generation == generation
                         && let Some((_, stop)) = self.runs[i].next_stop() {
                             self.runs[i].on_stop(et, stop);
                             self.schedule_run(i);
@@ -1439,7 +1494,7 @@ impl MotionState {
             }
         }
         // Маркеры и emit между остановками: их моменты известны точно, журнал дописывается до t.
-        for i in 0..self.runs.len() {
+        for i in self.live_runs() {
             self.runs[i].flush(t);
             self.drain(i);
         }
@@ -1492,6 +1547,7 @@ impl MotionState {
                 nv.notes.insert(0, p);
             }
             nv.gone = match st.phase {
+                _ if self.pending.contains(&id) => Some(Gone::Loaded),
                 _ if st.hide_at.is_some_and(|h| t >= h) => Some(Gone::InstanceStopped),
                 Phase::Gone => Some(Gone::OutEnded),
                 _ => None,
@@ -1514,7 +1570,7 @@ impl MotionState {
                 }
         }
         // Таймлайны поверх presence: сдвиги складываются, множители перемножаются.
-        for run in &self.runs {
+        for run in self.runs.iter().filter(|r| !r.dead) {
             for &(id, ch) in run.keys() {
                 let Some(v) = run.value((id, ch), t) else { continue };
                 let nv = out.nodes.entry(id).or_default();

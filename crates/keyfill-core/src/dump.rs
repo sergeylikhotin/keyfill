@@ -108,6 +108,8 @@ pub enum Absent {
     InstanceStopped,
     /// Таймлайн экземпляра доиграл `out` и снял его.
     TimelineRemoved,
+    /// Загружен на слой канала и ждёт play.
+    Loaded,
 }
 
 impl Absent {
@@ -119,6 +121,7 @@ impl Absent {
             Absent::OutEnded => "ушёл после out",
             Absent::InstanceStopped => "экземпляр снят stop",
             Absent::TimelineRemoved => "таймлайн снял экземпляр",
+            Absent::Loaded => "загружен на слой, ждёт play",
         }
     }
 }
@@ -253,6 +256,7 @@ fn absent(scene: &Scene, frame: &Frame, id: u32) -> Absent {
             Gone::OutEnded => Absent::OutEnded,
             Gone::InstanceStopped => Absent::InstanceStopped,
             Gone::TimelineRemoved => Absent::TimelineRemoved,
+            Gone::Loaded => Absent::Loaded,
         }
     } else if node.parent.is_some_and(|p| scene.node(p).kind != Kind::Stage && frame.find(p).is_none()) {
         Absent::WithParent

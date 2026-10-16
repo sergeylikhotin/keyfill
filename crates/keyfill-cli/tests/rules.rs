@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const NAMESPACES: &[&str] =
-    &["must", "anchor", "layout", "render", "look", "theme", "font", "text", "signal", "motion", "command", "timeline", "props", "js", "build", "perf"];
+    &["must", "anchor", "layout", "render", "look", "theme", "font", "text", "signal", "motion", "command", "timeline", "props", "js", "build", "perf", "channel", "journal"];
 
 fn files(dir: &Path, ext: &[&str], out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap().flatten() {

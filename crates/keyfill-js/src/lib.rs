@@ -189,7 +189,13 @@ impl JsHost {
             Ok(())
         });
         result.map_err(|e| self.watchdog.explain(e))?;
-        Ok(std::mem::take(&mut *self.out.borrow_mut()))
+        Ok(self.take_output())
+    }
+
+    /// То, что JS успел отправить: после исключения в вызове пакеты остаются здесь, и
+    /// вызывающий решает, применить их или отбросить.
+    pub fn take_output(&mut self) -> RunOutput {
+        std::mem::take(&mut *self.out.borrow_mut())
     }
 }
 

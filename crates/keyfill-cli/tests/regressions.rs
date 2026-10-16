@@ -29,7 +29,7 @@ fn session(entry: &str, cues: &str) -> Option<Session> {
     home()?;
     let extra: Vec<CueArg> = if cues.is_empty() { Vec::new() } else { parse_cues(cues).unwrap() };
     let bundle = keyfill_cli::bundle(Path::new(entry)).unwrap();
-    Some(Session::open(&bundle, &RunOptions::default(), &extra).unwrap())
+    Some(Session::open(&bundle, &RunOptions::default(), &extra, &[]).unwrap())
 }
 
 fn dev() -> EvalOptions {

@@ -39,9 +39,11 @@ keyfill — рендер TSX-сцен без браузера
   keyfill perf <entry> [--t a..b] [--scale N]
                                       время кадра по стадиям против бюджета 1/fps
 Понять:
-  keyfill schema <entry>                 пропсы сцены, компоненты, части, команды, маркеры, сценарий
+  keyfill schema <entry>                 пропсы сцены, компоненты, части, команды, маркеры, сценарий;
+                                      у канала — каталог и JSON Schema пропсов (--json)
   keyfill explain [правило]              что значит диагностика и как её исправить
-  keyfill docs [тема]                    справка: время, сцена, look, раскладка, must, движение, тесты
+  keyfill docs [тема]                    справка: время, сцена, пропсы, канал, look, раскладка, must,
+                                      движение, тесты
 Создать и обслужить:
   keyfill new <имя> [--template lower-third|blank]
                                       каталог сцены из шаблона; tsconfig, keyfill.config.ts и шрифт —
@@ -49,8 +51,9 @@ keyfill — рендер TSX-сцен без браузера
   keyfill doctor                         node, @keyfill/core, esbuild, ffmpeg, конфиг и пробная сборка
   keyfill cache [clean]                  кэш бандлов: размер или очистка
 
-<entry> — сцена (defineScene), сценарий *.cues.ts (cues) или имя сцены из keyfill.config.ts.
-Без сценария сцена получает play в 0.
+<entry> — сцена (defineScene), сценарий *.cues.ts (cues), канал (defineChannel), журнал
+команд канала *.journal.jsonl или имя сцены из keyfill.config.ts. Без сценария сцена получает
+play в 0; канал без журнала пуст (keyfill docs channel).
 
 Время (одна грамматика для --t и --cue):
   1.2  60f         секунды или кадры
@@ -64,7 +67,7 @@ keyfill — рендер TSX-сцен без браузера
 
 Данные сцены (defineScene({ props, defaults })):
   --props data.json     значения из файла
-  --set name=Иван       одно значение; тип приводится по схеме, json-пропсы — JSON
+  --set name=Иван       одно значение; тип приводится по схеме, списки и объекты — JSON
 
 Общие флаги:
   --json           вывод одним JSON-объектом со схемой \"keyfill\": 1

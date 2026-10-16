@@ -1,6 +1,7 @@
 //! Конвейер сцены: TSX → esbuild → QuickJS → дерево → кадр во времени.
 
 pub mod bundle;
+pub mod channel;
 pub mod config;
 pub mod doctor;
 pub mod filmstrip;

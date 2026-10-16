@@ -1,4 +1,4 @@
-import { Box, Span, Text, animate, clock, component, count, fade, grid, spring, stack, tween } from '@keyfill/core';
+import { Box, Span, Text, animate, clock, component, count, fade, grid, prop, spring, stack, tween } from '@keyfill/core';
 import { theme } from './theme';
 
 const team = { font: theme.font.ui, size: 34, weight: 600, color: theme.color.text } as const;
@@ -6,16 +6,17 @@ const score = { font: theme.font.ui, size: 40, weight: 600, color: theme.color.t
 
 export const Scoreboard = component({
   name: 'Scoreboard',
+  // Типы пропсов описаны в рантайме: по ним keyfill schema даёт JSON Schema для пульта,
+  // а канал проверяет данные команд (счёт — целое ≥ 0).
   props: {
-    home: String,
-    away: String,
-    homeScore: Number,
-    awayScore: Number,
+    home: prop.string({ description: 'Хозяева' }),
+    away: prop.string({ description: 'Гости' }),
+    homeScore: prop.number({ min: 0, int: true, default: 0 }),
+    awayScore: prop.number({ min: 0, int: true, default: 0 }),
     period: String,
-    /** Время матча в секундах; идёт само, пока clockRunning. */
-    clockFrom: Number,
-    clockRunning: Boolean,
-    live: Boolean,
+    clockFrom: prop.number({ min: 0, default: 0, description: 'Время матча в секундах; идёт само, пока clockRunning' }),
+    clockRunning: prop.boolean({ default: true }),
+    live: prop.boolean({ default: false }),
   },
   parts: ['panel', 'home', 'away', 'homeScore', 'awayScore', 'status', 'badge'],
 
@@ -75,7 +76,7 @@ export const Scoreboard = component({
   commands: {
     // Гол: счёт +1 и вспышка цифры — сегмент таймлайна goalHome или goalAway.
     goal: {
-      params: { side: String },
+      params: { side: prop.enum(['home', 'away']) },
       run: ({ side }, ctx) => {
         if (side === 'home') ctx.set({ homeScore: ctx.props.homeScore() + 1 });
         else ctx.set({ awayScore: ctx.props.awayScore() + 1 });

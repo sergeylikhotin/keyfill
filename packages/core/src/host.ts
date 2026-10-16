@@ -1,9 +1,17 @@
 // Мост в нативное ядро: команды копятся в очереди и уходят одним вызовом на кадр.
+import type { PropInfo } from './props';
 
 export type Cmd =
   | { op: 'create'; id: number; kind: string; src?: string }
   | { op: 'set'; id: number; key: string; value: unknown }
-  | { op: 'insert'; parent: number; child: number }
+  | { op: 'insert'; parent: number; child: number; before?: number }
+  | { op: 'remove'; id: number }
+  /** Файл — канал: каталог компонентов для слоёв. */
+  | { op: 'channel'; components: string[] }
+  /** Ответ канала на команду ядра. */
+  | { op: 'layer'; reply: 'mounted'; inst: string; root: number }
+  | { op: 'layer'; reply: 'values'; inst: string; props: Record<string, unknown> }
+  | { op: 'layer'; reply: 'rejected'; errors: string[] }
   | { op: 'text'; id: number; runs: { text: string; look?: unknown; src?: string; dynamic?: unknown }[] }
   | { op: 'theme'; values: Record<string, unknown> }
   | {
@@ -29,7 +37,7 @@ export type Cmd =
   /** Значения keyfill.config.ts. */
   | { op: 'config'; value: Record<string, unknown> };
 
-export type PropInfo = { name: string; type: string; default?: unknown; required?: boolean };
+export type { PropInfo } from './props';
 
 declare const __keyfill_emit: (json: string) => void;
 
@@ -45,8 +53,15 @@ export const host = {
   set(id: number, key: string, value: unknown) {
     queue.push({ op: 'set', id, key, value });
   },
-  insert(parent: number, child: number) {
-    queue.push({ op: 'insert', parent, child });
+  insert(parent: number, child: number, before?: number) {
+    queue.push(before === undefined ? { op: 'insert', parent, child } : { op: 'insert', parent, child, before });
+  },
+  /** Точка отката: команды, отправленные после неё, можно отбросить (неудачное монтирование). */
+  mark(): number {
+    return queue.length;
+  },
+  rollback(mark: number) {
+    queue.length = mark;
   },
   runs(id: number, runs: { text: string; look?: unknown; src?: string; dynamic?: unknown }[]) {
     queue.push({ op: 'text', id, runs });

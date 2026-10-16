@@ -67,7 +67,7 @@ cargo run -q --release -p keyfill-cli -- view examples/scoreboard/scene.cues.ts
 
 Коды выхода: 0 успех, 1 ошибки в диагностиках или упавшие тесты, 2 неверный вызов, 3 сборка, 4 исключение JS, 5 сбой keyfill.
 
-Данные сцены объявляются в `defineScene({ props: { name: String }, defaults: { name: 'Анна' }, root: (p) => ... })` и задаются из CLI: `--props data.json` или `--set name="Иван Петров"` (тип приводится по схеме, `prop<T>()` — JSON). В сценарии их меняет `at(t, 'update', { name: '...' })` без компонента. Ошибка в данных — код 2 и подсказка `keyfill schema`.
+Данные сцены объявляются в `defineScene({ props: { name: String }, defaults: { name: 'Анна' }, root: (p) => ... })` и задаются из CLI: `--props data.json` или `--set name="Иван Петров"` (тип приводится по схеме; списки, объекты и `prop.json<T>()` — JSON; типы пропсов — `keyfill docs props`). В сценарии их меняет `at(t, 'update', { name: '...' })` без компонента. Ошибка в данных — код 2 и подсказка `keyfill schema`.
 
 `--json` у любой команды печатает один объект `{ "keyfill": 1, command, ok, exit, entry, config, at, result, logs, next, repro }`; при ошибке — `{ ..., ok: false, error: { kind, message, diagnostics } }`. Текстовый вывод строится из той же структуры. `next` — готовые команды следующего шага (`keyfill inspect` узла с ошибкой, `keyfill explain` её правила, `keyfill test … --update`), `repro` — строка, которая воспроизводит вызов. Ошибки сборки приходят как диагностики `build.*` с местом и строкой кода, исключения JS — как `js.exception` со стеком, переведённым через sourcemap на строки TSX.
 

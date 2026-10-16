@@ -213,10 +213,13 @@ fn prop_line(p: &keyfill_core::scene::PropInfo) -> String {
 
 pub fn schema_text(s: &Schema) -> String {
     let mut out = format!("stage {}×{} @{}fps\n", num(s.stage.size[0]), num(s.stage.size[1]), num(s.stage.fps));
-    out.push_str("props");
-    if s.props.is_empty() {
-        out.push_str("  — (сцена без данных)\n");
+    if let Some(c) = &s.channel {
+        let catalog = if c.catalog.is_empty() { "пуст".to_string() } else { c.catalog.join(", ") };
+        let _ = writeln!(out, "channel  каталог: {catalog}");
+    } else if s.props.is_empty() {
+        out.push_str("props  — (сцена без данных)\n");
     } else {
+        out.push_str("props");
         out.push('\n');
         for p in &s.props {
             let _ = writeln!(out, "  {}", prop_line(p));
@@ -224,7 +227,11 @@ pub fn schema_text(s: &Schema) -> String {
     }
     out.push_str("components\n");
     for c in &s.components {
-        let inst = if c.instances.is_empty() { "не используется".to_string() } else { c.instances.join(", ") };
+        let inst = match (&s.channel, c.instances.is_empty()) {
+            (Some(_), true) => "на слоях нет".to_string(),
+            (None, true) => "не используется".to_string(),
+            _ => c.instances.join(", "),
+        };
         let _ = writeln!(out, "  {}  [{inst}]", c.info.name);
         if !c.info.props.is_empty() {
             let props: Vec<String> = c.info.props.iter().map(prop_line).collect();
@@ -252,6 +259,11 @@ pub fn schema_text(s: &Schema) -> String {
     }
     if !s.cues.is_empty() {
         let _ = writeln!(out, "cues  {}", s.cues.join(" · "));
+    }
+    if let Some(c) = &s.channel
+        && !c.journal.is_empty()
+    {
+        let _ = writeln!(out, "journal  {}", c.journal.join(" · "));
     }
     out
 }

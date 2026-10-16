@@ -21,6 +21,7 @@ use keyfill_js::{LogLine, RunOptions};
 use keyfill_render::{Png, RenderOptions, Renderer};
 use serde::Serialize;
 
+use crate::channel::{Batch, Journal};
 use crate::session::CueArg;
 use crate::time::{self, Moment, Offset, TimeSpec};
 use crate::{Bundle, Session, filmstrip, video};
@@ -31,6 +32,8 @@ pub struct Job {
     pub bundle: Bundle,
     pub run: RunOptions,
     pub cues: Vec<CueArg>,
+    /// Пачки команд канала, если `entry` — журнал `*.journal.jsonl`.
+    pub batches: Vec<Batch>,
     pub eval: EvalOptions,
     /// Вывод console.* сцены из последней сессии операции.
     pub logs: std::cell::RefCell<Vec<LogLine>>,
@@ -89,17 +92,31 @@ fn inspect_target<'a>(scene: &Scene, diags: impl IntoIterator<Item = &'a Diagnos
 }
 
 impl Job {
-    pub fn new(entry: &Path, run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Result<Job> {
-        Ok(Job::with_bundle(entry, crate::bundle(entry)?, run, cues, eval))
+    /// Задача на сцене, сценарии, канале или журнале канала. Журнал играет на своём канале
+    /// с теми часами и сидом, с которыми был записан.
+    pub fn new(entry: &Path, mut run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Result<Job> {
+        if !crate::channel::is_journal(entry) {
+            return Ok(Job::with_bundle(entry, crate::bundle(entry)?, run, cues, eval));
+        }
+        let journal = Journal::read(entry)?;
+        let channel = journal.channel_path(entry);
+        if !channel.is_file() {
+            return Err(crate::usage(format!("журнал {}: файл канала {} не найден", crate::slash(entry), crate::slash(&channel))));
+        }
+        run.seed = journal.header.seed;
+        run.now_ms = journal.header.now;
+        let mut job = Job::with_bundle(entry, crate::bundle(&channel)?, run, cues, eval);
+        job.batches = journal.batches;
+        Ok(job)
     }
 
     /// Задача на уже собранном бандле: случаи одного файла тестов делят его сборку.
     pub fn with_bundle(entry: &Path, bundle: Bundle, run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Job {
-        Job { entry: entry.to_path_buf(), bundle, run, cues, eval, logs: Default::default() }
+        Job { entry: entry.to_path_buf(), bundle, run, cues, batches: Vec::new(), eval, logs: Default::default() }
     }
 
     pub fn session(&self) -> Result<Session> {
-        Session::open(&self.bundle, &self.run, &self.cues)
+        Session::open(&self.bundle, &self.run, &self.cues, &self.batches)
     }
 
     /// Запоминает console.* сессии, которой операция построила результат.
@@ -461,6 +478,17 @@ pub struct Schema {
     pub components: Vec<ComponentSchema>,
     /// Команды сценария (`*.cues.ts` и `--cue`).
     pub cues: Vec<String>,
+    /// Файл — канал: каталог для слоёв и пачки журнала.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ChannelSchema>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChannelSchema {
+    /// Компоненты, которые можно ставить на слои; их пропсы и команды — в `components`.
+    pub catalog: Vec<String>,
+    /// Пачки журнала: `кадр 0: play 20 LowerThird`.
+    pub journal: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -495,9 +523,12 @@ pub fn schema(job: &Job) -> Result<Outcome<Schema>> {
     job.keep(&session);
     let scene = &session.scene;
     let stage = scene.stage.as_ref().context("в сцене нет stage")?;
+    // У канала в схеме — каталог: то, что пульт может поставить на слой.
+    let catalog = scene.channel.as_ref();
     let components = scene
         .components
         .iter()
+        .filter(|c| catalog.is_none_or(|names| names.contains(&c.name)))
         .map(|c| {
             let mut instances: Vec<String> =
                 scene.nodes.values().filter_map(|n| n.instance()).filter(|i| component_of(i) == c.name).map(String::from).collect();
@@ -515,6 +546,14 @@ pub fn schema(job: &Job) -> Result<Outcome<Schema>> {
         props: scene.props.clone(),
         components,
         cues: session.cues().iter().map(|c| c.label()).collect(),
+        channel: catalog.map(|names| ChannelSchema {
+            catalog: names.clone(),
+            journal: session
+                .batches()
+                .iter()
+                .flat_map(|b| b.cmds.iter().map(move |e| format!("кадр {}: {}", b.frame, e.cmd.label())))
+                .collect(),
+        }),
     }))
 }
 

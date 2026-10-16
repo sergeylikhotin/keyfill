@@ -16,7 +16,8 @@
 
 - Длины — в единицах опорного кадра; `--scale 2` даёт 4K из 1080p.
 - Safe areas по EBU R95: `actionSafe` 93%, `titleSafe` 90%; цели для `anchor` и `must.inside`.
-- Данные сцены: `--props data.json`, `--set name=Иван` (тип приводится по схеме, `prop<T>()` — JSON),
+- Данные сцены: `--props data.json`, `--set name=Иван` (тип приводится по схеме; списки, объекты
+  и `prop.json` — JSON; типы — `keyfill docs props`),
   в сценарии `at(t, 'update', { name: 'Иван' })`, в тесте `props: { ... }`. Ошибка данных — код 2
   с подсказкой `keyfill schema`.
 - Внутри `root` и компонентов каждый пропс — аксессор: `p.name()`; передавай его целиком

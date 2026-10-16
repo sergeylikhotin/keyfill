@@ -1,0 +1,7 @@
+{"keyfill":1,"channel":"channel.tsx"}
+{"frame":0,"cmds":[{"cmd":"play","layer":10,"component":"Scoreboard","props":{"home":"Динамо Москва","away":"Крылья Советов Самара","homeScore":2,"awayScore":1,"period":"2-й тайм","clockFrom":4032,"live":true}},{"cmd":"play","layer":20,"component":"LowerThird","props":{"name":"Анна Смирнова","role":"Ведущая","live":true}}]}
+{"frame":60,"cmd":"next","layer":10}
+{"frame":110,"cmd":"invoke","layer":10,"command":"goal","params":{"side":"home"}}
+{"frame":150,"cmd":"play","layer":20,"component":"LowerThird","props":{"name":"Иван Петров","role":"Тренер","live":false}}
+{"frame":200,"cmd":"update","layer":20,"props":{"role":"Главный тренер"}}
+{"frame":250,"cmds":[{"cmd":"stop","layer":20},{"cmd":"stop","layer":10}]}

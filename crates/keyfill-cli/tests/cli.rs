@@ -77,13 +77,19 @@ fn schema_lists_props_components_markers() {
     assert_eq!(sb["name"], "Scoreboard");
     assert_eq!(sb["instances"][0], "Scoreboard#1");
     assert_eq!(sb["commands"][0]["name"], "goal");
-    assert_eq!(sb["commands"][0]["params"][0], serde_json::json!({ "name": "side", "type": "string" }));
+    assert_eq!(
+        sb["commands"][0]["params"][0],
+        serde_json::json!({ "name": "side", "type": "enum home|away", "schema": { "type": "string", "enum": ["home", "away"] }, "required": true })
+    );
     assert_eq!(sb["timeline"]["markers"][0], serde_json::json!(["ready", 0.7]));
     assert_eq!(sb["timeline"]["holds"][0], "ready");
     assert_eq!(r["cues"][0], "play@0");
 
     let (_, j) = keyfill(&["schema", "examples/lower-third/scene.tsx"]).unwrap();
-    assert_eq!(j["result"]["props"][0], serde_json::json!({ "name": "name", "type": "string", "default": "Анна Смирнова" }));
+    assert_eq!(
+        j["result"]["props"][0],
+        serde_json::json!({ "name": "name", "type": "string", "schema": { "type": "string", "default": "Анна Смирнова" }, "default": "Анна Смирнова" })
+    );
 }
 
 #[test]
@@ -317,4 +323,42 @@ fn new_scene_passes_check_and_test() {
     assert_eq!(keyfill_in(&dir, &["new", "lower-third"], &[]).0, 2, "каталог уже есть");
     assert_eq!(keyfill_in(&dir, &["new", "x", "--template", "nope"], &[]).0, 2);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Журнал канала — обычный `<entry>`: кадр по умолчанию, check по всем кадрам, схема с каталогом.
+#[test]
+fn journal_is_an_entry() {
+    let Some((code, j)) = keyfill(&["dump", "examples/channel/show.journal.jsonl", "--t", "2.5", "--path", "Scoreboard#1/homeScore"]) else { return };
+    assert_eq!(code, 0, "{j}");
+    assert_eq!(j["result"]["nodes"][0]["text"]["content"], "3", "invoke goal на кадре 110: {j}");
+
+    let (code, j) = keyfill(&["check", "examples/channel/show.journal.jsonl"]).unwrap();
+    assert_eq!(code, 0, "{j}");
+    assert_eq!((j["result"]["from"].as_f64(), j["result"]["frames"].as_u64()), (Some(0.0), Some(306)), "весь журнал до ухода табло: {}", j["repro"]);
+
+    let (code, j) = keyfill(&["schema", "examples/channel/channel.tsx"]).unwrap();
+    assert_eq!(code, 0, "{j}");
+    assert_eq!(j["result"]["channel"]["catalog"], serde_json::json!(["Scoreboard", "LowerThird"]));
+    let board = j["result"]["components"].as_array().unwrap().iter().find(|c| c["name"] == "Scoreboard").unwrap();
+    let side = &board["commands"][0]["params"][0];
+    assert_eq!(side["schema"]["enum"], serde_json::json!(["home", "away"]), "{board}");
+}
+
+#[test]
+fn broken_journal_names_the_line() {
+    let Some(home) = home() else { return };
+    let dir = home.join("target/tmp-journal");
+    std::fs::create_dir_all(&dir).unwrap();
+    let journal = dir.join("bad.journal.jsonl");
+    std::fs::write(&journal, "{\"keyfill\":1,\"channel\":\"../../examples/channel/channel.tsx\"}\n{\"frame\":0,\"cmd\":\"show\",\"layer\":1}\n").unwrap();
+    let path = keyfill_cli::slash(journal.strip_prefix(&home).unwrap());
+    let (code, j) = keyfill(&["dump", &path]).unwrap();
+    assert_eq!(code, 2, "{j}");
+    let msg = j["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("строка 2: команда не разобралась"), "{msg}");
+
+    std::fs::write(&journal, "{\"keyfill\":1,\"channel\":\"nope.tsx\"}\n").unwrap();
+    let (code, j) = keyfill(&["dump", &path]).unwrap();
+    assert_eq!(code, 2, "{j}");
+    assert!(j["error"]["message"].as_str().unwrap().contains("файл канала"), "{j}");
 }

@@ -91,7 +91,7 @@ impl Config {
         if let Some(p) = self.scenes.get(arg) {
             return Ok(relative(p));
         }
-        if let Some(file) = ["scene.cues.ts", "scene.tsx"].iter().map(|f| path.join(f)).find(|f| f.is_file()) {
+        if let Some(file) = ["scene.cues.ts", "scene.tsx", "channel.tsx"].iter().map(|f| path.join(f)).find(|f| f.is_file()) {
             return Ok(file);
         }
         let named = if self.scenes.is_empty() {

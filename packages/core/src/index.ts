@@ -2,10 +2,11 @@
 // его типами, а conformance.ts проверяет, что каждый экспорт спеки здесь есть и совместим.
 
 import type * as S from '@keyfill/core';
-import { host, type PropInfo } from './host';
-import { batch, computed, effect, runView, signal, untrack, type Accessor } from './signals';
+import { host } from './host';
+import { coerce, descAll, fields, infos, prop, type PropDesc } from './props';
+import { batch, computed, createRoot, effect, runView, signal, untrack, type Accessor } from './signals';
 
-export { batch, computed, effect, signal, untrack };
+export { batch, computed, effect, prop, signal, untrack };
 
 type Props = Record<string, any>;
 export type KeyfillElement = { readonly __keyfill: 'element'; readonly id: number };
@@ -256,22 +257,29 @@ export function Span(p: Props): KeyfillElement {
 
 // ─── Компоненты ─────────────────────────────────────────────────────────────
 
-export const prop: typeof S.prop = () => brand({ $prop: true });
+/** Ошибки проверки значений — одним исключением с местом в TSX. */
+function valid<T>(what: string, src: string | undefined, run: (errors: string[]) => T): T {
+  const errors: string[] = [];
+  const out = run(errors);
+  if (errors.length) throw new KeyfillError(`${what}: ${errors.join('; ')}`, src);
+  return out;
+}
 
-type PropKind = 'string' | 'number' | 'boolean' | 'json';
-const kindOf = (c: unknown): PropKind => (c === String ? 'string' : c === Number ? 'number' : c === Boolean ? 'boolean' : 'json');
-const describeProps = (schema: Props | undefined): PropInfo[] =>
-  Object.keys(schema ?? {}).map((name) => ({ name, type: kindOf(schema![name]) }));
-const fitsKind = (v: unknown, kind: PropKind) =>
-  kind === 'json' || (kind === 'number' ? typeof v === 'number' && Number.isFinite(v) : typeof v === kind);
-const show = (v: unknown) => JSON.stringify(v) ?? String(v);
+/** Значения и аксессоры: значения проверяются по типу, аксессоры — нет (их проверил tsc). */
+function split(given: Props): { plain: Props; fns: Props } {
+  const plain: Props = {};
+  const fns: Props = {};
+  for (const [k, v] of Object.entries(given)) (typeof v === 'function' ? fns : plain)[k] = v;
+  return { plain, fns };
+}
 
 /**
  * Ячейки пропсов компонента или сцены. Значение или аксессор лежит в сигнале в обёртке `{ v }`,
- * чтобы функция хранилась как значение; `set` заменяет содержимое, как команда `update`.
+ * чтобы функция хранилась как значение. `update` — частичное обновление, как команда `update`:
+ * значения проверяются по типам и применяются все вместе, только если ошибок нет.
  * Снаружи пропс всегда аксессор.
  */
-function propSlots(initial: Props, owner: string, src?: string) {
+function propSlots(schema: Record<string, PropDesc>, initial: Props, owner: string, src?: string) {
   const accessors: Props = {};
   const slots: Record<string, S.Signal<{ v: unknown }>> = {};
   for (const k of Object.keys(initial)) {
@@ -279,13 +287,31 @@ function propSlots(initial: Props, owner: string, src?: string) {
     slots[k] = slot;
     accessors[k] = () => read(slot().v);
   }
-  const known = Object.keys(slots);
-  const list = known.length ? `есть: ${known.join(', ')}` : 'пропсов нет';
-  const set = (key: string, value: unknown) => {
-    if (!(key in slots)) throw new KeyfillError(`update: у ${owner} нет пропса "${key}"; ${list}`, src);
-    slots[key].set({ v: value });
+  const update = (patch: Props) => {
+    const values = valid(`update ${owner}`, src, (errors) => {
+      const { plain, fns } = split(patch ?? {});
+      for (const k of Object.keys(fns)) if (!(k in schema)) fields(schema, { [k]: 0 }, '', errors, false, {}, owner);
+      return { ...fields(schema, plain, '', errors, false, {}, owner), ...fns };
+    });
+    batch(() => Object.entries(values).forEach(([k, v]) => slots[k].set({ v })));
   };
-  return { accessors, set };
+  /** Текущие значения — для снимка состояния канала. */
+  const current = () => untrack(() => Object.fromEntries(Object.keys(slots).map((k) => [k, accessors[k]()])));
+  return { accessors, update, current };
+}
+
+/** Начальные пропсы экземпляра: переданные значения, аксессоры и значения по умолчанию. */
+function initialProps(schema: Record<string, PropDesc>, given: Props, owner: string, src?: string): Props {
+  return valid(owner, src, (errors) => {
+    const { plain, fns } = split(Object.fromEntries(Object.entries(given).filter(([k]) => k in schema)));
+    const out: Props = { ...fields(schema, plain, '', errors, false, {}, owner), ...fns };
+    for (const k of Object.keys(schema)) {
+      if (k in out) continue;
+      if (schema[k].default !== undefined) out[k] = schema[k].default;
+      else errors.push(`не передан пропс "${k}"`);
+    }
+    return out;
+  });
 }
 
 /** Диагностика чтения сигнала вне реактивного контекста — для runView. */
@@ -294,28 +320,36 @@ const untracked = (node: string, message: string, hint: string, source?: string)
 
 const counters = new Map<string, number>();
 
-/** Экземпляры компонентов: команды сценария `update` и `invoke` адресуют их по имени компонента. */
+/** Экземпляры компонентов: команды сценария адресуют их по имени компонента, канал — по слою. */
 type Instance = {
   component: string;
   name: string;
   src?: string;
-  set(key: string, value: unknown): void;
+  root: number;
+  update(patch: Props): void;
+  current(): Props;
   invoke(command: string, params: Record<string, unknown>): void;
+  /** Ошибки команды до исполнения: канал отклоняет её, ничего не меняя. */
+  checkUpdate(patch: Props): string[];
+  checkInvoke(command: string, params: Record<string, unknown>): string[];
 };
-const instances: Instance[] = [];
+let instances: Instance[] = [];
 
 /** Команда движения экземпляру: ядро исполнит её в тот же момент, что и команду сценария. */
 const motionCmd = (inst: string, cmd: string, extra: Record<string, unknown> = {}) => host.emit({ op: 'motion', inst, cmd, ...extra });
 
 export const component: typeof S.component = (def) => {
   if (typeof def.name !== 'string') throw new KeyfillError('component(): нужно поле name');
-  const commandDefs = (def.commands ?? {}) as Record<string, { params?: Props }>;
+  const commandDefs = (def.commands ?? {}) as Record<string, { params?: Props; run: (params: Props, ctx: unknown) => void }>;
+  const schema = descAll(def.props, `${def.name}: пропс`);
+  const params: Record<string, Record<string, PropDesc>> = {};
+  for (const name of Object.keys(commandDefs)) params[name] = descAll(commandDefs[name].params, `${def.name}.${name}: параметр`);
   host.emit({
     op: 'component',
     name: def.name,
-    props: describeProps(def.props),
+    props: infos(schema),
     parts: [...(def.parts ?? [])],
-    commands: Object.keys(commandDefs).map((name) => ({ name, params: describeProps(commandDefs[name].params) })),
+    commands: Object.keys(commandDefs).map((name) => ({ name, params: infos(params[name]) })),
   });
   const C = (p: Props): KeyfillElement => {
     const n = (counters.get(def.name) ?? 0) + 1;
@@ -323,38 +357,49 @@ export const component: typeof S.component = (def) => {
     const inst = `${def.name}#${n}`;
 
     // Каждый пропс — ячейка: снаружи в неё приходит значение или аксессор.
-    const initial: Props = {};
-    for (const k of Object.keys(def.props ?? {})) {
-      if (!(k in p)) throw new KeyfillError(`${def.name}: не передан пропс "${k}"`, p.__src);
-      initial[k] = p[k];
-    }
-    const { accessors, set } = propSlots(initial, def.name, p.__src);
-    const commands = (def.commands ?? {}) as Record<string, { params: Props; run: (params: Props, ctx: unknown) => void }>;
+    const initial = initialProps(schema, p, def.name, p.__src);
+    const { accessors, update, current } = propSlots(schema, initial, def.name, p.__src);
     const ctx = {
       props: accessors,
-      set: (patch: Props) => batch(() => Object.entries(patch).forEach(([k, v]) => set(k, v))),
+      set: update,
       play: (marker?: string) => motionCmd(inst, 'play', marker === undefined ? {} : { marker }),
       next: () => motionCmd(inst, 'next'),
       stop: () => motionCmd(inst, 'stop'),
       emit: (name: string, data?: unknown) => motionCmd(inst, 'emit', { name, data }),
     };
-    instances.push({
+    const instance: Instance = {
       component: def.name,
       name: inst,
       src: p.__src,
-      set,
-      invoke(command, params) {
-        const c = commands[command];
+      root: 0,
+      update,
+      current,
+      invoke(command, given) {
+        const c = commandDefs[command];
         if (!c) {
-          const known = Object.keys(commands).join(', ') || 'нет ни одной';
+          const known = Object.keys(commandDefs).join(', ') || 'нет ни одной';
           throw new KeyfillError(`invoke: у ${def.name} нет команды "${command}"; команды: ${known}`, p.__src);
         }
-        for (const k of Object.keys(c.params ?? {})) {
-          if (!(k in (params ?? {}))) throw new KeyfillError(`invoke ${def.name}.${command}: не передан параметр "${k}"`, p.__src);
-        }
-        batch(() => c.run(params ?? {}, ctx));
+        const values = valid(`invoke ${def.name}.${command}`, p.__src, (errors) =>
+          fields(params[command], given ?? {}, '', errors, true, {}, `команды ${command}`),
+        );
+        batch(() => c.run(values, ctx));
       },
-    });
+      checkUpdate(patch) {
+        const errors: string[] = [];
+        fields(schema, patch ?? {}, '', errors, false, {}, def.name);
+        return errors;
+      },
+      checkInvoke(command, given) {
+        if (!commandDefs[command]) {
+          return [`у ${def.name} нет команды "${command}"; команды: ${Object.keys(commandDefs).join(', ') || 'нет ни одной'}`];
+        }
+        const errors: string[] = [];
+        fields(params[command], given ?? {}, '', errors, true, {}, `команды ${command}`);
+        return errors;
+      },
+    };
+    instances.push(instance);
     const parts: Props = {};
     for (const name of def.parts ?? []) parts[name] = { $part: name, inst };
 
@@ -368,12 +413,13 @@ export const component: typeof S.component = (def) => {
       () => def.view(brand(accessors), brand(parts)),
     );
     if (!isElement(root)) throw new KeyfillError(`${def.name}.view должен вернуть один элемент`, p.__src);
+    instance.root = root.id;
     host.set(root.id, 'instance', { name: inst, src: p.__src });
     if (def.presence) host.set(root.id, 'presence', def.presence);
     applyPlacement(root.id, p);
     return root;
   };
-  return brand(Object.assign(C, { keyfillName: def.name }));
+  return brand(Object.assign(C, { keyfillName: def.name, keyfillSchema: schema }));
 };
 
 // ─── Сцена и сценарий ───────────────────────────────────────────────────────
@@ -404,60 +450,31 @@ export const cues: typeof S.cues = (scene, build) => {
 };
 
 /** Пропсы сцены — ячейки, как у компонента; `update` без компонента меняет их. */
-let sceneSet: ((key: string, value: unknown) => void) | undefined;
+let sceneUpdate: ((patch: Props) => void) | undefined;
 
 /** Пропсы из CLI: `values` — из --props, `raw` — строки из --set, приводятся к типу схемы. */
 type PropsInput = { values?: Record<string, unknown>; raw?: Record<string, string> };
 
 function sceneProps(scene: Props, input: PropsInput): { accessors: Props; errors: string[] } {
-  const schema: Props = scene.props ?? {};
+  const schema = descAll(scene.props, 'defineScene: пропс');
   const defaults: Props = scene.defaults ?? {};
   const errors: string[] = [];
-  const known = Object.keys(schema);
-  const list = known.length ? `есть: ${known.join(', ')}` : 'у сцены нет пропсов';
-  for (const k of [...Object.keys(input.values ?? {}), ...Object.keys(input.raw ?? {})]) {
-    if (!(k in schema)) errors.push(`у сцены нет пропса "${k}"; ${list}`);
+  // Строки из --set приводятся к типу пропса; неизвестные имена ловит проверка ниже.
+  const given: Props = { ...(input.values ?? {}) };
+  for (const [k, raw] of Object.entries(input.raw ?? {})) {
+    const c = k in schema ? coerce(schema[k], raw) : { value: raw };
+    if (c.error) errors.push(`--set ${k}: ${c.error}`);
+    else given[k] = c.value;
   }
-  const values: Props = {};
-  for (const k of known) {
-    const kind = kindOf(schema[k]);
-    const raw = input.raw && k in input.raw ? input.raw[k] : undefined;
-    let v: unknown;
-    if (raw !== undefined) {
-      if (kind === 'string') v = raw;
-      else if (kind === 'number') v = raw.trim() === '' ? NaN : Number(raw);
-      else if (kind === 'boolean') v = raw === 'true' ? true : raw === 'false' ? false : raw;
-      else {
-        try {
-          v = JSON.parse(raw);
-        } catch {
-          errors.push(`--set ${k}: ожидается JSON, получено ${raw}`);
-          continue;
-        }
-      }
-    } else if (input.values && k in input.values) v = input.values[k];
-    else if (k in defaults) v = defaults[k];
-    else {
-      errors.push(`не задан обязательный пропс "${k}" (${kind}): --set ${k}=… или --props data.json`);
-      continue;
-    }
-    if (!fitsKind(v, kind)) {
-      errors.push(`пропс "${k}": ожидается ${kind}, получено ${raw ?? show(v)}`);
-      continue;
-    }
-    values[k] = v;
+  const before = errors.length;
+  const values = fields(schema, given, '', errors, true, defaults, 'сцены');
+  for (let i = before; i < errors.length; i++) {
+    const m = /^не задан обязательный пропс "([^"]+)"/.exec(errors[i]);
+    if (m) errors[i] += `: --set ${m[1]}=… или --props data.json`;
   }
-  const { accessors, set } = propSlots(values, 'сцены');
-  sceneSet = set;
-  host.emit({
-    op: 'schema',
-    props: known.map((name) => ({
-      name,
-      type: kindOf(schema[name]),
-      ...(name in defaults ? { default: defaults[name] } : { required: true }),
-    })),
-    errors,
-  });
+  const { accessors, update } = propSlots(schema, values, 'сцены');
+  sceneUpdate = update;
+  host.emit({ op: 'schema', props: infos(schema, defaults), errors });
   return { accessors, errors };
 }
 
@@ -471,10 +488,8 @@ const instancesOf = (target: string, what: string) => {
 (globalThis as any).__keyfill_update = (json: string) => {
   const { target, props } = JSON.parse(json) as { target: string | null; props: Record<string, unknown> };
   // Без компонента — пропсы самой сцены.
-  const setters = target === null ? [sceneSet!] : instancesOf(target, 'update').map((i) => i.set);
-  batch(() => {
-    for (const set of setters) for (const [k, v] of Object.entries(props ?? {})) set(k, v);
-  });
+  const updates = target === null ? [sceneUpdate!] : instancesOf(target, 'update').map((i) => i.update);
+  batch(() => updates.forEach((u) => u(props ?? {})));
   host.flush();
 };
 
@@ -519,6 +534,122 @@ export function mount(entry: Props, input: PropsInput = (globalThis as any).__ke
   host.flush();
 }
 
+// ─── Канал ──────────────────────────────────────────────────────────────────
+
+export const defineChannel: typeof S.defineChannel = (def) => brand({ ...def, $channel: true });
+
+type CatalogItem = ((p: Props) => KeyfillElement) & { keyfillName: string; keyfillSchema: Record<string, PropDesc> };
+
+/**
+ * Состояние канала на стороне JS: каталог и живые экземпляры. Слоями, порядком и движением
+ * ведает ядро; сюда приходят только монтирование, данные, команды и снятие.
+ */
+const channel = {
+  stage: 0,
+  catalog: new Map<string, CatalogItem>(),
+  live: new Map<string, { inst: Instance; created: Instance[]; dispose: () => void }>(),
+};
+
+function mountChannel(def: Props) {
+  const stage = host.create('stage');
+  channel.stage = stage;
+  host.emit({ op: 'stage', id: stage, ref: def.stage.ref, safe: def.stage.safe, fps: def.fps, fonts: def.fonts ?? [], systemFonts: def.systemFonts ?? true });
+  for (const c of def.components ?? []) {
+    const name = (c as Partial<CatalogItem> | undefined)?.keyfillName;
+    if (typeof name !== 'string') throw new KeyfillError('defineChannel: в components — компоненты из component()');
+    if (channel.catalog.has(name)) throw new KeyfillError(`defineChannel: ${name} в components дважды`);
+    channel.catalog.set(name, c as CatalogItem);
+  }
+  host.emit({ op: 'channel', components: [...channel.catalog.keys()] });
+  if (def.timelines?.length) host.emit({ op: 'timelines', items: def.timelines });
+  host.flush();
+}
+
+type LayerCmd =
+  | { op: 'mount'; component: string; props?: Props; before?: number }
+  | { op: 'update'; inst: string; props: Props }
+  | { op: 'invoke'; inst: string; command: string; params?: Props }
+  | { op: 'unmount'; inst: string };
+
+const reject = (errors: string[]) => host.emit({ op: 'layer', reply: 'rejected', errors });
+const values = (i: Instance) => host.emit({ op: 'layer', reply: 'values', inst: i.name, props: i.current() });
+
+function liveInstance(name: string): Instance {
+  const item = channel.live.get(name);
+  if (!item) throw new KeyfillError(`канал: экземпляра ${name} нет`);
+  return item.inst;
+}
+
+function layerCmd(c: LayerCmd) {
+  switch (c.op) {
+    case 'mount': {
+      const C = channel.catalog.get(c.component);
+      if (!C) {
+        return reject([`в каталоге канала нет компонента "${c.component}"; есть: ${[...channel.catalog.keys()].join(', ') || 'ничего'}`]);
+      }
+      const errors: string[] = [];
+      fields(C.keyfillSchema, c.props ?? {}, '', errors, true, {}, c.component);
+      if (errors.length) return reject(errors);
+      // Исключение в view: отбрасываем недостроенное дерево, экземпляр в каталог живых не попадает.
+      const mark = host.mark();
+      const count = instances.length;
+      let mounted: { value: KeyfillElement; dispose: () => void };
+      try {
+        mounted = createRoot(() => C({ ...(c.props ?? {}) }));
+      } catch (e) {
+        host.rollback(mark);
+        instances = instances.slice(0, count);
+        throw e;
+      }
+      // Корень экземпляра и вложенные компоненты: снимаются вместе.
+      const created = instances.slice(count);
+      const inst = created.find((i) => i.root === mounted.value.id)!;
+      host.insert(channel.stage, mounted.value.id, c.before);
+      channel.live.set(inst.name, { inst, created, dispose: mounted.dispose });
+      host.emit({ op: 'layer', reply: 'mounted', inst: inst.name, root: inst.root });
+      return values(inst);
+    }
+    case 'update': {
+      const inst = liveInstance(c.inst);
+      const errors = inst.checkUpdate(c.props);
+      if (errors.length) return reject(errors);
+      inst.update(c.props);
+      return values(inst);
+    }
+    case 'invoke': {
+      const inst = liveInstance(c.inst);
+      const errors = inst.checkInvoke(c.command, c.params ?? {});
+      if (errors.length) return reject(errors);
+      inst.invoke(c.command, c.params ?? {});
+      return values(inst);
+    }
+    case 'unmount': {
+      const item = channel.live.get(c.inst);
+      if (!item) return;
+      item.dispose();
+      host.emit({ op: 'remove', id: item.inst.root });
+      channel.live.delete(c.inst);
+      instances = instances.filter((i) => !item.created.includes(i));
+      return;
+    }
+  }
+}
+
+/** Команда канала из ядра. Пакеты уходят и при исключении: ядро применит то, что успело измениться. */
+(globalThis as any).__keyfill_channel = (json: string) => {
+  const c = JSON.parse(json) as LayerCmd;
+  try {
+    layerCmd(c);
+  } catch (e) {
+    // Команда упала посреди исполнения: ядру нужны пропсы экземпляра после частичного эффекта.
+    const item = 'inst' in c ? channel.live.get(c.inst) : undefined;
+    if (item && c.op !== 'unmount') values(item.inst);
+    throw e;
+  } finally {
+    host.flush();
+  }
+};
+
 // ─── Тесты и конфиг ─────────────────────────────────────────────────────────
 
 type TestItem = { name: string; scene: Props; props?: Props; [k: string]: unknown };
@@ -553,6 +684,7 @@ export function __keyfill_main(value: unknown) {
     return;
   }
   const v = value as Props | undefined;
+  if (v?.$channel) return mountChannel(v);
   if (v?.$config) {
     const { $config: _, ...config } = v;
     host.emit({ op: 'config', value: config });
@@ -561,7 +693,7 @@ export function __keyfill_main(value: unknown) {
   }
   if (!v && tests.length) throw new KeyfillError('это файл тестов: запускай keyfill test <файл>');
   if (!v || !(v.$cues || v.root)) {
-    throw new KeyfillError('файл не экспортирует сцену: export default defineScene({ ... }) или cues(scene, ...)');
+    throw new KeyfillError('файл не экспортирует сцену: export default defineScene({ ... }), cues(scene, ...) или defineChannel({ ... })');
   }
   mount(v);
 }

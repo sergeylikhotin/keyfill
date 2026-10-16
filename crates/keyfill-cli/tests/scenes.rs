@@ -110,7 +110,7 @@ use keyfill_cli::session::{CueArg, parse_cues};
 
 fn session(entry: &str, extra: &[CueArg]) -> Session {
     let source = keyfill_cli::bundle(Path::new(entry)).unwrap();
-    Session::open(&source, &RunOptions::default(), extra).unwrap()
+    Session::open(&source, &RunOptions::default(), extra, &[]).unwrap()
 }
 
 fn dev() -> EvalOptions {

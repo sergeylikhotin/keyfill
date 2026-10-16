@@ -13,5 +13,5 @@ export default defineScene({
   // Данные выпуска: keyfill render scene.tsx --set name="Иван Петров" или --props guest.json.
   props: { name: String, role: String },
   defaults: { name: 'Анна Смирнова', role: 'Ведущая' },
-  root: (p) => <LowerThird name={p.name} role={p.role} live={live} tags={[]} />,
+  root: (p) => <LowerThird name={p.name} role={p.role} live={live} />,
 });

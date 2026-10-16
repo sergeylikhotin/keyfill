@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, clock, component, count, cues, defineConfig, defineScene, hex, stagger, test, timeline, tween } from '@keyfill/core';
+import { Box, Text, clock, component, count, cues, defineChannel, defineConfig, defineScene, hex, prop, stagger, test, timeline, tween } from '@keyfill/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
@@ -166,3 +166,40 @@ defineConfig({ mode: 'air', bg: '#101820', out: 'out', scenes: { lower: 'example
 defineConfig({ profiles: {} });
 // @ts-expect-error подложка — #RRGGBB
 defineConfig({ bg: 'black' });
+
+// Типы пропсов в рантайме: tsc выводит тип из описания, пропсы с default необязательны.
+const Card2 = component({
+  name: 'Card2',
+  props: {
+    title: prop.string({ description: 'Заголовок' }),
+    side: prop.enum(['home', 'away']),
+    score: prop.number({ min: 0, int: true, default: 0 }),
+    players: prop.list(prop.object({ name: String, number: prop.number({ default: 0 }) }), { default: [] }),
+    photo: prop.image(),
+    extra: prop.json<{ a: number }>({ default: { a: 1 } }),
+  },
+  view: (p) => {
+    const _s: 'home' | 'away' = p.side();
+    const _n: number = p.players()[0].number;
+    return <Text>{p.title}</Text>;
+  },
+});
+<Card2 title="x" side="home" photo="p.png" />;
+<Card2 title="x" side="away" photo="p.png" score={2} players={[{ name: 'Иван' }]} extra={{ a: 2 }} />;
+// @ts-expect-error side — home или away
+<Card2 title="x" side="left" photo="p.png" />;
+// @ts-expect-error нет обязательного photo
+<Card2 title="x" side="home" />;
+// @ts-expect-error у игрока нет имени
+<Card2 title="x" side="home" photo="p.png" players={[{ number: 7 }]} />;
+// @ts-expect-error default enum — одно из значений
+prop.enum(['home', 'away'], { default: 'left' });
+// @ts-expect-error default числа — число
+prop.number({ default: '0' });
+// @ts-expect-error голый prop<T>() заменён на prop.json<T>()
+prop<string[]>();
+
+// Канал: каталог — компоненты из component(), не строки.
+defineChannel({ stage: { ref: [1920, 1080] }, fps: 50, components: [LowerThird, Scoreboard, Card2] });
+// @ts-expect-error каталог — компоненты, а не имена
+defineChannel({ stage: { ref: [1920, 1080] }, fps: 50, components: ['LowerThird'] });

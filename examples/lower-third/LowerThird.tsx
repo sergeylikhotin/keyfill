@@ -3,7 +3,7 @@ import { theme } from './theme';
 
 export const LowerThird = component({
   name: 'LowerThird',
-  props: { name: String, role: String, live: Boolean, tags: prop<string[]>() },
+  props: { name: String, role: String, live: Boolean, tags: prop.list(String, { default: [] }) },
   parts: ['panel', 'dot', 'title', 'subtitle'],
 
   view: ({ name, role, live }, part) => (

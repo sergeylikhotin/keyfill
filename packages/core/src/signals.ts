@@ -1,8 +1,11 @@
 // Минимальные сигналы в духе Solid: синхронные, с автоматическим трекингом зависимостей.
 
-type Computation = { run(): void; deps: Set<Set<Computation>> };
+type Computation = { run(): void; deps: Set<Set<Computation>>; disposed?: boolean; dispose?(): void };
 
 let current: Computation | null = null;
+// Владелец эффектов: экземпляр компонента на канале. Эффекты, созданные под ним (и в их
+// перезапусках), снимаются вместе с экземпляром.
+let owner: Computation[] | null = null;
 // Пока исполняется тело view, чтение сигнала вне реактивного контекста — почти наверняка ошибка:
 // значение прочитается один раз и больше не обновится.
 let viewGuard: { report: () => void } | null = null;
@@ -57,21 +60,45 @@ export function signal<T>(initial: T): Signal<T> {
 
 export function effect(fn: () => void | (() => void)): void {
   let dispose: void | (() => void);
+  const own = owner;
   const c: Computation = {
     deps: new Set(),
     run() {
+      if (c.disposed) return;
       if (typeof dispose === 'function') dispose();
       cleanup(c);
       const prev = current;
+      const prevOwner = owner;
       current = c;
+      owner = own;
       try {
         dispose = fn();
       } finally {
         current = prev;
+        owner = prevOwner;
       }
     },
+    dispose() {
+      c.disposed = true;
+      if (typeof dispose === 'function') dispose();
+      cleanup(c);
+    },
   };
+  own?.push(c);
   c.run();
+}
+
+/** Исполняет `fn` владельцем эффектов; `dispose` снимает все эффекты, созданные под ним. */
+export function createRoot<T>(fn: () => T): { value: T; dispose: () => void } {
+  const list: Computation[] = [];
+  const prev = owner;
+  owner = list;
+  try {
+    const value = fn();
+    return { value, dispose: () => list.splice(0).forEach((c) => c.dispose!()) };
+  } finally {
+    owner = prev;
+  }
 }
 
 export function computed<T>(fn: () => T): Accessor<T> {

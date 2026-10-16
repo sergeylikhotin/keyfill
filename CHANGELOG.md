@@ -8,6 +8,26 @@ package version.
 
 ## [Unreleased]
 
+### Added
+
+- Prop types described at runtime: `prop.string`, `prop.number({ min, max, int })`, `prop.boolean`,
+  `prop.enum([...])`, `prop.list`, `prop.object`, `prop.image`, `prop.json<T>()`, each with
+  `default` and `description`. TypeScript types are inferred from them, props with `default` are
+  optional, `keyfill schema --json` gives a JSON Schema for every prop and command parameter, and
+  values from `--props`/`--set`, cues and channel commands are checked with a path in the error
+  (`players[1].number`).
+- Channels: `defineChannel({ stage, fps, components })` is a catalog of components that commands
+  put on numbered layers (`load`, `play`, `next`, `stop`, `update`, `invoke`, `clear`). An instance
+  leaving a layer plays its `out` and is then removed.
+- Channel journals (`*.journal.jsonl`): batches of commands by channel frame, applied atomically.
+  A journal is an ordinary `<entry>` for `render`, `dump`, `check`, `filmstrip`, `video`, `view` and
+  `schema`, and replays to the same frames as the live session that wrote it. New diagnostics
+  `channel.rejected` and `journal.diverged`; new help topics `keyfill docs props` and `keyfill docs channel`.
+
+### Changed
+
+- **Breaking:** `prop<T>()` is replaced by `prop.json<T>()`.
+
 ## [0.1.0-alpha.1] - 2026-10-16
 
 First public prerelease. Linux and macOS binaries are built by CI and have not been tested by hand yet.

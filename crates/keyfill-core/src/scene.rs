@@ -27,6 +27,13 @@ pub enum Cmd {
     Insert {
         parent: u32,
         child: u32,
+        /// Вставить перед этим ребёнком; без него — в конец. Так канал держит порядок слоёв.
+        #[serde(default)]
+        before: Option<u32>,
+    },
+    /// Удалить узел вместе с поддеревом: экземпляр снят с канала.
+    Remove {
+        id: u32,
     },
     Text {
         id: u32,
@@ -63,15 +70,34 @@ pub enum Cmd {
     },
     /// Описание компонента: пропсы, части, команды.
     Component(ComponentInfo),
+    /// Файл — канал (`defineChannel`): каталог компонентов для слоёв.
+    Channel { components: Vec<String> },
+    /// Ответ канала на команду: экземпляр создан, его текущие пропсы или отказ.
+    Layer(LayerReply),
+}
+
+/// Ответ JS-стороны канала (`__keyfill_channel`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "reply", rename_all = "lowercase")]
+pub enum LayerReply {
+    /// Экземпляр смонтирован: имя (`LowerThird#2`) и корень.
+    Mounted { inst: String, root: u32 },
+    /// Текущие значения пропсов экземпляра после команды.
+    Values { inst: String, props: Value },
+    /// Команда отклонена до исполнения: неверные пропсы или параметры. Состояние не менялось.
+    Rejected { errors: Vec<String> },
 }
 
 /// Пропс сцены, компонента или параметр команды.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PropInfo {
     pub name: String,
-    /// `string`, `number`, `boolean` или `json` (тип из `prop<T>()`).
+    /// Короткая подпись типа: `string`, `number 0..99`, `enum home|away`, `list<string>`, `json`.
     #[serde(rename = "type")]
     pub ty: String,
+    /// JSON Schema значения: по ней пульт строит форму.
+    #[serde(default)]
+    pub schema: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Value>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -282,6 +308,12 @@ pub struct Scene {
     /// Ошибки входных пропсов: неизвестное имя, неверный тип, не задан обязательный.
     pub props_errors: Vec<String>,
     pub components: Vec<ComponentInfo>,
+    /// Каталог канала (`defineChannel({ components })`); `None` — обычная сцена.
+    pub channel: Option<Vec<String>>,
+    /// Ответы канала на последнюю команду; их забирает сессия.
+    pub replies: Vec<LayerReply>,
+    /// Узлы, удалённые командами `remove`; их забирает сессия, чтобы движение их забыло.
+    pub removed: Vec<u32>,
 }
 
 impl Scene {
@@ -311,13 +343,22 @@ impl Scene {
             Cmd::Set { id, key, value } => {
                 self.node_mut(id)?.props.insert(key, value);
             }
-            Cmd::Insert { parent, child } => {
+            Cmd::Insert { parent, child, before } => {
                 if let Some(old) = self.node_mut(child)?.parent.take() {
                     self.node_mut(old)?.children.retain(|c| *c != child);
                 }
-                self.node_mut(parent)?.children.push(child);
+                let children = &mut self.node_mut(parent)?.children;
+                match before.and_then(|b| children.iter().position(|c| *c == b)) {
+                    Some(i) => children.insert(i, child),
+                    None => children.push(child),
+                }
                 self.node_mut(child)?.parent = Some(parent);
             }
+            Cmd::Remove { id } => {
+                self.remove(id)?;
+            }
+            Cmd::Channel { components } => self.channel = Some(components),
+            Cmd::Layer(r) => self.replies.push(r),
             Cmd::Text { id, runs } => {
                 let node = self.node_mut(id)?;
                 node.text = runs.iter().map(|r| r.text.as_str()).collect();
@@ -372,6 +413,24 @@ impl Scene {
                 diags.push(level, rule, &name, None, msg, None);
             }
         }
+    }
+
+    /// Удаляет узел с поддеревом; возвращает удалённые id (их забывает движение).
+    pub fn remove(&mut self, id: u32) -> Result<Vec<u32>> {
+        if let Some(parent) = self.node_mut(id)?.parent {
+            self.node_mut(parent)?.children.retain(|c| *c != id);
+        }
+        let mut gone = vec![id];
+        let mut i = 0;
+        while i < gone.len() {
+            gone.extend(self.node(gone[i]).children.iter().copied());
+            i += 1;
+        }
+        for g in &gone {
+            self.nodes.remove(g);
+        }
+        self.removed.extend(gone.iter().copied());
+        Ok(gone)
     }
 
     /// Таймлайн компонента.

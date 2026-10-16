@@ -296,6 +296,8 @@ pub struct Run {
     pub state: RunState,
     pub events: Vec<Ev>,
     pub generation: u64,
+    /// Экземпляр удалён с канала: воспроизведение больше не идёт и не рисуется.
+    pub dead: bool,
 }
 
 impl Run {
@@ -337,6 +339,7 @@ impl Run {
             state: RunState::Loaded,
             events: Vec::new(),
             generation: 0,
+            dead: false,
         }
     }
 

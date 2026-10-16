@@ -40,6 +40,7 @@ export const Shape: typeof Spec.Shape = Impl.Shape;
 export const defineTheme: typeof Spec.defineTheme = Impl.defineTheme;
 export const setTheme: typeof Spec.setTheme = Impl.setTheme;
 export const defineScene: typeof Spec.defineScene = Impl.defineScene;
+export const defineChannel: typeof Spec.defineChannel = Impl.defineChannel;
 export const cues: typeof Spec.cues = Impl.cues;
 export const test: typeof Spec.test = Impl.test;
 export const defineConfig: typeof Spec.defineConfig = Impl.defineConfig;

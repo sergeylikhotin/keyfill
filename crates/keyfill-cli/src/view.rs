@@ -38,6 +38,9 @@ struct SceneState {
     entry: PathBuf,
     fingerprint: u64,
     source: Result<crate::Bundle, String>,
+    /// Пачки команд, если сцена — журнал канала, и его сид и часы.
+    batches: Vec<crate::channel::Batch>,
+    clock: Option<(u32, f64)>,
     /// Входные файлы последней удачной сборки: по ним видно правки, в том числе вне каталога сцены.
     inputs: Vec<PathBuf>,
     session: Option<Session>,
@@ -57,7 +60,7 @@ pub fn serve(opts: ViewOptions) -> Result<()> {
     let v6 = TcpListener::bind(("::1", opts.port)).ok();
     std::fs::create_dir_all(&opts.dir).ok();
     eprintln!("keyfill view: http://localhost:{}  (каталог {}, Ctrl+C — выход)", opts.port, opts.dir.display());
-    let scene = opts.entry.clone().map(|entry| SceneState { entry, fingerprint: 0, source: Err(String::new()), inputs: Vec::new(), session: None, info: None });
+    let scene = opts.entry.clone().map(|entry| SceneState { entry, fingerprint: 0, source: Err(String::new()), batches: Vec::new(), clock: None, inputs: Vec::new(), session: None, info: None });
     let mut state = State { opts, scene, renderer: Default::default() };
     refresh(&mut state);
 
@@ -399,7 +402,19 @@ fn refresh(state: &mut State) {
     let Some(sc) = &mut state.scene else { return };
     let fp = fingerprint(&sc.entry, &sc.inputs);
     if fp != sc.fingerprint {
-        sc.source = crate::bundle(&sc.entry).map_err(|e| format!("{e:#}"));
+        // Журнал канала: пачки из файла, бандл — его канал (часы и сид журнала — из заголовка).
+        sc.source = if crate::channel::is_journal(&sc.entry) {
+            crate::channel::Journal::read(&sc.entry)
+                .and_then(|j| {
+                    let bundle = crate::bundle(&j.channel_path(&sc.entry))?;
+                    sc.batches = j.batches;
+                    sc.clock = Some((j.header.seed, j.header.now));
+                    Ok(bundle)
+                })
+                .map_err(|e| format!("{e:#}"))
+        } else {
+            crate::bundle(&sc.entry).map_err(|e| format!("{e:#}"))
+        };
         if let Ok(b) = &sc.source {
             sc.inputs = b.inputs.clone();
         }
@@ -412,7 +427,12 @@ fn refresh(state: &mut State) {
 fn open(state: &State) -> Result<Session> {
     let sc = state.scene.as_ref().context("keyfill view запущен без сцены")?;
     let source = sc.source.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
-    Session::open(source, &state.opts.run, &state.opts.extra)
+    let mut run = state.opts.run.clone();
+    if let Some((seed, now)) = sc.clock {
+        run.seed = seed;
+        run.now_ms = now;
+    }
+    Session::open(source, &run, &state.opts.extra, &sc.batches)
 }
 
 /// Кадр в момент `t` на живой сессии: она перематывается сама, если время идёт назад.

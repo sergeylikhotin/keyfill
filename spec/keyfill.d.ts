@@ -275,17 +275,79 @@ declare module '@keyfill/core' {
   export type Parts<N extends string> = { readonly [K in N]: PartRef<K> };
 
   const propBrand: unique symbol;
-  export type PropType<T> = { readonly [propBrand]: T };
-  /** Тип пропса, который не выражается конструктором: prop<Player[]>(). */
-  export function prop<T>(): PropType<T>;
+  /**
+   * Тип пропса, описанный в рантайме: из него tsc выводит тип, а keyfill — JSON Schema для
+   * пульта (`keyfill schema`, `/schema`) и проверку значений из команд. `T` — значение внутри
+   * компонента, `D` — есть ли значение по умолчанию, `I` — что можно передать снаружи.
+   */
+  export type PropType<T, D extends boolean = false, I = T> = { readonly [propBrand]: { readonly value: T; readonly hasDefault: D; readonly input: I } };
 
-  export type PropSchema = Record<string, StringConstructor | NumberConstructor | BooleanConstructor | PropType<unknown>>;
+  /** Общие поля описания: `description` видят пульт и агент в `keyfill schema`. */
+  export interface PropOptions {
+    readonly description?: string;
+  }
+  export interface NumberOptions extends PropOptions {
+    readonly min?: number;
+    readonly max?: number;
+    /** Только целые. */
+    readonly int?: boolean;
+  }
+  export interface ListOptions extends PropOptions {
+    /** Сколько элементов не меньше и не больше. */
+    readonly min?: number;
+    readonly max?: number;
+  }
+  type Defaulted<O, T> = O & { readonly default: T };
+  type NoDefault<O> = O & { readonly default?: undefined };
+
+  /**
+   * Типы пропсов. Пропс без `default` обязателен; с `default` его можно не передавать.
+   * `String`, `Number`, `Boolean` — короткая запись `prop.string()` и др.
+   */
+  export const prop: {
+    string(o: Defaulted<PropOptions, string>): PropType<string, true>;
+    string(o?: NoDefault<PropOptions>): PropType<string>;
+    number(o: Defaulted<NumberOptions, number>): PropType<number, true>;
+    number(o?: NoDefault<NumberOptions>): PropType<number>;
+    boolean(o: Defaulted<PropOptions, boolean>): PropType<boolean, true>;
+    boolean(o?: NoDefault<PropOptions>): PropType<boolean>;
+    /** Одно из значений: пульт показывает выпадающий список. */
+    enum<const V extends readonly [string, ...string[]]>(values: V, o: Defaulted<PropOptions, NoInfer<V[number]>>): PropType<V[number], true>;
+    enum<const V extends readonly [string, ...string[]]>(values: V, o?: NoDefault<PropOptions>): PropType<V[number]>;
+    list<const I extends PropLike>(item: I, o: Defaulted<ListOptions, readonly PropInput<NoInfer<I>>[]>): PropType<readonly PropValue<I>[], true, readonly PropInput<I>[]>;
+    list<const I extends PropLike>(item: I, o?: NoDefault<ListOptions>): PropType<readonly PropValue<I>[], false, readonly PropInput<I>[]>;
+    /** Объект с полями; поля с `default` можно не передавать. */
+    object<const F extends PropSchema>(fields: F, o: Defaulted<PropOptions, InputProps<NoInfer<F>>>): PropType<InferProps<F>, true, InputProps<F>>;
+    object<const F extends PropSchema>(fields: F, o?: NoDefault<PropOptions>): PropType<InferProps<F>, false, InputProps<F>>;
+    /** Путь или URL картинки: пульт показывает выбор файла. */
+    image(o: Defaulted<PropOptions, string>): PropType<string, true>;
+    image(o?: NoDefault<PropOptions>): PropType<string>;
+    /** Любой JSON: тип только для tsc, пульт формы не построит, keyfill значение не проверяет. */
+    json<T>(o: Defaulted<PropOptions, T>): PropType<T, true>;
+    json<T>(o?: NoDefault<PropOptions>): PropType<T>;
+  };
+
+  export type PropLike = StringConstructor | NumberConstructor | BooleanConstructor | PropType<any, boolean, any>;
+  export type PropSchema = Record<string, PropLike>;
   export type PropValue<S> =
     S extends StringConstructor ? string :
     S extends NumberConstructor ? number :
     S extends BooleanConstructor ? boolean :
-    S extends PropType<infer T> ? T : never;
+    S extends PropType<infer T, any, any> ? T : never;
+  /** Что можно передать снаружи: у объектов и списков поля с `default` необязательны. */
+  export type PropInput<S> =
+    S extends StringConstructor ? string :
+    S extends NumberConstructor ? number :
+    S extends BooleanConstructor ? boolean :
+    S extends PropType<any, any, infer I> ? I : never;
+  type OptionalKeys<S> = { [K in keyof S]: S[K] extends PropType<any, true, any> ? K : never }[keyof S];
+  type Flat<T> = { [K in keyof T]: T[K] } & {};
+  /** Значения внутри компонента: все пропсы есть, недостающие взяты из `default`. */
   export type InferProps<S extends PropSchema> = { readonly [K in keyof S]: PropValue<S[K]> };
+  /** Значения снаружи: пропсы с `default` можно не передавать. */
+  export type InputProps<S extends PropSchema> = Flat<
+    { readonly [K in Exclude<keyof S, OptionalKeys<S>>]: PropInput<S[K]> } & { readonly [K in OptionalKeys<S>]?: PropInput<S[K]> }
+  >;
   /** Внутри компонента каждый пропс — аксессор. */
   export type PropAccessors<P> = { readonly [K in keyof P]: Accessor<P[K]> };
   /** Снаружи можно передать значение или аксессор. */
@@ -323,20 +385,21 @@ declare module '@keyfill/core' {
   }
 
   const componentBrand: unique symbol;
-  export interface Component<P, N extends string, C = {}> {
-    (props: ReactiveProps<P> & NodePlacement): KeyfillElement;
-    readonly [componentBrand]: { readonly props: P; readonly parts: N; readonly commands: C };
+  /** `P` — пропсы внутри компонента, `I` — что передают снаружи (пропсы с `default` необязательны). */
+  export interface Component<P, N extends string, C = {}, I = P> {
+    (props: ReactiveProps<I> & NodePlacement): KeyfillElement;
+    readonly [componentBrand]: { readonly props: P; readonly parts: N; readonly commands: C; readonly input: I };
   }
-  export type PartsOf<C> = C extends Component<any, infer N, any> ? N : never;
-  export type PropsOf<C> = C extends Component<infer P, any, any> ? P : never;
+  export type PartsOf<C> = C extends Component<any, infer N, any, any> ? N : never;
+  export type PropsOf<C> = C extends Component<infer P, any, any, any> ? P : never;
   /** Команды компонента и типы их параметров. */
-  export type CommandsOf<C> = C extends Component<any, any, infer K> ? K : never;
+  export type CommandsOf<C> = C extends Component<any, any, infer K, any> ? K : never;
 
   export function component<
     const S extends PropSchema,
     const N extends string = never,
     const C extends Record<string, PropSchema> = {},
-  >(def: ComponentDef<S, N, C>): Component<InferProps<S>, N, { readonly [K in keyof C]: InferProps<C[K]> }>;
+  >(def: ComponentDef<S, N, C>): Component<InferProps<S>, N, { readonly [K in keyof C]: InputProps<C[K]> }, InputProps<S>>;
 
   // ─── Таймлайн (*.motion.ts) ───────────────────────────────────────────────
 
@@ -383,7 +446,7 @@ declare module '@keyfill/core' {
   const timelineBrand: unique symbol;
   export type Timeline<C> = { readonly [timelineBrand]: C };
 
-  export function timeline<C extends Component<any, any, any>, const M extends string = never>(
+  export function timeline<C extends Component<any, any, any, any>, const M extends string = never>(
     target: C,
     build: (k: KeyBuilder<PartsOf<C>>) => TimelineDef<PartsOf<C>, M>,
   ): Timeline<C>;
@@ -458,6 +521,25 @@ declare module '@keyfill/core' {
   }
   export function defineScene<const S extends PropSchema = {}>(def: SceneDef<S>): SceneDef<S>;
 
+  // ─── Канал (channel.tsx) ──────────────────────────────────────────────────
+
+  /**
+   * Канал — один выход со своим stage, часами и fps. Экземпляры компонентов ставят на слои
+   * команды: `play 20 LowerThird { name }`, `update 20 { … }`, `stop 20`. Слой — число,
+   * порядок наложения; на слое один экземпляр (при замене старый уходит через out).
+   * Команды подаёт журнал (`*.journal.jsonl`), а с M4b — `keyfill serve`.
+   */
+  export interface ChannelDef {
+    readonly stage: StageConfig;
+    readonly fps: number;
+    /** Каталог: какие компоненты можно ставить на слои. Схему их пропсов показывает `keyfill schema`. */
+    readonly components: readonly Component<any, any, any, any>[];
+    readonly fonts?: readonly FontFile[];
+    readonly systemFonts?: boolean;
+    readonly timelines?: readonly Timeline<any>[];
+  }
+  export function defineChannel(def: ChannelDef): ChannelDef;
+
   // ─── Сценарий (*.cues.ts) ─────────────────────────────────────────────────
 
   const cueBrand: unique symbol;
@@ -469,13 +551,13 @@ declare module '@keyfill/core' {
      * после последнего out; next — снять остановку таймлайна (hold или цикл). С компонентом —
      * только его экземпляры.
      */
-    at(t: number, cmd: 'play' | 'stop' | 'next', target?: Component<any, any, any>): Cue;
+    at(t: number, cmd: 'play' | 'stop' | 'next', target?: Component<any, any, any, any>): Cue;
     /** Новые значения пропсов всех экземпляров компонента; изменения анимируются через transition. */
-    at<C extends Component<any, any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
+    at<C extends Component<any, any, any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
     /** Новые значения пропсов самой сцены (`defineScene({ props })`); у сцены без пропсов — ошибка. */
     at(t: number, cmd: 'update', props: [keyof P] extends [never] ? never : Partial<P>): Cue;
     /** Команда компонента с параметрами, на всех его экземплярах. */
-    at<C extends Component<any, any, any>, K extends keyof CommandsOf<C> & string>(
+    at<C extends Component<any, any, any, any>, K extends keyof CommandsOf<C> & string>(
       t: number,
       cmd: 'invoke',
       target: C,

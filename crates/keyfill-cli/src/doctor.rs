@@ -158,7 +158,7 @@ fn pipeline() -> Probe {
         let entry = dir.join("probe.tsx");
         std::fs::write(&entry, PROBE_SCENE)?;
         let bundle = crate::bundle::build(&entry)?;
-        let mut session = crate::Session::open(&bundle, &RunOptions::default(), &[])?;
+        let mut session = crate::Session::open(&bundle, &RunOptions::default(), &[], &[])?;
         session.frame_at(0.0, EvalOptions::default())?;
         Ok(())
     };
