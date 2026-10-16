@@ -230,8 +230,8 @@ fn serve_switches_states_through_preview() {
     let addr = server.addr.clone();
     let schema = json_get(&addr, "/schema");
     let ch = &schema["channels"]["1"];
-    assert_eq!(ch["layers"], json!({ "lower": 20, "score": 10 }), "{ch}");
-    assert_eq!(ch["states"]["interview"], json!({ "10": "Scoreboard", "20": "LowerThird" }), "{ch}");
+    assert_eq!(ch["layers"], json!({ "lower": 20, "note": 30, "score": 10 }), "{ch}");
+    assert_eq!(ch["states"]["interview"], json!({ "10": "MatchCard", "20": "LowerThird" }), "{ch}");
     assert!(ch["props"].as_array().unwrap().iter().any(|p| p["name"] == "guest"), "{ch}");
 
     let mut c = Client::connect(&addr, "");

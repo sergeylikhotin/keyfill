@@ -56,6 +56,12 @@ defineChannel({
   states: () => ({ bad: { score: LowerThird.with({ name: 'x', role: 'Гость', live: true }) } }),
 });
 
+// Место экземпляра в состоянии: кадр, safe area или 'слой:часть'.
+LowerThird.with({ name: 'x', role: 'y', live: true }, { anchor: { to: 'stage', at: 'center' } });
+LowerThird.with({ name: 'x', role: 'y', live: true }, { anchor: { to: 'score:panel', at: 'bottom-left', self: 'top-left', offset: [0, 12] } });
+// @ts-expect-error parent у экземпляра на слое не бывает
+LowerThird.with({ name: 'x', role: 'y', live: true }, { anchor: { to: 'parent', at: 'center' } });
+
 // Хореография: шаги по слоям из layers, якоря — 'слой:in|out|update'.
 defineChannel({
   stage: { ref: [1920, 1080] },

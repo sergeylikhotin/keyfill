@@ -74,16 +74,16 @@ fn state_is_a_diff_of_layers() {
     // pregame → live (sequence(0.1)): плашка уходит, табло загружено и входит после неё.
     s.advance(1.0).unwrap();
     s.command(vec![state("live")]).unwrap();
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Loaded), (20, "LowerThird#1".into(), InstState::Leaving)]);
+    assert_eq!(layers(&s), [(10, "MatchCard#1".into(), InstState::Loaded), (20, "LowerThird#1".into(), InstState::Leaving)]);
     assert_eq!(s.state().unwrap().state.as_deref(), Some("live"));
     s.frame_at(1.4, dev()).unwrap();
-    assert_eq!(layers(&s)[0], (10, "Scoreboard#1".into(), InstState::Playing));
+    assert_eq!(layers(&s)[0], (10, "MatchCard#1".into(), InstState::Playing));
 
     // live → interview: табло — тот же экземпляр, гость входит снизу.
     s.advance(2.0).unwrap();
     let acks = s.command(vec![data(json!({ "guest": "Иван Петров", "guestRole": "Тренер", "homeScore": 2 })), state("interview")]).unwrap();
     assert!(acks.iter().all(|a| a.status == AckStatus::Ok), "{acks:?}");
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#2".into(), InstState::Loaded)]);
+    assert_eq!(layers(&s), [(10, "MatchCard#1".into(), InstState::Playing), (20, "LowerThird#2".into(), InstState::Loaded)]);
     s.frame_at(2.4, dev()).unwrap();
     assert_eq!(layers(&s)[1], (20, "LowerThird#2".into(), InstState::Playing), "гость вошёл через 0.3 с");
     let c = s.state().unwrap();
@@ -104,7 +104,7 @@ fn state_is_a_diff_of_layers() {
     assert_eq!(c.layers[&10].current.as_ref().unwrap().props["clockRunning"], false);
     assert_eq!(layers(&s)[1].2, InstState::Leaving);
     s.frame_at(5.0, dev()).unwrap();
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing)], "гость снят после ухода");
+    assert_eq!(layers(&s), [(10, "MatchCard#1".into(), InstState::Playing)], "гость снят после ухода");
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn state_layers_refuse_direct_commands() {
     let errors: Vec<String> = acks.iter().map(|a| a.errors.join("; ")).collect();
     assert!(acks.iter().all(|a| a.status == AckStatus::Rejected), "{acks:?}");
     assert!(errors[0].contains("слой lower ведут состояния канала; переключай state <имя>"), "{errors:?}");
-    assert!(errors[4].contains("такого состояния нет; есть: break, interview, live, pregame"), "{errors:?}");
+    assert!(errors[4].contains("такого состояния нет; есть: break, interview, intro, live, pregame, var"), "{errors:?}");
     assert!(errors[5].contains("homeScore"), "{errors:?}");
     assert!(errors[6].contains("score"), "{errors:?}");
     assert_eq!(s.state().unwrap(), &before, "отказы ничего не меняют");
@@ -166,7 +166,7 @@ fn leaving_panel_turns_back() {
     let leaving = f.find(panel).unwrap().anim.as_ref().unwrap().motion.opacity;
     assert!(leaving < 1.0, "плашка уходит: {leaving}");
     s.command(vec![state("interview")]).unwrap();
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Playing)]);
+    assert_eq!(layers(&s), [(10, "MatchCard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Playing)]);
     let f = s.frame_at(2.12, dev()).unwrap();
     let back = f.find(panel).unwrap().anim.as_ref().unwrap().motion.opacity;
     assert!(back > leaving * 0.5 && back < 1.0, "in с текущего места, без скачка: {leaving} → {back}");
@@ -267,7 +267,7 @@ fn transition_follows_its_plan() {
     s.frame_at(2.0, dev()).unwrap();
     let ev = timeline(&s);
     assert!(ev.contains(&(1.0, "LowerThird#1".into(), "stopping".into())), "{ev:?}");
-    assert!(ev.contains(&(1.35, "Scoreboard#1".into(), "playing".into())), "табло вошло по расписанию: {ev:?}");
+    assert!(ev.contains(&(1.35, "MatchCard#1".into(), "playing".into())), "табло вошло по расписанию: {ev:?}");
     let f = s.frame_at(4.0, dev()).unwrap();
     assert!(!keyfill_core::dump::dump(&s.scene, &f).contains("переход pregame"), "после перехода расписания в дампе нет");
 }
@@ -288,8 +288,8 @@ fn interrupted_transition_cancels_steps_not_started() {
     s.frame_at(2.0, dev()).unwrap();
     assert_eq!(layers(&s), [(20, "LowerThird#1".into(), InstState::Playing)]);
     let ev = timeline(&s);
-    assert!(ev.contains(&(1.1, "Scoreboard#1".into(), "removed".into())), "{ev:?}");
-    assert!(!ev.iter().any(|(_, src, name)| src == "Scoreboard#1" && name == "playing"), "табло не показывали: {ev:?}");
+    assert!(ev.contains(&(1.1, "MatchCard#1".into(), "removed".into())), "{ev:?}");
+    assert!(!ev.iter().any(|(_, src, name)| src == "MatchCard#1" && name == "playing"), "табло не показывали: {ev:?}");
     assert!(ev.contains(&(1.1, "LowerThird#1".into(), "playing".into())), "{ev:?}");
 
     // Разворот тоже ждёт своего шага: в live → interview гость входит через 0.3 с, а его прежний
@@ -301,7 +301,7 @@ fn interrupted_transition_cancels_steps_not_started() {
     s.advance(2.1).unwrap();
     s.command(vec![state("interview")]).unwrap();
     s.frame_at(3.0, dev()).unwrap();
-    assert_eq!(layers(&s), [(10, "Scoreboard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Playing)]);
+    assert_eq!(layers(&s), [(10, "MatchCard#1".into(), InstState::Playing), (20, "LowerThird#1".into(), InstState::Playing)]);
     let ev = timeline(&s);
     assert!(ev.contains(&(2.4, "LowerThird#1".into(), "playing".into())), "{ev:?}");
     assert!(!ev.iter().any(|(_, src, name)| src == "LowerThird#1" && name == "removed"), "{ev:?}");
@@ -338,4 +338,59 @@ fn transition_rules_are_checked_when_the_channel_loads() {
     assert!(e.contains("переход one -> two: цикл — a:out ждёт b:in, b:in ждёт a:out"), "{e}");
     let e = err("crates/keyfill-cli/tests/fixtures/states/no-step.tsx");
     assert!(e.contains("шага a:in в этом переходе нет — на слое a здесь только out"), "{e}");
+}
+
+const MORPH: &str = "crates/keyfill-cli/tests/fixtures/states/morph.tsx";
+
+/// Видимое место узла по адресу.
+fn shown(s: &Session, f: &keyfill_core::Frame, path: &str) -> [f32; 4] {
+    let id = s.scene.find(path).unwrap_or_else(|| panic!("нет {path}"));
+    let r = f.find(id).unwrap_or_else(|| panic!("{path} нет в кадре")).shown;
+    [r.x, r.y, r.w, r.h].map(|v| (v * 100.0).round() / 100.0)
+}
+
+#[test]
+fn same_instance_changes_shape_and_place() {
+    if home().is_none() {
+        return;
+    }
+    // small → big: тот же экземпляр Card (нового нет), облик — пропс big, место — якорь
+    // состояния; подложка едет из левого верхнего угла в правый нижний и растёт, линейно за секунду.
+    let mut s = open(MORPH, &[]);
+    s.command(vec![state("small")]).unwrap();
+    s.advance(1.0).unwrap();
+    s.command(vec![state("big")]).unwrap();
+    assert_eq!(layers(&s), [(30, "Card#1".into(), InstState::Playing)], "тот же экземпляр");
+    let f = s.frame_at(1.0, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Card#1"), [0.0, 0.0, 100.0, 50.0], "в момент команды — где был");
+    let f = s.frame_at(1.5, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Card#1"), [170.0, 105.0, 200.0, 100.0], "полпути");
+    let f = s.frame_at(2.1, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Card#1"), [340.0, 210.0, 300.0, 150.0]);
+    // Назад: состояние без якоря — снова свой якорь из view.
+    s.command(vec![state("small")]).unwrap();
+    let f = s.frame_at(3.2, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Card#1"), [0.0, 0.0, 100.0, 50.0]);
+    assert_eq!(layers(&s), [(30, "Card#1".into(), InstState::Playing)]);
+}
+
+#[test]
+fn anchor_follows_a_part_on_another_layer() {
+    if home().is_none() {
+        return;
+    }
+    // Плашка стоит под подложкой слоя main и едет за ней, пока та растёт (transition.layout).
+    let mut s = open(MORPH, &[]);
+    s.command(vec![state("rows")]).unwrap();
+    let f = s.frame_at(0.5, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Tag#1"), [0.0, 50.0, 80.0, 20.0], "под подложкой высотой 40 + 10");
+    s.advance(1.0).unwrap();
+    s.command(vec![data(json!({ "rows": ["a", "b"] }))]).unwrap();
+    let f = s.frame_at(1.5, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Panel#1"), [0.0, 0.0, 200.0, 60.0]);
+    assert_eq!(shown(&s, &f, "Tag#1"), [0.0, 70.0, 80.0, 20.0], "за видимой подложкой, а не за её конечной раскладкой");
+    let tag = f.find(s.scene.find("Tag#1").unwrap()).unwrap();
+    assert_eq!(tag.rect.y, 90.0, "место в раскладке — под конечной подложкой");
+    let f = s.frame_at(2.1, dev()).unwrap();
+    assert_eq!(shown(&s, &f, "Tag#1"), [0.0, 90.0, 80.0, 20.0]);
 }

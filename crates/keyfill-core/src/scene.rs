@@ -113,6 +113,9 @@ pub struct ChannelDef {
     /// Начальные данные.
     #[serde(default)]
     pub data: Value,
+    /// Якоря экземпляров к частям чужих слоёв: состояние → слой → якорь (`to: { $part, layer }`).
+    #[serde(default, deserialize_with = "layer_keys")]
+    pub anchors: BTreeMap<String, BTreeMap<u32, Value>>,
     /// Правила переходов для пар состояний.
     #[serde(default)]
     pub transitions: Vec<crate::transition::TransitionDef>,
@@ -122,8 +125,8 @@ pub struct ChannelDef {
 }
 
 /// Номера слоёв приходят из JS ключами объекта, то есть строками.
-fn layer_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, BTreeMap<u32, String>>, D::Error> {
-    let raw = BTreeMap::<String, BTreeMap<String, String>>::deserialize(d)?;
+fn layer_keys<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<BTreeMap<String, BTreeMap<u32, T>>, D::Error> {
+    let raw = BTreeMap::<String, BTreeMap<String, T>>::deserialize(d)?;
     raw.into_iter()
         .map(|(state, items)| {
             let items = items
@@ -374,6 +377,9 @@ pub struct Scene {
     pub components: Vec<ComponentInfo>,
     /// Канал (`defineChannel`); `None` — обычная сцена.
     pub channel: Option<ChannelDef>,
+    /// Экземпляр, который сейчас стоит на слое канала: по нему якорь `{ $part, layer }` находит
+    /// часть чужого экземпляра. Ведёт сессия.
+    pub layer_insts: BTreeMap<u32, String>,
     /// Ответы канала на последнюю команду; их забирает сессия.
     pub replies: Vec<LayerReply>,
     /// Узлы, удалённые командами `remove`; их забирает сессия, чтобы движение их забыло.

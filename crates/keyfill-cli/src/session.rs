@@ -307,6 +307,7 @@ impl Session {
 
     /// То же, но экземпляры `reveal`, загруженные и ещё не показанные, стоят в раскладке.
     fn geometry_with(&mut self, t: f64, reveal: &[u32]) -> Result<GeoMap> {
+        self.sync_layer_insts();
         let mut anim = self.motion.values(t);
         anim.clear_geo();
         for root in reveal {
@@ -665,7 +666,11 @@ impl Session {
     /// Шаг перехода в момент `t`.
     fn run_step(&mut self, s: &Step, state: &str, instant: bool, t: f64) -> Result<(), CmdError> {
         match s.kind {
-            StepKind::Update => self.layer_js(serde_json::json!({ "op": "bind", "inst": s.inst, "state": state, "layer": s.layer }), t),
+            StepKind::Update => {
+                self.layer_js(serde_json::json!({ "op": "bind", "inst": s.inst, "state": state, "layer": s.layer }), t)?;
+                self.place_root(s.layer, state, s.root);
+                Ok(())
+            }
             StepKind::Out => {
                 let slot = self.layer_mut(s.layer);
                 let Some(i) = slot.leaving.iter().position(|i| i.root == s.root) else { return Ok(()) };
@@ -689,6 +694,7 @@ impl Session {
                 if s.revive {
                     self.parked.retain(|r| *r != s.root);
                     self.layer_js(serde_json::json!({ "op": "bind", "inst": s.inst, "state": state, "layer": s.layer }), t)?;
+                    self.place_root(s.layer, state, s.root);
                     self.motion.revive(&self.scene, &[s.root], t);
                 } else if instant {
                     self.motion.play_settled(&self.scene, &[s.root], t);
@@ -698,6 +704,40 @@ impl Session {
                 Ok(())
             }
         }
+    }
+
+    /// Якорь экземпляра в состоянии: к части экземпляра на другом слое (`with(props, { anchor })`),
+    /// а без него — свой, из `view`.
+    fn place(&mut self, layer: u32, state: &str, inst: &Inst) {
+        let anchor = self.scene.channel.as_ref().and_then(|c| c.anchors.get(state)).and_then(|m| m.get(&layer)).cloned().or_else(|| inst.own_anchor.clone());
+        if let Some(n) = self.scene.nodes.get_mut(&inst.root) {
+            match anchor {
+                Some(a) => n.props.insert("anchor".into(), a),
+                None => n.props.remove("anchor"),
+            };
+        }
+    }
+
+    fn place_root(&mut self, layer: u32, state: &str, root: u32) {
+        let slot = self.layer_mut(layer);
+        let inst = slot.current.iter().chain(slot.leaving.iter()).find(|i| i.root == root).cloned();
+        if let Some(inst) = inst {
+            self.place(layer, state, &inst);
+        }
+    }
+
+    /// Какой экземпляр стоит на каждом слое: для якорей к частям чужих слоёв. Показанный, а пока
+    /// его нет (ждёт своего шага) — уходящий, который ещё на экране.
+    fn sync_layer_insts(&mut self) {
+        let Some(c) = &self.channel else { return };
+        self.scene.layer_insts = c
+            .layers
+            .iter()
+            .filter_map(|(l, slot)| {
+                let shown = slot.current.as_ref().filter(|i| i.state != InstState::Loaded);
+                shown.or(slot.leaving.last()).or(slot.current.as_ref()).map(|i| (*l, i.name.clone()))
+            })
+            .collect();
     }
 
     /// Отменяет неначатые шаги перехода: невошедший снимается (его не видели), неушедший
@@ -875,7 +915,8 @@ impl Session {
         for r in replies {
             match r {
                 LayerReply::Mounted { inst: name, root } => {
-                    inst = Some(Inst { name, component: component.to_string(), root, state: InstState::Loaded, props: serde_json::Value::Null })
+                    let own_anchor = self.scene.nodes.get(&root).and_then(|n| n.props.get("anchor").cloned());
+                    inst = Some(Inst { name, component: component.to_string(), root, state: InstState::Loaded, props: serde_json::Value::Null, own_anchor })
                 }
                 LayerReply::Values { props, .. } => {
                     if let Some(i) = &mut inst {
@@ -886,6 +927,9 @@ impl Session {
             }
         }
         let inst = inst.ok_or_else(|| CmdError::Failed(anyhow::anyhow!("канал: JS не сообщил о монтировании {component}")))?;
+        if let Some(state) = state {
+            self.place(layer, state, &inst);
+        }
         self.motion.hold_loaded(inst.root);
         self.event(t, &inst.name, "state", format!("loaded {layer}"));
         Ok(inst)
@@ -1027,6 +1071,7 @@ impl Session {
         let transition = self.plan.clone().filter(|p| self.labels && t + 1e-9 >= p.t && t <= p.end() + 1e-9);
         anim.clock = Some(Clock { t, frame: self.frame_index(t), scene: self.motion.scene_phase(), log, events, transition });
         let motion = start.elapsed() - script;
+        self.sync_layer_insts();
         let frame = evaluate_at(&self.scene, &mut self.engine, eval, &anim, &mut self.hints)?;
         let layout = start.elapsed() - script - motion;
         Ok((frame, StageTimes { script, motion, layout }))

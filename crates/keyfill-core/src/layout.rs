@@ -151,10 +151,14 @@ impl Frame {
     }
 }
 
-/// Узел, на который указывает ссылка на часть `{ $part, inst }`.
+/// Узел, на который указывает ссылка на часть: `{ $part, inst }` или `{ $part, layer }` — часть
+/// экземпляра, который сейчас на слое канала.
 pub fn part_node(scene: &Scene, to: &Value) -> Option<u32> {
     let part = to.get("$part")?.as_str()?;
-    let inst = to.get("inst")?.as_str()?;
+    let inst = match to.get("layer").and_then(Value::as_u64) {
+        Some(layer) => scene.layer_insts.get(&(layer as u32))?.as_str(),
+        None => to.get("inst")?.as_str()?,
+    };
     scene.nodes.values().find(|n| n.part() == Some((inst, part))).map(|n| n.id)
 }
 
@@ -216,8 +220,11 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
         .unwrap_or(stage_rect);
 
         let mut style = taffy.style(pending.tnode)?.clone();
+        // Ограничение — цель якоря; у якоря к части (её ставит второй проход) — весь кадр.
+        let to_part = anchor.as_ref().and_then(|a| a.get("to")).is_some_and(Value::is_object);
         if anchor.is_some() {
-            style.max_size = Size { width: length(target.w), height: length(target.h) };
+            let bound = if to_part { stage_rect } else { target };
+            style.max_size = Size { width: length(bound.w), height: length(bound.h) };
         } else if style.size.width.is_auto() && style.size.height.is_auto() {
             style.size = Size { width: length(stage_rect.w), height: length(stage_rect.h) };
         }
@@ -539,8 +546,10 @@ fn place_part_anchors(scene: &Scene, rects: &HashMap<u32, (Rect, Rect)>, node: &
     if let Some(to) = node.anchor.as_ref().and_then(|a| a.get("to")).filter(|t| t.is_object()) {
         let target = part_node(scene, to).and_then(|id| rects.get(&id).copied());
         if let Some((target, shown)) = target {
-            let [x, y] = place(node.anchor.as_ref().expect("anchor"), target, node.rect.w, node.rect.h);
-            let (sx, sy) = (x + shown.x - target.x, y + shown.y - target.y);
+            let anchor = node.anchor.as_ref().expect("anchor");
+            let [x, y] = place(anchor, target, node.rect.w, node.rect.h);
+            // Видно узел у видимой части: и место, и размер части — как в этом кадре.
+            let [sx, sy] = place(anchor, shown, node.shown.w, node.shown.h);
             shift(node, [x - node.rect.x, y - node.rect.y], [sx - node.shown.x, sy - node.shown.y]);
         }
     }

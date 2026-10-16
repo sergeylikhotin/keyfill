@@ -1,9 +1,10 @@
 {"keyfill":1,"channel":"channel.tsx"}
-{"frame":0,"cmd":"state","name":"pregame"}
+{"frame":0,"cmd":"state","name":"intro"}
 {"frame":100,"cmds":[{"cmd":"update","props":{"period":"1-й тайм","clockFrom":0}},{"cmd":"state","name":"live"}]}
 {"frame":200,"cmd":"next","layer":10}
 {"frame":250,"cmd":"update","props":{"homeScore":1}}
 {"frame":300,"cmds":[{"cmd":"update","props":{"guest":"Иван Петров","guestRole":"Главный тренер"}},{"cmd":"state","name":"interview"}]}
 {"frame":400,"cmd":"state","name":"live"}
 {"frame":410,"cmd":"state","name":"interview"}
-{"frame":500,"cmd":"state","name":"break"}
+{"frame":460,"cmd":"state","name":"var"}
+{"frame":530,"cmd":"state","name":"break"}

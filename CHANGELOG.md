@@ -60,6 +60,11 @@ package version.
   shows the schedule in dumps while it runs. A new `state` cancels steps that have not started.
   Cycles and steps a transition never has fail when the channel loads; panels entering over a
   leaving one on another layer warn `transition.overlap`.
+- Placement per state: `Component.with(props, { anchor })` puts the instance against the stage, a
+  safe area, or a part of the instance on another layer (`to: 'score:panel'`), which it follows as
+  that part moves and resizes. The same instance in another state glides to its new place with
+  `transition.layout`, so a morph (a centered match card becoming the corner scoreboard) is
+  composition: one component, a `mode` prop, a state anchor. Example `examples/match/MatchCard.tsx`.
 
 ### Changed
 

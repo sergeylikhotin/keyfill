@@ -14,6 +14,7 @@ export type Cmd =
       components: string[];
       layers: Record<string, number>;
       states: Record<string, Record<number, string>>;
+      anchors: Record<string, Record<number, unknown>>;
       props: unknown[];
       data: Record<string, unknown>;
       transitions: unknown[];

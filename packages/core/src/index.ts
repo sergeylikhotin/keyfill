@@ -573,8 +573,8 @@ export const component: typeof S.component = (def) => {
     applyPlacement(root.id, p);
     return root;
   };
-  const withProps = (props: Props) => brand({ $with: true, component: C, props: props ?? {} });
-  return brand(Object.assign(C, { keyfillName: def.name, keyfillSchema: schema, with: withProps }));
+  const withProps = (props: Props, placement?: Props) => brand({ $with: true, component: C, props: props ?? {}, placement });
+  return brand(Object.assign(C, { keyfillName: def.name, keyfillSchema: schema, keyfillParts: [...(def.parts ?? [])], with: withProps }));
 };
 
 // ─── Сцена и сценарий ───────────────────────────────────────────────────────
@@ -693,7 +693,7 @@ export function mount(entry: Props, input: PropsInput = (globalThis as any).__ke
 
 export const defineChannel: typeof S.defineChannel = (def) => brand({ ...def, $channel: true });
 
-type CatalogItem = ((p: Props) => KeyfillElement) & { keyfillName: string; keyfillSchema: Record<string, PropDesc> };
+type CatalogItem = ((p: Props) => KeyfillElement) & { keyfillName: string; keyfillSchema: Record<string, PropDesc>; keyfillParts: string[] };
 
 /** Компонент на слое состояния: пропсы — значения или аксессоры данных канала. */
 type Binding = { component: CatalogItem; props: Props };
@@ -754,6 +754,10 @@ function mountChannel(def: Props) {
   if (def.states && typeof def.states !== 'function') throw new KeyfillError('defineChannel: states — функция данных канала: states: (d) => ({ live: { ... } })');
   const table = (def.states ? def.states(brand(data.accessors)) : {}) as Record<string, Record<string, Props>>;
   const states: Record<string, Record<number, string>> = {};
+  // Место экземпляра в состоянии: якорь к кадру (`stage`, safe areas) или к части другого слоя
+  // (`to: 'score:panel'` → `{ $part: 'panel', layer: 10 }`).
+  const anchors: Record<string, Record<number, Props>> = {};
+  const wanted: { where: string; layer: string; part: string }[] = [];
   for (const [state, items] of Object.entries(table)) {
     const map = new Map<number, Binding>();
     states[state] = {};
@@ -770,11 +774,34 @@ function mountChannel(def: Props) {
       if (errs.length) throw new KeyfillError(`${where}: ${errs.join('; ')}`);
       map.set(layers[layer], { component: C, props: item.props });
       states[state][layers[layer]] = name;
+      const anchor = (item.placement as Props | undefined)?.anchor;
+      if (anchor) {
+        const to = anchor.to ?? 'stage';
+        const m = typeof to === 'string' ? /^([^:]+):(.+)$/.exec(to) : null;
+        if (m) {
+          if (!(m[1] in layers)) throw new KeyfillError(`${where}: anchor.to '${to}' — слоя ${m[1]} нет в layers; есть: ${Object.keys(layers).join(', ')}`);
+          if (m[1] === layer) throw new KeyfillError(`${where}: якорь к своему же слою; к своим частям привязывай внутри компонента (part.x)`);
+          (anchors[state] ??= {})[layers[layer]] = { ...anchor, to: { $part: m[2], layer: layers[m[1]] } };
+          wanted.push({ where, layer: m[1], part: m[2] });
+        } else if (['stage', 'actionSafe', 'titleSafe'].includes(to)) {
+          (anchors[state] ??= {})[layers[layer]] = { ...anchor, to };
+        } else {
+          throw new KeyfillError(`${where}: anchor.to — 'stage', 'actionSafe', 'titleSafe' или 'слой:часть', получено ${JSON.stringify(to)}`);
+        }
+      }
     }
     channel.states.set(state, map);
   }
+  // Часть должна быть хотя бы у одного компонента, который бывает на целевом слое.
+  for (const w of wanted) {
+    const on = [...channel.states.values()].map((m) => m.get(layers[w.layer])?.component).filter((c): c is CatalogItem => !!c);
+    if (!on.some((c) => c.keyfillParts.includes(w.part))) {
+      const known = [...new Set(on.flatMap((c) => c.keyfillParts))].join(', ') || 'нет';
+      throw new KeyfillError(`${w.where}: у компонентов слоя ${w.layer} нет части ${w.part}; части: ${known}`);
+    }
+  }
   const transitions = compileTransitions(def.transitions, layers, states);
-  host.emit({ op: 'channel', components: [...channel.catalog.keys()], layers, states, props: infos(schema, defaults), data: data.current(), ...transitions });
+  host.emit({ op: 'channel', components: [...channel.catalog.keys()], layers, states, anchors, props: infos(schema, defaults), data: data.current(), ...transitions });
   if (def.timelines?.length) host.emit({ op: 'timelines', items: def.timelines });
   host.flush();
 }

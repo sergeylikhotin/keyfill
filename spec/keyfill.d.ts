@@ -397,8 +397,13 @@ declare module '@keyfill/core' {
   /** `P` — пропсы внутри компонента, `I` — что передают снаружи (пропсы с `default` необязательны). */
   export interface Component<P, N extends string, C = {}, I = P> {
     (props: ReactiveProps<I> & NodePlacement): KeyfillElement;
-    /** Компонент на слое состояния канала (`defineChannel({ states })`): значения или аксессоры данных. */
-    with(props: ReactiveProps<I>): StateItem;
+    /**
+     * Компонент на слое состояния канала (`defineChannel({ states })`): значения или аксессоры
+     * данных. `placement.anchor` — место экземпляра в этом состоянии вместо якоря из `view`: к кадру
+     * (`{ to: 'stage', at: 'center' }`) или к части экземпляра другого слоя (`'score:panel'`).
+     * Тот же экземпляр в другом состоянии с `transition.layout` на корне едет к новому месту.
+     */
+    with(props: ReactiveProps<I>, placement?: StatePlacement): StateItem;
     readonly [componentBrand]: { readonly props: P; readonly parts: N; readonly commands: C; readonly input: I };
   }
   export type PartsOf<C> = C extends Component<any, infer N, any, any> ? N : never;
@@ -628,6 +633,11 @@ declare module '@keyfill/core' {
     out(layer: L, timing?: StepTiming<L>): TransitionStep;
     enter(layer: L, timing?: StepTiming<L>): TransitionStep;
     update(layer: L, timing?: StepTiming<L>): TransitionStep;
+  }
+
+  /** Место экземпляра в состоянии: якорь к кадру, safe area или части экземпляра другого слоя (`'слой:часть'`). */
+  export interface StatePlacement {
+    readonly anchor?: Omit<Anchor, 'to'> & { readonly to?: 'stage' | 'actionSafe' | 'titleSafe' | `${string}:${string}` };
   }
 
   const stateItemBrand: unique symbol;

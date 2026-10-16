@@ -268,6 +268,9 @@ pub struct Inst {
     pub state: InstState,
     /// Текущие значения пропсов: после `update`, команд и `ctx.set`.
     pub props: Value,
+    /// Якорь корня из `view`: к нему экземпляр возвращается, когда состояние его не переопределяет.
+    #[serde(skip)]
+    pub own_anchor: Option<Value>,
 }
 
 /// Слой: показанный экземпляр, загруженный на смену и уходящие.
@@ -385,7 +388,7 @@ mod tests {
 
     #[test]
     fn state_restores_shown_and_loaded() {
-        let inst = |name: &str, state| Inst { name: name.into(), component: "LowerThird".into(), root: 1, state, props: serde_json::json!({ "name": "Иван" }) };
+        let inst = |name: &str, state| Inst { name: name.into(), component: "LowerThird".into(), root: 1, state, props: serde_json::json!({ "name": "Иван" }), own_anchor: None };
         let mut s = State::default();
         s.layers.insert(20, Layer { current: Some(inst("LowerThird#1", InstState::Playing)), loaded: Some(inst("LowerThird#2", InstState::Loaded)), leaving: vec![inst("LowerThird#0", InstState::Leaving)] });
         let b = s.to_batch(7);
