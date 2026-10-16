@@ -1,28 +1,28 @@
-// Реализация @kine/core. Публичный контракт — spec/kine.d.ts: публичные функции типизированы
+// Реализация @keyfill/core. Публичный контракт — spec/keyfill.d.ts: публичные функции типизированы
 // его типами, а conformance.ts проверяет, что каждый экспорт спеки здесь есть и совместим.
 
-import type * as S from '@kine/core';
+import type * as S from '@keyfill/core';
 import { host, type PropInfo } from './host';
 import { batch, computed, effect, runView, signal, untrack, type Accessor } from './signals';
 
 export { batch, computed, effect, signal, untrack };
 
 type Props = Record<string, any>;
-export type KineElement = { readonly __kine: 'element'; readonly id: number };
+export type KeyfillElement = { readonly __keyfill: 'element'; readonly id: number };
 
-/** Ошибка API kine: место в TSX ядро берёт из `src`, стек бандла агенту не нужен. */
-class KineError extends Error {
+/** Ошибка API keyfill: место в TSX ядро берёт из `src`, стек бандла агенту не нужен. */
+class KeyfillError extends Error {
   readonly src?: string;
   constructor(message: string, src?: string) {
     super(message);
-    this.name = 'KineError';
+    this.name = 'KeyfillError';
     this.src = src;
   }
 }
 
-const isElement = (v: unknown): v is KineElement => !!v && (v as KineElement).__kine === 'element';
-type SpanDesc = { __kine: 'span'; look?: unknown; children?: unknown; src?: string };
-const isSpan = (v: unknown): v is SpanDesc => !!v && (v as SpanDesc).__kine === 'span';
+const isElement = (v: unknown): v is KeyfillElement => !!v && (v as KeyfillElement).__keyfill === 'element';
+type SpanDesc = { __keyfill: 'span'; look?: unknown; children?: unknown; src?: string };
+const isSpan = (v: unknown): v is SpanDesc => !!v && (v as SpanDesc).__keyfill === 'span';
 const isEmpty = (c: unknown) => c === null || c === undefined || c === false || c === true;
 const read = <T>(v: T | Accessor<T>): T => (typeof v === 'function' ? (v as Accessor<T>)() : v);
 
@@ -41,7 +41,7 @@ export const pct: typeof S.pct = (v) => ({ pct: v });
 
 export const hex: typeof S.hex = (v, alpha = 1) => {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(v);
-  if (!m) throw new KineError(`hex(): ожидается #RGB, #RRGGBB или #RRGGBBAA, получено "${v}"`);
+  if (!m) throw new KeyfillError(`hex(): ожидается #RGB, #RRGGBB или #RRGGBBAA, получено "${v}"`);
   let h = m[1];
   if (h.length === 3) h = [...h].map((c) => c + c).join('');
   const n = (i: number) => parseInt(h.slice(i, i + 2), 16);
@@ -92,18 +92,18 @@ export const stagger: typeof S.stagger = (step, m, o = {}) => motion({ motion: '
 
 // ─── Числа и часы: значение ведёт ядро, JS сообщает только смену данных ─────
 
-type DynamicDesc = { __kine: 'dynamic'; describe: () => Record<string, unknown> };
-const isDynamic = (v: unknown): v is DynamicDesc => !!v && (v as DynamicDesc).__kine === 'dynamic';
+type DynamicDesc = { __keyfill: 'dynamic'; describe: () => Record<string, unknown> };
+const isDynamic = (v: unknown): v is DynamicDesc => !!v && (v as DynamicDesc).__keyfill === 'dynamic';
 
 export const count: typeof S.count = (value, o = {}) =>
   brand({
-    __kine: 'dynamic',
+    __keyfill: 'dynamic',
     describe: () => ({ kind: 'count', value: read(value), easing: o.easing ?? tween(0.6, 'out'), format: o.format ?? '0' }),
   });
 
 export const clock: typeof S.clock = (o) =>
   brand({
-    __kine: 'dynamic',
+    __keyfill: 'dynamic',
     describe: () => ({
       kind: 'clock',
       from: read(o.from),
@@ -118,7 +118,7 @@ export const clock: typeof S.clock = (o) =>
 export const timeline: typeof S.timeline = (target, build) => {
   const at = (t: number, part: string, targets: S.AnimTargets, easing?: S.Easing) => brand<never>({ t, part, targets, easing });
   const emit = (t: number, name: string) => brand<S.TimelineEmit>({ t, name });
-  return brand({ timeline: (target as unknown as { kineName: string }).kineName, ...build({ at, emit }) });
+  return brand({ timeline: (target as unknown as { keyfillName: string }).keyfillName, ...build({ at, emit }) });
 };
 
 // ─── Тема ───────────────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ function flattenLook(input: unknown, label: string, out: Layer[]): Layer[] {
   } else if (typeof input === 'object') {
     out.push({ label, props: input as Props });
   } else {
-    throw new KineError(`look: ожидается объект, массив или on(...), получено ${typeof input}`);
+    throw new KeyfillError(`look: ожидается объект, массив или on(...), получено ${typeof input}`);
   }
   return out;
 }
@@ -185,7 +185,7 @@ function createNode(kind: string, p: Props): number {
   applyPlacement(id, p);
   for (const k of STATIC) if (p[k] !== undefined) host.set(id, k, p[k]);
   if (p.else !== undefined) {
-    if (!Array.isArray(p.else)) throw new KineError('else: ожидается массив шагов', p.__src);
+    if (!Array.isArray(p.else)) throw new KeyfillError('else: ожидается массив шагов', p.__src);
     // Слои look в шагах уплощаются сразу: ядро применяет их как обычные слои.
     const steps = p.else.map((step: Props, i: number) =>
       step.look === undefined ? step : { ...step, look: flattenLook(step.look, `else[${i}].look`, []) },
@@ -194,7 +194,7 @@ function createNode(kind: string, p: Props): number {
   }
   if (p.name !== undefined) {
     if (!p.name || typeof p.name !== 'object' || !('$part' in p.name)) {
-      throw new KineError('name принимает часть компонента (part.x), а не строку', p.__src);
+      throw new KeyfillError('name принимает часть компонента (part.x), а не строку', p.__src);
     }
     host.set(id, 'part', { inst: p.name.inst, part: p.name.$part });
   }
@@ -202,26 +202,26 @@ function createNode(kind: string, p: Props): number {
   return id;
 }
 
-const element = (id: number): KineElement => ({ __kine: 'element', id });
+const element = (id: number): KeyfillElement => ({ __keyfill: 'element', id });
 
-export function Box(p: Props): KineElement {
+export function Box(p: Props): KeyfillElement {
   const id = createNode('box', p);
   for (const c of flat(p.children)) {
     if (isEmpty(c)) continue;
-    if (isSpan(c)) throw new KineError('Span бывает только внутри <Text>', c.src ?? p.__src);
+    if (isSpan(c)) throw new KeyfillError('Span бывает только внутри <Text>', c.src ?? p.__src);
     if (!isElement(c)) {
-      throw new KineError(`Box принимает только элементы; текст оборачивай в <Text>. Получено: ${JSON.stringify(c)}`, p.__src);
+      throw new KeyfillError(`Box принимает только элементы; текст оборачивай в <Text>. Получено: ${JSON.stringify(c)}`, p.__src);
     }
     host.insert(id, c.id);
   }
   return element(id);
 }
 
-export function Text(p: Props): KineElement {
+export function Text(p: Props): KeyfillElement {
   const id = createNode('text', p);
   const parts = flat(p.children).filter((c) => !isEmpty(c));
   for (const c of parts) {
-    if (isElement(c)) throw new KineError('внутри Text допустимы только строки, аксессоры и <Span>', p.__src);
+    if (isElement(c)) throw new KeyfillError('внутри Text допустимы только строки, аксессоры и <Span>', p.__src);
   }
   effect(() => {
     const runs = parts.map((c, i) => {
@@ -229,8 +229,8 @@ export function Text(p: Props): KineElement {
       if (!isSpan(c)) return { text: String(read(c as string)) };
       const inner = flat(c.children).filter((x) => !isEmpty(x));
       for (const x of inner) {
-        if (isElement(x) || isSpan(x)) throw new KineError('Span не вкладывается: внутри только строки и аксессоры', c.src);
-        if (isDynamic(x)) throw new KineError('count() и clock() пишутся прямо в <Text>, не внутри Span', c.src);
+        if (isElement(x) || isSpan(x)) throw new KeyfillError('Span не вкладывается: внутри только строки и аксессоры', c.src);
+        if (isDynamic(x)) throw new KeyfillError('count() и clock() пишутся прямо в <Text>, не внутри Span', c.src);
       }
       const text = inner.map((x) => String(read(x as string))).join('');
       const look = c.look === undefined ? undefined : flattenLook(read(c.look), `span[${i}]`, []);
@@ -241,17 +241,17 @@ export function Text(p: Props): KineElement {
   return element(id);
 }
 
-export function Image(p: Props): KineElement {
+export function Image(p: Props): KeyfillElement {
   return element(createNode('image', p));
 }
 
-export function Shape(p: Props): KineElement {
+export function Shape(p: Props): KeyfillElement {
   return element(createNode('shape', p));
 }
 
 /** Кусок текста со своим стилем; живёт только внутри <Text>. */
-export function Span(p: Props): KineElement {
-  return { __kine: 'span', look: p.look, children: p.children, src: p.__src } as unknown as KineElement;
+export function Span(p: Props): KeyfillElement {
+  return { __keyfill: 'span', look: p.look, children: p.children, src: p.__src } as unknown as KeyfillElement;
 }
 
 // ─── Компоненты ─────────────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ function propSlots(initial: Props, owner: string, src?: string) {
   const known = Object.keys(slots);
   const list = known.length ? `есть: ${known.join(', ')}` : 'пропсов нет';
   const set = (key: string, value: unknown) => {
-    if (!(key in slots)) throw new KineError(`update: у ${owner} нет пропса "${key}"; ${list}`, src);
+    if (!(key in slots)) throw new KeyfillError(`update: у ${owner} нет пропса "${key}"; ${list}`, src);
     slots[key].set({ v: value });
   };
   return { accessors, set };
@@ -308,7 +308,7 @@ const instances: Instance[] = [];
 const motionCmd = (inst: string, cmd: string, extra: Record<string, unknown> = {}) => host.emit({ op: 'motion', inst, cmd, ...extra });
 
 export const component: typeof S.component = (def) => {
-  if (typeof def.name !== 'string') throw new KineError('component(): нужно поле name');
+  if (typeof def.name !== 'string') throw new KeyfillError('component(): нужно поле name');
   const commandDefs = (def.commands ?? {}) as Record<string, { params?: Props }>;
   host.emit({
     op: 'component',
@@ -317,7 +317,7 @@ export const component: typeof S.component = (def) => {
     parts: [...(def.parts ?? [])],
     commands: Object.keys(commandDefs).map((name) => ({ name, params: describeProps(commandDefs[name].params) })),
   });
-  const C = (p: Props): KineElement => {
+  const C = (p: Props): KeyfillElement => {
     const n = (counters.get(def.name) ?? 0) + 1;
     counters.set(def.name, n);
     const inst = `${def.name}#${n}`;
@@ -325,7 +325,7 @@ export const component: typeof S.component = (def) => {
     // Каждый пропс — ячейка: снаружи в неё приходит значение или аксессор.
     const initial: Props = {};
     for (const k of Object.keys(def.props ?? {})) {
-      if (!(k in p)) throw new KineError(`${def.name}: не передан пропс "${k}"`, p.__src);
+      if (!(k in p)) throw new KeyfillError(`${def.name}: не передан пропс "${k}"`, p.__src);
       initial[k] = p[k];
     }
     const { accessors, set } = propSlots(initial, def.name, p.__src);
@@ -347,10 +347,10 @@ export const component: typeof S.component = (def) => {
         const c = commands[command];
         if (!c) {
           const known = Object.keys(commands).join(', ') || 'нет ни одной';
-          throw new KineError(`invoke: у ${def.name} нет команды "${command}"; команды: ${known}`, p.__src);
+          throw new KeyfillError(`invoke: у ${def.name} нет команды "${command}"; команды: ${known}`, p.__src);
         }
         for (const k of Object.keys(c.params ?? {})) {
-          if (!(k in (params ?? {}))) throw new KineError(`invoke ${def.name}.${command}: не передан параметр "${k}"`, p.__src);
+          if (!(k in (params ?? {}))) throw new KeyfillError(`invoke ${def.name}.${command}: не передан параметр "${k}"`, p.__src);
         }
         batch(() => c.run(params ?? {}, ctx));
       },
@@ -367,13 +367,13 @@ export const component: typeof S.component = (def) => {
       ),
       () => def.view(brand(accessors), brand(parts)),
     );
-    if (!isElement(root)) throw new KineError(`${def.name}.view должен вернуть один элемент`, p.__src);
+    if (!isElement(root)) throw new KeyfillError(`${def.name}.view должен вернуть один элемент`, p.__src);
     host.set(root.id, 'instance', { name: inst, src: p.__src });
     if (def.presence) host.set(root.id, 'presence', def.presence);
     applyPlacement(root.id, p);
     return root;
   };
-  return brand(Object.assign(C, { kineName: def.name }));
+  return brand(Object.assign(C, { keyfillName: def.name }));
 };
 
 // ─── Сцена и сценарий ───────────────────────────────────────────────────────
@@ -386,17 +386,17 @@ const CUE_COMMANDS = ['play', 'stop', 'next', 'update', 'invoke'];
 
 export const cues: typeof S.cues = (scene, build) => {
   const at = (t: number, cmd: string, target?: unknown, a?: unknown, b?: unknown): CueItem => {
-    if (typeof t !== 'number' || !(t >= 0)) throw new KineError(`cues: время должно быть числом ≥ 0, получено ${t}`);
-    if (!CUE_COMMANDS.includes(cmd)) throw new KineError(`cues: команда "${cmd}" не поддерживается; есть ${CUE_COMMANDS.join(', ')}`);
-    const name = (target as { kineName?: string } | undefined)?.kineName;
+    if (typeof t !== 'number' || !(t >= 0)) throw new KeyfillError(`cues: время должно быть числом ≥ 0, получено ${t}`);
+    if (!CUE_COMMANDS.includes(cmd)) throw new KeyfillError(`cues: команда "${cmd}" не поддерживается; есть ${CUE_COMMANDS.join(', ')}`);
+    const name = (target as { keyfillName?: string } | undefined)?.keyfillName;
     // update без компонента — пропсы самой сцены: at(t, 'update', { name: 'Иван' }).
     if (cmd === 'update' && !name) {
       if (!target || typeof target !== 'object') {
-        throw new KineError('cues: update принимает компонент и его пропсы или пропсы сцены: at(t, "update", { ... })');
+        throw new KeyfillError('cues: update принимает компонент и его пропсы или пропсы сцены: at(t, "update", { ... })');
       }
       return { t, cmd, props: target as Record<string, unknown> };
     }
-    if (cmd === 'invoke' && !name) throw new KineError('cues: invoke требует компонент: at(t, "invoke", Component, "команда", { ... })');
+    if (cmd === 'invoke' && !name) throw new KeyfillError('cues: invoke требует компонент: at(t, "invoke", Component, "команда", { ... })');
     if (cmd === 'invoke') return { t, cmd, target: name, command: a as string, props: b as Record<string, unknown> };
     return { t, cmd, target: name, props: a as Record<string, unknown> | undefined };
   };
@@ -463,12 +463,12 @@ function sceneProps(scene: Props, input: PropsInput): { accessors: Props; errors
 
 const instancesOf = (target: string, what: string) => {
   const found = instances.filter((i) => i.component === target);
-  if (!found.length) throw new KineError(`${what}: в сцене нет экземпляров ${target}`);
+  if (!found.length) throw new KeyfillError(`${what}: в сцене нет экземпляров ${target}`);
   return found;
 };
 
 /** Команда `update` из ядра: новые значения пропсов всех экземпляров компонента. */
-(globalThis as any).__kine_update = (json: string) => {
+(globalThis as any).__keyfill_update = (json: string) => {
   const { target, props } = JSON.parse(json) as { target: string | null; props: Record<string, unknown> };
   // Без компонента — пропсы самой сцены.
   const setters = target === null ? [sceneSet!] : instancesOf(target, 'update').map((i) => i.set);
@@ -479,14 +479,14 @@ const instancesOf = (target: string, what: string) => {
 };
 
 /** Команда `invoke` из ядра: команда компонента на всех его экземплярах. */
-(globalThis as any).__kine_invoke = (json: string) => {
+(globalThis as any).__keyfill_invoke = (json: string) => {
   const { target, command, params } = JSON.parse(json) as { target: string; command: string; params: Record<string, unknown> };
   for (const i of instancesOf(target, 'invoke')) i.invoke(command, params);
   host.flush();
 };
 
 /** Монтирует сцену или сценарий. Пропсы — из CLI (`--props`, `--set`) или из случая теста. */
-export function mount(entry: Props, input: PropsInput = (globalThis as any).__kine_props ?? {}) {
+export function mount(entry: Props, input: PropsInput = (globalThis as any).__keyfill_props ?? {}) {
   const scene = entry.$cues ? entry.scene : entry;
   const { accessors, errors } = sceneProps(scene, input);
   if (errors.length) {
@@ -512,7 +512,7 @@ export function mount(entry: Props, input: PropsInput = (globalThis as any).__ki
     ),
     () => scene.root(accessors),
   );
-  if (!isElement(root)) throw new KineError('scene.root должен вернуть элемент');
+  if (!isElement(root)) throw new KeyfillError('scene.root должен вернуть элемент');
   host.insert(stage, root.id);
   if (scene.timelines?.length) host.emit({ op: 'timelines', items: scene.timelines });
   if (entry.$cues) host.emit({ op: 'cues', items: entry.items });
@@ -525,22 +525,22 @@ type TestItem = { name: string; scene: Props; props?: Props; [k: string]: unknow
 const tests: TestItem[] = [];
 
 export const test: typeof S.test = (name, c) => {
-  if (typeof name !== 'string' || !name.trim()) throw new KineError('test: нужно имя случая');
+  if (typeof name !== 'string' || !name.trim()) throw new KeyfillError('test: нужно имя случая');
   const scene = (c as Props | undefined)?.scene as Props | undefined;
-  if (!scene || !(scene.$cues || scene.root)) throw new KineError(`test "${name}": scene — defineScene(...) или cues(scene, ...)`);
-  if (tests.some((x) => x.name === name)) throw new KineError(`test: два случая с именем "${name}"`);
+  if (!scene || !(scene.$cues || scene.root)) throw new KeyfillError(`test "${name}": scene — defineScene(...) или cues(scene, ...)`);
+  if (tests.some((x) => x.name === name)) throw new KeyfillError(`test: два случая с именем "${name}"`);
   tests.push({ ...(c as Props), name, scene });
 };
 
 export const defineConfig: typeof S.defineConfig = (c) => brand({ ...c, $config: true });
 
 /**
- * Точка входа бандла. Что делать с файлом, говорит ядро (`__kine_entry`): `'tests'` — отдать
+ * Точка входа бандла. Что делать с файлом, говорит ядро (`__keyfill_entry`): `'tests'` — отдать
  * список случаев теста, номер — смонтировать сцену случая с его пропсами; иначе файл — сцена,
- * сценарий или kine.config.ts, по тому, что он экспортирует.
+ * сценарий или keyfill.config.ts, по тому, что он экспортирует.
  */
-export function __kine_main(value: unknown) {
-  const entry = (globalThis as any).__kine_entry as 'tests' | number | null;
+export function __keyfill_main(value: unknown) {
+  const entry = (globalThis as any).__keyfill_entry as 'tests' | number | null;
   if (entry === 'tests') {
     host.emit({ op: 'tests', items: tests.map(({ scene: _s, props: _p, ...rest }) => rest) });
     host.flush();
@@ -548,7 +548,7 @@ export function __kine_main(value: unknown) {
   }
   if (typeof entry === 'number') {
     const c = tests[entry];
-    if (!c) throw new KineError(`в файле нет случая №${entry}`);
+    if (!c) throw new KeyfillError(`в файле нет случая №${entry}`);
     mount(c.scene, { values: c.props ?? {} });
     return;
   }
@@ -559,15 +559,15 @@ export function __kine_main(value: unknown) {
     host.flush();
     return;
   }
-  if (!v && tests.length) throw new KineError('это файл тестов: запускай kine test <файл>');
+  if (!v && tests.length) throw new KeyfillError('это файл тестов: запускай keyfill test <файл>');
   if (!v || !(v.$cues || v.root)) {
-    throw new KineError('файл не экспортирует сцену: export default defineScene({ ... }) или cues(scene, ...)');
+    throw new KeyfillError('файл не экспортирует сцену: export default defineScene({ ... }) или cues(scene, ...)');
   }
   mount(v);
 }
 
 const notYet = (name: string) => (): never => {
-  throw new KineError(`source.${name} появится в M6`);
+  throw new KeyfillError(`source.${name} появится в M6`);
 };
 
 export const source: typeof S.source = { json: notYet('json'), ws: notYet('ws'), osc: notYet('osc') };

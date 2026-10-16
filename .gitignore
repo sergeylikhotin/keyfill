@@ -5,7 +5,7 @@ out/
 *.png
 *.mp4
 *.mov
-.kine/
-# Снапшоты kine test — часть репозитория.
+.keyfill/
+# Снапшоты keyfill test — часть репозитория.
 !**/__snapshots__/**/*.png
 !assets/readme/*.png

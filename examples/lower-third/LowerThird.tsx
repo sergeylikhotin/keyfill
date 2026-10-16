@@ -1,4 +1,4 @@
-import { Box, Text, component, fade, on, par, prop, pulse, row, column, slide, spring, stagger, tween } from '@kine/core';
+import { Box, Text, component, fade, on, par, prop, pulse, row, column, slide, spring, stagger, tween } from '@keyfill/core';
 import { theme } from './theme';
 
 export const LowerThird = component({

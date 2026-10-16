@@ -1,5 +1,5 @@
 {
-  "name": "kine-workspace",
+  "name": "keyfill-workspace",
   "private": true,
   "scripts": {
     "typecheck": "tsc -p .",

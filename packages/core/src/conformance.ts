@@ -1,7 +1,7 @@
-// Сверка реализации со спецификацией: по строке на каждый экспорт spec/kine.d.ts.
+// Сверка реализации со спецификацией: по строке на каждый экспорт spec/keyfill.d.ts.
 // tsc падает, если экспорта нет или сигнатура реализации несовместима. В бандл файл не попадает.
-// Сгенерировано из spec/kine.d.ts; при добавлении экспорта в спеку добавь строку сюда.
-import type * as Spec from '@kine/core';
+// Сгенерировано из spec/keyfill.d.ts; при добавлении экспорта в спеку добавь строку сюда.
+import type * as Spec from '@keyfill/core';
 import * as Impl from './index';
 
 export const signal: typeof Spec.signal = Impl.signal;

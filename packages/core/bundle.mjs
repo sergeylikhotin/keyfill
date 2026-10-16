@@ -1,10 +1,10 @@
-// Бандлер сцены для kine: `node bundle.mjs <scene.tsx>` печатает в stdout JSON
-// `{ code, map, inputs }` — IIFE-бандл, его sourcemap и все входные файлы (для кэша kine).
-// Точка входа — сцена, сценарий, файл тестов или kine.config.ts; что с ней делать, решает
-// `__kine_main` из `@kine/core`.
+// Бандлер сцены для keyfill: `node bundle.mjs <scene.tsx>` печатает в stdout JSON
+// `{ code, map, inputs }` — IIFE-бандл, его sourcemap и все входные файлы (для кэша keyfill).
+// Точка входа — сцена, сценарий, файл тестов или keyfill.config.ts; что с ней делать, решает
+// `__keyfill_main` из `@keyfill/core`.
 // При ошибке печатает `{ errors: [{ file, line, column, text, lineText }] }` и выходит с кодом 1.
 //
-// JSX собирается в dev-режиме (у элементов есть место в исходнике), `@kine/core` указывает
+// JSX собирается в dev-режиме (у элементов есть место в исходнике), `@keyfill/core` указывает
 // на реализацию рядом с этим файлом, а импорт шрифта (`import inter from './Inter.otf'`)
 // превращается в абсолютный путь к файлу: путь разрешает бандлер, как у любого импорта,
 // а ядро читает файл по этому пути.
@@ -22,7 +22,7 @@ if (!entry) {
 const core = path.join(path.dirname(fileURLToPath(import.meta.url)), 'src');
 
 const fonts = {
-  name: 'kine-fonts',
+  name: 'keyfill-fonts',
   setup(b) {
     b.onLoad({ filter: /\.(otf|ttf|woff2?)$/i }, (args) => ({
       contents: `export default ${JSON.stringify(args.path)};`,
@@ -44,15 +44,15 @@ try {
   const result = await build({
     stdin: {
       // У файла тестов нет экспорта по умолчанию: берём модуль целиком.
-      contents: `import * as m from ${JSON.stringify(entryPath)};\nimport { __kine_main } from '@kine/core';\n__kine_main(m.default);\n`,
+      contents: `import * as m from ${JSON.stringify(entryPath)};\nimport { __keyfill_main } from '@keyfill/core';\n__keyfill_main(m.default);\n`,
       resolveDir: cwd,
-      sourcefile: 'kine-entry.ts',
+      sourcefile: 'keyfill-entry.ts',
       loader: 'ts',
     },
     bundle: true,
     write: false,
     // Файл не пишется; outfile задаёт только базу для путей в sourcemap.
-    outfile: path.join(cwd, 'kine-bundle.js'),
+    outfile: path.join(cwd, 'keyfill-bundle.js'),
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
@@ -61,8 +61,8 @@ try {
     target: 'es2020',
     jsx: 'automatic',
     jsxDev: true,
-    jsxImportSource: '@kine/core',
-    alias: { '@kine/core': core },
+    jsxImportSource: '@keyfill/core',
+    alias: { '@keyfill/core': core },
     plugins: [fonts],
     logLevel: 'silent',
   });
@@ -71,7 +71,7 @@ try {
   map.sources = map.sources.map((s) => shown(path.resolve(cwd, s)));
   const inputs = Object.keys(result.metafile.inputs)
     // Точка входа из stdin — не файл: в кэше её не проверить.
-    .filter((p) => p !== '<stdin>' && p !== 'kine-entry.ts')
+    .filter((p) => p !== '<stdin>' && p !== 'keyfill-entry.ts')
     .map((p) => slash(path.resolve(cwd, p)));
   process.stdout.write(JSON.stringify({ code, map, inputs }));
 } catch (e) {

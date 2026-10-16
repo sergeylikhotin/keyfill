@@ -1,6 +1,6 @@
 // Название, которое не влезает даже в минимальный кегль: в dev это ошибка must.fit
 // с подсказкой, какой шаг else её исправит; в air (--mode air) шаг применяется сам.
-import { defineScene, signal } from '@kine/core';
+import { defineScene, signal } from '@keyfill/core';
 import interRegular from '../../assets/fonts/inter/Inter-Regular.otf';
 import interSemiBold from '../../assets/fonts/inter/Inter-SemiBold.otf';
 import { Scoreboard } from './Scoreboard';

@@ -1,0 +1,16 @@
+[package]
+name = "keyfill-render"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "keyfill CPU backend: executes the display list with vello_cpu"
+
+[dependencies]
+keyfill-core.workspace = true
+vello_cpu.workspace = true
+parley.workspace = true
+anyhow.workspace = true
+png = "0.18"

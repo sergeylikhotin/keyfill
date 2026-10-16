@@ -1,4 +1,4 @@
-import { Box, Span, Text, animate, clock, component, count, fade, grid, spring, stack, tween } from '@kine/core';
+import { Box, Span, Text, animate, clock, component, count, fade, grid, spring, stack, tween } from '@keyfill/core';
 import { theme } from './theme';
 
 const team = { font: theme.font.ui, size: 34, weight: 600, color: theme.color.text } as const;

@@ -1,6 +1,6 @@
 // Постановка табло: появление, остановка на ready до next, дыхание статуса в цикле,
 // уход и сегменты для команды goal.
-import { spring, timeline, tween } from '@kine/core';
+import { spring, timeline, tween } from '@keyfill/core';
 import { Scoreboard } from './Scoreboard';
 
 export default timeline(Scoreboard, ({ at, emit }) => ({

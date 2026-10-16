@@ -6,15 +6,15 @@ members = ["crates/*"]
 edition = "2024"
 version = "0.1.0-alpha.1"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sergeylikhotin/kine"
-homepage = "https://github.com/sergeylikhotin/kine"
-# Распространяется через npm (@kine/cli); крейты на crates.io не публикуются.
+repository = "https://github.com/sergeylikhotin/keyfill"
+homepage = "https://github.com/sergeylikhotin/keyfill"
+# Распространяется через npm (@keyfill/cli); крейты на crates.io не публикуются.
 publish = false
 
 [workspace.dependencies]
-kine-core = { path = "crates/kine-core" }
-kine-render = { path = "crates/kine-render" }
-kine-js = { path = "crates/kine-js" }
+keyfill-core = { path = "crates/keyfill-core" }
+keyfill-render = { path = "crates/keyfill-render" }
+keyfill-js = { path = "crates/keyfill-js" }
 taffy = "0.15"
 parley = "0.12"
 vello_cpu = "0.3"

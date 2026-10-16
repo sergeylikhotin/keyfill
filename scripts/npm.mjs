@@ -1,10 +1,10 @@
-// Сборка npm-пакетов kine из репозитория:
+// Сборка npm-пакетов keyfill из репозитория:
 //
-//   node scripts/npm.mjs [--target win32-x64] [--binary target/release/kine.exe] [--out dist/npm] [--pack] [--smoke]
+//   node scripts/npm.mjs [--target win32-x64] [--binary target/release/keyfill.exe] [--out dist/npm] [--pack] [--smoke]
 //
-// - @kine/core            — типы (из spec/kine.d.ts в виде модулей), рантайм src, bundle.mjs; зависит от esbuild;
-// - @kine/cli             — команда `kine` (bin/kine.js): запускает бинарь платформы с KINE_CORE;
-// - @kine/cli-<платформа> — нативный бинарь; ставится через optionalDependencies по os и cpu.
+// - @keyfill/core            — типы (из spec/keyfill.d.ts в виде модулей), рантайм src, bundle.mjs; зависит от esbuild;
+// - @keyfill/cli             — команда `keyfill` (bin/keyfill.js): запускает бинарь платформы с KEYFILL_CORE;
+// - @keyfill/cli-<платформа> — нативный бинарь; ставится через optionalDependencies по os и cpu.
 //
 // --pack упаковывает каждый пакет в .tgz (npm pack), --smoke ставит их в чистый временный проект
 // и проходит путь пользователя: doctor, new, check, test, tsc. Публикация — `npm publish` каждого
@@ -24,12 +24,12 @@ const value = (name, fallback) => {
   return i >= 0 ? args[i + 1] : fallback;
 };
 
-/** Платформы, под которые есть пакет бинаря: имя пакета — `@kine/cli-<платформа>`. */
+/** Платформы, под которые есть пакет бинаря: имя пакета — `@keyfill/cli-<платформа>`. */
 const TARGETS = ['win32-x64', 'linux-x64', 'darwin-arm64', 'darwin-x64'];
 const target = value('--target', `${process.platform}-${process.arch}`);
 if (!TARGETS.includes(target)) throw new Error(`--target: ${target}; есть ${TARGETS.join(', ')}`);
 const [targetOs, targetCpu] = target.split('-');
-const exe = targetOs === 'win32' ? 'kine.exe' : 'kine';
+const exe = targetOs === 'win32' ? 'keyfill.exe' : 'keyfill';
 const binary = path.resolve(root, value('--binary', path.join('target', 'release', exe)));
 const out = path.resolve(root, value('--out', path.join('dist', 'npm')));
 
@@ -43,14 +43,14 @@ const write = (file, text) => {
   fs.writeFileSync(file, text);
 };
 const json = (v) => `${JSON.stringify(v, null, 2)}\n`;
-const repo = 'https://github.com/sergeylikhotin/kine';
+const repo = 'https://github.com/sergeylikhotin/keyfill';
 const common = {
   version,
   license,
   homepage: repo,
   repository: { type: 'git', url: `git+${repo}.git` },
   bugs: { url: `${repo}/issues` },
-  keywords: ['kine', 'broadcast', 'graphics', 'tsx', 'render', 'motion', 'overlay', 'ai-agent'],
+  keywords: ['keyfill', 'broadcast', 'graphics', 'tsx', 'render', 'motion', 'overlay', 'ai-agent'],
 };
 
 /** README пакета и лицензии репозитория. */
@@ -81,16 +81,16 @@ function asModule(body) {
 }
 
 function types(dir) {
-  const spec = fs.readFileSync(path.join(root, 'spec', 'kine.d.ts'), 'utf8');
+  const spec = fs.readFileSync(path.join(root, 'spec', 'keyfill.d.ts'), 'utf8');
   const mods = modules(spec);
   const get = (name) => mods.find((m) => m.name === name) ?? (() => { throw new Error(`в спеке нет модуля ${name}`); })();
-  const head = `// Типы @kine/core ${version}. Сгенерировано из spec/kine.d.ts репозитория kine.\n`;
-  write(path.join(dir, 'index.d.ts'), `${head}/// <reference path="./fonts.d.ts" />\n${asModule(get('@kine/core').body)}\n`);
-  write(path.join(dir, 'jsx-runtime.d.ts'), `${head}${asModule(get('@kine/core/jsx-runtime').body)}\n`);
-  write(path.join(dir, 'jsx-dev-runtime.d.ts'), `${head}${asModule(get('@kine/core/jsx-dev-runtime').body)}\n`);
+  const head = `// Типы @keyfill/core ${version}. Сгенерировано из spec/keyfill.d.ts репозитория keyfill.\n`;
+  write(path.join(dir, 'index.d.ts'), `${head}/// <reference path="./fonts.d.ts" />\n${asModule(get('@keyfill/core').body)}\n`);
+  write(path.join(dir, 'jsx-runtime.d.ts'), `${head}${asModule(get('@keyfill/core/jsx-runtime').body)}\n`);
+  write(path.join(dir, 'jsx-dev-runtime.d.ts'), `${head}${asModule(get('@keyfill/core/jsx-dev-runtime').body)}\n`);
   // Импорты шрифтов — глобальные объявления: остаются ambient.
   const fonts = mods.filter((m) => m.name.startsWith('*.')).map((m) => m.raw.join('\n'));
-  write(path.join(dir, 'fonts.d.ts'), `${head}// Импорт шрифта даёт FontFile: бандлер kine подставляет абсолютный путь к файлу.\n${fonts.join('\n')}\n`);
+  write(path.join(dir, 'fonts.d.ts'), `${head}// Импорт шрифта даёт FontFile: бандлер keyfill подставляет абсолютный путь к файлу.\n${fonts.join('\n')}\n`);
 }
 
 // ─── Пакеты ─────────────────────────────────────────────────────────────────
@@ -108,9 +108,9 @@ function core() {
   write(
     path.join(dir, 'package.json'),
     json({
-      name: '@kine/core',
+      name: '@keyfill/core',
       ...common,
-      description: 'kine scene API for TSX: components, look, layout, motion, tests, config. The kine command is in @kine/cli.',
+      description: 'keyfill scene API for TSX: components, look, layout, motion, tests, config. The keyfill command is in @keyfill/cli.',
       type: 'module',
       types: './index.d.ts',
       exports: {
@@ -124,12 +124,12 @@ function core() {
     }),
   );
   docs(dir, [
-    '# @kine/core',
+    '# @keyfill/core',
     '',
-    `Scene API for [kine](${repo}): \`defineScene\`, \`component\`, primitives, \`look\`, layout, motion, \`test\`, \`defineConfig\`,`,
-    'plus the runtime and the bundler kine runs scenes with.',
+    `Scene API for [keyfill](${repo}): \`defineScene\`, \`component\`, primitives, \`look\`, layout, motion, \`test\`, \`defineConfig\`,`,
+    'plus the runtime and the bundler keyfill runs scenes with.',
     '',
-    'Install it together with the command: `npm i -D @kine/cli`. Built-in reference: `npx kine docs`.',
+    'Install it together with the command: `npm i -D @keyfill/cli`. Built-in reference: `npx keyfill docs`.',
   ]);
   return dir;
 }
@@ -137,44 +137,44 @@ function core() {
 function cli() {
   const dir = path.join(out, 'cli');
   fs.rmSync(dir, { recursive: true, force: true });
-  write(path.join(dir, 'bin', 'kine.js'), SHIM);
+  write(path.join(dir, 'bin', 'keyfill.js'), SHIM);
   write(
     path.join(dir, 'package.json'),
     json({
-      name: '@kine/cli',
+      name: '@keyfill/cli',
       ...common,
-      description: 'kine: render broadcast graphics and UI from TSX without a browser, built for AI agents.',
-      bin: { kine: 'bin/kine.js' },
+      description: 'keyfill: render broadcast graphics and UI from TSX without a browser, built for AI agents.',
+      bin: { keyfill: 'bin/keyfill.js' },
       files: ['bin', 'LICENSE-*'],
-      dependencies: { '@kine/core': version },
-      optionalDependencies: Object.fromEntries(TARGETS.map((t) => [`@kine/cli-${t}`, version])),
+      dependencies: { '@keyfill/core': version },
+      optionalDependencies: Object.fromEntries(TARGETS.map((t) => [`@keyfill/cli-${t}`, version])),
     }),
   );
   docs(dir, [
-    '# @kine/cli',
+    '# @keyfill/cli',
     '',
-    `The \`kine\` command: renders TSX scenes of broadcast graphics and interfaces without a browser. See [kine](${repo}).`,
+    `The \`keyfill\` command: renders TSX scenes of broadcast graphics and interfaces without a browser. See [keyfill](${repo}).`,
     '',
     '```bash',
-    'npm i -D @kine/cli typescript',
-    'npx kine new lower-third',
-    'npx kine check lower-third',
-    'npx kine test',
+    'npm i -D @keyfill/cli typescript',
+    'npx keyfill new lower-third',
+    'npx keyfill check lower-third',
+    'npx keyfill test',
     '```',
     '',
-    'Environment check: `npx kine doctor`. Reference: `npx kine docs`. The native binary comes from a platform package',
-    `(${TARGETS.map((t) => `\`@kine/cli-${t}\``).join(', ')}), picked by npm for your OS and CPU.`,
+    'Environment check: `npx keyfill doctor`. Reference: `npx keyfill docs`. The native binary comes from a platform package',
+    `(${TARGETS.map((t) => `\`@keyfill/cli-${t}\``).join(', ')}), picked by npm for your OS and CPU.`,
   ]);
   return dir;
 }
 
 /**
  * Лицензии крейтов, вкомпилированных в бинарь: MIT, Apache-2.0 и остальные требуют поставлять
- * их тексты вместе с бинарём. Список — `cargo tree` для kine-cli под платформу сборки, тексты —
+ * их тексты вместе с бинарём. Список — `cargo tree` для keyfill-cli под платформу сборки, тексты —
  * файлы LICENSE / COPYING / NOTICE из исходников крейтов (и QuickJS внутри rquickjs-sys).
  */
 function thirdParty() {
-  const tree = execSync('cargo tree -p kine-cli -e normal --prefix none --format "{p}"', { cwd: root, encoding: 'utf8' });
+  const tree = execSync('cargo tree -p keyfill-cli -e normal --prefix none --format "{p}"', { cwd: root, encoding: 'utf8' });
   const used = new Set(tree.split(/\r?\n/).filter((l) => l && !l.includes('(')).map((l) => l.replace(/ \(\*\)$/, '').trim()));
   const meta = JSON.parse(execSync('cargo metadata --format-version 1', { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 }));
   const isText = (f) => /^(licen[cs]e|copying|notice)/i.test(f);
@@ -197,7 +197,7 @@ function thirdParty() {
       texts.get(key).users.push(`${p.name} ${p.version}${f.includes('quickjs') ? ' (QuickJS)' : ''}`);
     }
   }
-  const out = [`Third-party software in the kine ${version} binary (${target})`, ''];
+  const out = [`Third-party software in the keyfill ${version} binary (${target})`, ''];
   for (const p of crates) out.push(`${p.name} ${p.version} — ${p.license ?? 'see repository'}${p.repository ? ` — ${p.repository}` : ''}`);
   if (bare.length) {
     out.push('', `Crates without a license file (texts of their SPDX licenses: LICENSE-MIT, LICENSE-APACHE in this package): ${bare.map((p) => p.name).join(', ')}`);
@@ -207,7 +207,7 @@ function thirdParty() {
 }
 
 function platform() {
-  if (!fs.existsSync(binary)) throw new Error(`нет бинаря ${binary}: cargo build --release -p kine-cli`);
+  if (!fs.existsSync(binary)) throw new Error(`нет бинаря ${binary}: cargo build --release -p keyfill-cli`);
   const dir = path.join(out, `cli-${target}`);
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
@@ -215,34 +215,34 @@ function platform() {
   if (targetOs !== 'win32') fs.chmodSync(path.join(dir, 'bin', exe), 0o755);
   write(
     path.join(dir, 'package.json'),
-    json({ name: `@kine/cli-${target}`, ...common, description: `kine native binary for ${target}; installed by @kine/cli.`, os: [targetOs], cpu: [targetCpu], files: ['bin', 'LICENSE-*', 'THIRD-PARTY-LICENSES.txt'] }),
+    json({ name: `@keyfill/cli-${target}`, ...common, description: `keyfill native binary for ${target}; installed by @keyfill/cli.`, os: [targetOs], cpu: [targetCpu], files: ['bin', 'LICENSE-*', 'THIRD-PARTY-LICENSES.txt'] }),
   );
   write(path.join(dir, 'THIRD-PARTY-LICENSES.txt'), thirdParty());
-  docs(dir, [`# @kine/cli-${target}`, '', `Native [kine](${repo}) binary for ${target}. Install \`@kine/cli\` instead: it picks this package for your platform.`]);
+  docs(dir, [`# @keyfill/cli-${target}`, '', `Native [keyfill](${repo}) binary for ${target}. Install \`@keyfill/cli\` instead: it picks this package for your platform.`]);
   return dir;
 }
 
 const SHIM = `#!/usr/bin/env node
-// Команда kine: запускает нативный бинарь из пакета платформы. KINE_CORE говорит бинарю,
-// где @kine/core (бандлер и рантайм сцен) — рядом в node_modules.
+// Команда keyfill: запускает нативный бинарь из пакета платформы. KEYFILL_CORE говорит бинарю,
+// где @keyfill/core (бандлер и рантайм сцен) — рядом в node_modules.
 'use strict';
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const target = process.platform + '-' + process.arch;
-const pkg = '@kine/cli-' + target;
+const pkg = '@keyfill/cli-' + target;
 let bin;
 try {
-  bin = require.resolve(pkg + '/bin/kine' + (process.platform === 'win32' ? '.exe' : ''));
+  bin = require.resolve(pkg + '/bin/keyfill' + (process.platform === 'win32' ? '.exe' : ''));
 } catch {
-  console.error('kine: нет бинаря для ' + target + ' (пакет ' + pkg + '). Платформы: ${TARGETS.join(', ')}. ' +
+  console.error('keyfill: нет бинаря для ' + target + ' (пакет ' + pkg + '). Платформы: ${TARGETS.join(', ')}. ' +
     'Переустанови зависимости без --no-optional / --omit=optional.');
   process.exit(5);
 }
-const core = path.dirname(require.resolve('@kine/core/package.json'));
-const r = spawnSync(bin, process.argv.slice(2), { stdio: 'inherit', env: { ...process.env, KINE_CORE: process.env.KINE_CORE || core } });
+const core = path.dirname(require.resolve('@keyfill/core/package.json'));
+const r = spawnSync(bin, process.argv.slice(2), { stdio: 'inherit', env: { ...process.env, KEYFILL_CORE: process.env.KEYFILL_CORE || core } });
 if (r.error) {
-  console.error('kine: ' + r.error.message);
+  console.error('keyfill: ' + r.error.message);
   process.exit(5);
 }
 if (r.signal) process.kill(process.pid, r.signal);
@@ -263,9 +263,9 @@ function pack(dir) {
 }
 
 function smoke(tarballs) {
-  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kine-smoke-'));
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'keyfill-smoke-'));
   console.log(`smoke: ${project}`);
-  write(path.join(project, 'package.json'), json({ name: 'kine-smoke', private: true }));
+  write(path.join(project, 'package.json'), json({ name: 'keyfill-smoke', private: true }));
   run(npm, ['install', '--save-dev', '--no-audit', '--no-fund', ...tarballs, 'typescript@5.8.3'], project);
   const step = (title, argv, okCodes = [0]) => {
     let code = 0;
@@ -284,18 +284,18 @@ function smoke(tarballs) {
     }
     return text;
   };
-  step('kine doctor', ['kine', 'doctor']);
-  step('kine new lower-third', ['kine', 'new', 'lower-third']);
-  step('kine check lower-third', ['kine', 'check', 'lower-third']);
-  step('kine test', ['kine', 'test']);
-  step('kine render lower-third', ['kine', 'render', 'lower-third']);
+  step('keyfill doctor', ['keyfill', 'doctor']);
+  step('keyfill new lower-third', ['keyfill', 'new', 'lower-third']);
+  step('keyfill check lower-third', ['keyfill', 'check', 'lower-third']);
+  step('keyfill test', ['keyfill', 'test']);
+  step('keyfill render lower-third', ['keyfill', 'render', 'lower-third']);
   step('tsc', ['tsc', '-p', '.']);
   return project;
 }
 
 fs.mkdirSync(out, { recursive: true });
 const dirs = [core(), cli(), platform()];
-console.log(`kine ${version}: ${dirs.map((d) => path.relative(root, d)).join(', ')}`);
+console.log(`keyfill ${version}: ${dirs.map((d) => path.relative(root, d)).join(', ')}`);
 if (flag('--pack') || flag('--smoke')) {
   // Пакеты прошлых версий не должны попасть в публикацию вместе с новыми.
   for (const f of fs.readdirSync(out)) if (f.endsWith('.tgz')) fs.rmSync(path.join(out, f));

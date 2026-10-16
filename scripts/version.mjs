@@ -1,5 +1,5 @@
-// Версия kine — одна на всё: `version` в [workspace.package] Cargo.toml. Из неё берут версию
-// крейты, бинарь (`kine --version`, кэш бандлов, проверка @kine/core в `kine doctor`) и все
+// Версия keyfill — одна на всё: `version` в [workspace.package] Cargo.toml. Из неё берут версию
+// крейты, бинарь (`keyfill --version`, кэш бандлов, проверка @keyfill/core в `keyfill doctor`) и все
 // npm-пакеты (scripts/npm.mjs).
 //
 //   node scripts/version.mjs 0.1.0            поднять версию: Cargo.toml и Cargo.lock
@@ -20,7 +20,7 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$
 const VERSION_LINE = /(\[workspace\.package\][^[]*?version\s*=\s*")([^"]+)(")/s;
 
 const current = () => VERSION_LINE.exec(fs.readFileSync(cargoToml, 'utf8'))[2];
-/** Пререлиз (`0.1.0-alpha.1`) идёт в npm под тегом next: `npm i @kine/cli` его не поставит. */
+/** Пререлиз (`0.1.0-alpha.1`) идёт в npm под тегом next: `npm i @keyfill/cli` его не поставит. */
 const distTag = (version) => (SEMVER.exec(version)[4] ? 'next' : 'latest');
 const hasChangelog = (version) => fs.existsSync(changelog) && fs.readFileSync(changelog, 'utf8').includes(`## [${version}]`);
 

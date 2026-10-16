@@ -1,9 +1,9 @@
-# kine
+# keyfill
 
 **English** · [Русский](README.ru.md)
 
-kine renders broadcast graphics and interfaces from TSX without a browser. Its primary author is an
-AI agent, so besides pixels kine returns structure: a text dump of the scene tree, where every
+keyfill renders broadcast graphics and interfaces from TSX without a browser. Its primary author is an
+AI agent, so besides pixels keyfill returns structure: a text dump of the scene tree, where every
 value came from, and diagnostics that point to a line of TSX.
 
 ![Scoreboard: a timeline with a hold, a loop and a goal segment](assets/readme/scoreboard.strip.png)
@@ -28,7 +28,7 @@ export const LowerThird = component({
 });
 ```
 
-What an agent reads back (`kine dump examples/lower-third/scene.tsx`, abridged):
+What an agent reads back (`keyfill dump examples/lower-third/scene.tsx`, abridged):
 
 ```
 └─ LowerThird#1/panel  box row gap 16  (96,884 521×142)  bg color.surfaceLive · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  [must inside]
@@ -40,12 +40,12 @@ What an agent reads back (`kine dump examples/lower-third/scene.tsx`, abridged):
 
 > **Status: early alpha (0.1.0-alpha.1).** The API changes between minor versions. The Windows
 > build is tested by hand; Linux and macOS binaries come from CI. The design document, the built-in
-> reference (`kine docs`, `kine explain`) and diagnostics are in Russian for now.
+> reference (`keyfill docs`, `keyfill explain`) and diagnostics are in Russian for now.
 
 ## Why
 
 - **Checked, not eyeballed.** `must` assertions (`fit`, `inside` a safe area, `contrast`, `visible`)
-  are errors in development and fall back to declared `else` variants on air. `kine check` runs
+  are errors in development and fall back to declared `else` variants on air. `keyfill check` runs
   them on every frame of a scenario.
 - **Deterministic time.** Motion — transitions, presence, springs, timelines with markers, holds
   and loops — is computed in closed form at any `t`. A frame depends only on its moment; video
@@ -59,37 +59,37 @@ What an agent reads back (`kine dump examples/lower-third/scene.tsx`, abridged):
 ## Install
 
 ```bash
-npm i -D @kine/cli@next typescript
-npx kine new lower-third
-npx kine check lower-third
-npx kine test
+npm i -D @keyfill/cli@next typescript
+npx keyfill new lower-third
+npx keyfill check lower-third
+npx keyfill test
 npx tsc -p .
 ```
 
-`@kine/cli` installs the `kine` command, `@kine/core` (scene API, runtime, bundler), esbuild and
-the native binary for your platform (win32-x64, linux-x64, darwin-arm64, darwin-x64). `kine new`
-creates a scene from a template and, in a fresh project, `tsconfig.json`, `kine.config.ts` and the
-Inter font. `npx kine doctor` checks the environment. Video output needs `ffmpeg` in `PATH`.
+`@keyfill/cli` installs the `keyfill` command, `@keyfill/core` (scene API, runtime, bundler), esbuild and
+the native binary for your platform (win32-x64, linux-x64, darwin-arm64, darwin-x64). `keyfill new`
+creates a scene from a template and, in a fresh project, `tsconfig.json`, `keyfill.config.ts` and the
+Inter font. `npx keyfill doctor` checks the environment. Video output needs `ffmpeg` in `PATH`.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `kine render <entry> [-o out.png]` | One frame as PNG (transparent unless `--bg`) |
-| `kine dump <entry> [--path node] [--depth N]` | Scene tree: node addresses, geometry, styles, motion phases, diagnostics |
-| `kine inspect <entry> <node>` | One node: values, the layers and theme tokens they came from, motion channels, source |
-| `kine check <entry> [--t a..b]` | `must` and built-in rules on every frame of a range |
-| `kine filmstrip <entry> [--t a..b] [--n 8]` | N moments of a range in one image |
-| `kine video <entry> [-o out.mov]` | Video through ffmpeg: ProRes 4444, QuickTime Animation, VP9 with alpha, H.264, PNG frames |
-| `kine view [entry]` | Local web viewer: gallery of outputs, live scene with a time slider, dump and inspect |
-| `kine test [paths] [--update]` | `*.kine.test.ts` cases: clean frames, dump and pixel snapshots |
-| `kine perf <entry>` | Frame time by stage against the `1/fps` budget |
-| `kine schema <entry>` | Scene props, components, parts, commands, timeline markers |
-| `kine explain [rule]` · `kine docs [topic]` | Built-in reference, matching the binary version |
-| `kine new <name>` · `kine doctor` · `kine cache [clean]` | Scaffold, environment check, bundle cache |
+| `keyfill render <entry> [-o out.png]` | One frame as PNG (transparent unless `--bg`) |
+| `keyfill dump <entry> [--path node] [--depth N]` | Scene tree: node addresses, geometry, styles, motion phases, diagnostics |
+| `keyfill inspect <entry> <node>` | One node: values, the layers and theme tokens they came from, motion channels, source |
+| `keyfill check <entry> [--t a..b]` | `must` and built-in rules on every frame of a range |
+| `keyfill filmstrip <entry> [--t a..b] [--n 8]` | N moments of a range in one image |
+| `keyfill video <entry> [-o out.mov]` | Video through ffmpeg: ProRes 4444, QuickTime Animation, VP9 with alpha, H.264, PNG frames |
+| `keyfill view [entry]` | Local web viewer: gallery of outputs, live scene with a time slider, dump and inspect |
+| `keyfill test [paths] [--update]` | `*.keyfill.test.ts` cases: clean frames, dump and pixel snapshots |
+| `keyfill perf <entry>` | Frame time by stage against the `1/fps` budget |
+| `keyfill schema <entry>` | Scene props, components, parts, commands, timeline markers |
+| `keyfill explain [rule]` · `keyfill docs [topic]` | Built-in reference, matching the binary version |
+| `keyfill new <name>` · `keyfill doctor` · `keyfill cache [clean]` | Scaffold, environment check, bundle cache |
 
 An entry is a scene (`defineScene`), a cue script (`*.cues.ts`), a scene name from
-`kine.config.ts` or a directory with `scene.cues.ts` / `scene.tsx`. Time is one grammar
+`keyfill.config.ts` or a directory with `scene.cues.ts` / `scene.tsx`. Time is one grammar
 everywhere: `1.2`, `60f`, `settled`, `out+0.2`, `0..4`, segment names such as `in` or `loop`.
 
 ## Develop
@@ -101,7 +101,7 @@ npm install
 cargo build
 cargo test --workspace
 npm run typecheck
-cargo run -q -p kine-cli -- render examples/lower-third/scene.tsx --bg "#2b3340" --dump
+cargo run -q -p keyfill-cli -- render examples/lower-third/scene.tsx --bg "#2b3340" --dump
 ```
 
 `npm run npm:smoke` builds the npm packages from the release binary and installs them into a clean
@@ -111,18 +111,18 @@ then a `v<version>` tag runs `.github/workflows/release.yml`. Changes are listed
 
 | Path | Contents |
 |---|---|
-| `spec/kine.d.ts` | The public API contract (types) and `contract.test.tsx` — errors tsc must catch |
-| `packages/core` | `@kine/core`: signals, JSX runtime, primitives, bridge to the native core, `bundle.mjs` |
-| `crates/kine-js` | QuickJS host with deterministic time and randomness |
-| `crates/kine-core` | Scene tree, `look` with provenance, layout (Taffy), text (parley), motion, `must`, display list, dump |
-| `crates/kine-render` | CPU backend (vello_cpu) |
-| `crates/kine-cli` | Sessions, the operation layer, JSON output, bundling and cache, tests, video, viewer, `kine` |
+| `spec/keyfill.d.ts` | The public API contract (types) and `contract.test.tsx` — errors tsc must catch |
+| `packages/core` | `@keyfill/core`: signals, JSX runtime, primitives, bridge to the native core, `bundle.mjs` |
+| `crates/keyfill-js` | QuickJS host with deterministic time and randomness |
+| `crates/keyfill-core` | Scene tree, `look` with provenance, layout (Taffy), text (parley), motion, `must`, display list, dump |
+| `crates/keyfill-render` | CPU backend (vello_cpu) |
+| `crates/keyfill-cli` | Sessions, the operation layer, JSON output, bundling and cache, tests, video, viewer, `keyfill` |
 | `examples` | Lower third and scoreboard scenes, cue scripts, tests and golden dumps |
 | `DESIGN.md` | Design, principles and milestones (in Russian) |
 
 ## License
 
-kine is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your
+keyfill is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your
 option. Unless you state otherwise, any contribution you submit for inclusion is dual-licensed the
 same way, without additional terms. The Inter font in `assets/fonts/inter` is under the
 [SIL Open Font License](assets/fonts/inter/OFL.txt). The binary packages ship the licenses of

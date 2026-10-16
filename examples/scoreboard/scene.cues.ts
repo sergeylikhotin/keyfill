@@ -1,5 +1,5 @@
-// Эфирный сценарий табло: kine filmstrip examples/scoreboard/scene.cues.ts --n 16
-import { cues } from '@kine/core';
+// Эфирный сценарий табло: keyfill filmstrip examples/scoreboard/scene.cues.ts --n 16
+import { cues } from '@keyfill/core';
 import { Scoreboard } from './Scoreboard';
 import scene from './scene';
 

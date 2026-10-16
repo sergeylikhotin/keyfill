@@ -1,0 +1,13 @@
+[package]
+name = "keyfill-js"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "keyfill QuickJS host: runs scene bundles with deterministic time and randomness"
+
+[dependencies]
+rquickjs.workspace = true
+anyhow.workspace = true

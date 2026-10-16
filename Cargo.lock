@@ -390,19 +390,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "kine-cli"
+name = "keyfill-cli"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
- "kine-core",
- "kine-js",
- "kine-render",
+ "keyfill-core",
+ "keyfill-js",
+ "keyfill-render",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "kine-core"
+name = "keyfill-core"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
@@ -414,7 +414,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kine-js"
+name = "keyfill-js"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
@@ -422,11 +422,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "kine-render"
+name = "keyfill-render"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
- "kine-core",
+ "keyfill-core",
  "parley",
  "png",
  "vello_cpu",

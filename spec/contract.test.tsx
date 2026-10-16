@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, clock, component, count, cues, defineConfig, defineScene, hex, stagger, test, timeline, tween } from '@kine/core';
+import { Box, Text, clock, component, count, cues, defineConfig, defineScene, hex, stagger, test, timeline, tween } from '@keyfill/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 

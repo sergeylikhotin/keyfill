@@ -1,4 +1,4 @@
-import { defineTheme, hex } from '@kine/core';
+import { defineTheme, hex } from '@keyfill/core';
 
 export const theme = defineTheme({
   color: {

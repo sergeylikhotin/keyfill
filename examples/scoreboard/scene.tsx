@@ -1,4 +1,4 @@
-import { defineScene, signal } from '@kine/core';
+import { defineScene, signal } from '@keyfill/core';
 import interRegular from '../../assets/fonts/inter/Inter-Regular.otf';
 import interSemiBold from '../../assets/fonts/inter/Inter-SemiBold.otf';
 import { Scoreboard } from './Scoreboard';

@@ -22,16 +22,16 @@ export type Cmd =
   | { op: 'motion'; inst: string; cmd: string; marker?: string; name?: string; data?: unknown }
   /** Схема пропсов сцены и ошибки входных данных из CLI. */
   | { op: 'schema'; props: PropInfo[]; errors: string[] }
-  /** Описание компонента для `kine schema` и пульта. */
+  /** Описание компонента для `keyfill schema` и пульта. */
   | { op: 'component'; name: string; props: PropInfo[]; parts: string[]; commands: { name: string; params: PropInfo[] }[] }
   /** Случаи файла тестов без сцен и пропсов: их ядро монтирует по одному. */
   | { op: 'tests'; items: Record<string, unknown>[] }
-  /** Значения kine.config.ts. */
+  /** Значения keyfill.config.ts. */
   | { op: 'config'; value: Record<string, unknown> };
 
 export type PropInfo = { name: string; type: string; default?: unknown; required?: boolean };
 
-declare const __kine_emit: (json: string) => void;
+declare const __keyfill_emit: (json: string) => void;
 
 let queue: Cmd[] = [];
 let nextId = 1;
@@ -58,6 +58,6 @@ export const host = {
     if (!queue.length) return;
     const q = queue;
     queue = [];
-    __kine_emit(JSON.stringify(q));
+    __keyfill_emit(JSON.stringify(q));
   },
 };

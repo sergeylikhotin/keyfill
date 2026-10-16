@@ -1,5 +1,5 @@
-// Сценарий для рендера в файл и проверок: kine filmstrip examples/lower-third/scene.cues.ts
-import { cues } from '@kine/core';
+// Сценарий для рендера в файл и проверок: keyfill filmstrip examples/lower-third/scene.cues.ts
+import { cues } from '@keyfill/core';
 import { LowerThird } from './LowerThird';
 import scene from './scene';
 
