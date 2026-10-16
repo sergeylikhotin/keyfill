@@ -3,6 +3,10 @@ name = "kine-cli"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "kine command line: render, dump, inspect, check, test, video, view"
 
 [[bin]]
 name = "kine"

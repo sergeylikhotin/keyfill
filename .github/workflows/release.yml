@@ -30,6 +30,9 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - name: тег совпадает с версией
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/version.mjs --check ${{ github.ref_name }}
       - name: fontconfig (шрифты системы для parley)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
@@ -48,20 +51,27 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # npm provenance: пакет связан с этим workflow и коммитом
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: dist/npm
           merge-multiple: true
       # Сначала пакеты бинарей и @kine/core, последним — @kine/cli, который на них ссылается.
+      # Пререлиз (0.1.0-alpha.1) уходит под тегом next, обычная версия — под latest.
       - name: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -e
-          for f in dist/kine-cli-*-*.tgz dist/kine-core-*.tgz; do npm publish "$f" --access public; done
-          npm publish dist/kine-cli-[0-9]*.tgz --access public
+          node scripts/version.mjs --check ${{ github.ref_name }}
+          tag=$(node scripts/version.mjs --dist-tag)
+          for f in dist/npm/kine-cli-win32-*.tgz dist/npm/kine-cli-linux-*.tgz dist/npm/kine-cli-darwin-*.tgz dist/npm/kine-core-*.tgz; do npm publish "$f" --access public --tag "$tag" --provenance; done
+          npm publish dist/npm/kine-cli-[0-9]*.tgz --access public --tag "$tag" --provenance

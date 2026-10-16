@@ -3,6 +3,10 @@ name = "kine-core"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+description = "kine scene core: tree, look with provenance, layout, text, motion, must/else, display list, dump"
 
 [dependencies]
 taffy.workspace = true

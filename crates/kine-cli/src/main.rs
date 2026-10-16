@@ -78,6 +78,8 @@ now, каталог вывода out и именованные сцены; фл�
 
 Бандл кэшируется в .kine/cache (KINE_CACHE_DIR — другой каталог, KINE_NO_CACHE=1 — без кэша).
 
+kine --version — версия.
+
 Коды выхода: 0 успех, 1 ошибки в диагностиках или упавшие тесты, 2 неверный вызов, 3 сборка,
 4 исключение JS, 5 сбой kine.";
 
@@ -95,7 +97,7 @@ const VALUED: &[&str] = &[
     "-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile", "--codec", "--dir", "--port",
     "--props", "--set", "--path", "--depth", "--name", "--template",
 ];
-const SWITCHES: &[&str] = &["--dump", "--json", "--update", "-h", "--help"];
+const SWITCHES: &[&str] = &["--dump", "--json", "--update", "-h", "--help", "-V", "--version"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -414,6 +416,10 @@ fn bad_call(e: anyhow::Error) -> anyhow::Error {
 
 fn run(raw: &[String]) -> Result<Option<Done>> {
     let args = Args::parse(raw).map_err(bad_call)?;
+    if args.flag("--version") || args.flag("-V") {
+        out(&format!("kine {} ({}-{})\n", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH));
+        return Ok(None);
+    }
     let Some(cmd) = args.rest.first().map(String::as_str) else {
         out(&format!("{USAGE}\n"));
         return Ok(None);

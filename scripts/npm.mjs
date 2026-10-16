@@ -43,8 +43,21 @@ const write = (file, text) => {
   fs.writeFileSync(file, text);
 };
 const json = (v) => `${JSON.stringify(v, null, 2)}\n`;
-// repository и homepage добавить, когда у репозитория появится публичный адрес.
-const common = { version, license };
+const repo = 'https://github.com/sergeylikhotin/kine';
+const common = {
+  version,
+  license,
+  homepage: repo,
+  repository: { type: 'git', url: `git+${repo}.git` },
+  bugs: { url: `${repo}/issues` },
+  keywords: ['kine', 'broadcast', 'graphics', 'tsx', 'render', 'motion', 'overlay', 'ai-agent'],
+};
+
+/** README пакета и лицензии репозитория. */
+function docs(dir, lines) {
+  write(path.join(dir, 'README.md'), `${[...lines, '', 'License: MIT OR Apache-2.0.'].join('\n')}\n`);
+  for (const f of ['LICENSE-MIT', 'LICENSE-APACHE']) fs.copyFileSync(path.join(root, f), path.join(dir, f));
+}
 
 // ─── Типы: ambient-модули спеки → файлы-модули ──────────────────────────────
 
@@ -97,7 +110,7 @@ function core() {
     json({
       name: '@kine/core',
       ...common,
-      description: 'kine: API сцен (TSX), рантайм и бандлер. Команда kine — в @kine/cli.',
+      description: 'kine scene API for TSX: components, look, layout, motion, tests, config. The kine command is in @kine/cli.',
       type: 'module',
       types: './index.d.ts',
       exports: {
@@ -106,11 +119,18 @@ function core() {
         './jsx-dev-runtime': entry('jsx-dev-runtime'),
         './package.json': './package.json',
       },
-      files: ['src', 'bundle.mjs', '*.d.ts'],
+      files: ['src', 'bundle.mjs', '*.d.ts', 'LICENSE-*'],
       dependencies: { esbuild },
     }),
   );
-  write(path.join(dir, 'README.md'), `# @kine/core\n\nAPI сцен kine: \`defineScene\`, \`component\`, примитивы, движение, \`test\`, \`defineConfig\`. Ставится вместе с командой: \`npm i -D @kine/cli\`. Справка — \`npx kine docs\`.\n`);
+  docs(dir, [
+    '# @kine/core',
+    '',
+    `Scene API for [kine](${repo}): \`defineScene\`, \`component\`, primitives, \`look\`, layout, motion, \`test\`, \`defineConfig\`,`,
+    'plus the runtime and the bundler kine runs scenes with.',
+    '',
+    'Install it together with the command: `npm i -D @kine/cli`. Built-in reference: `npx kine docs`.',
+  ]);
   return dir;
 }
 
@@ -123,15 +143,67 @@ function cli() {
     json({
       name: '@kine/cli',
       ...common,
-      description: 'kine: рендер TSX-сцен эфирной графики и интерфейсов без браузера.',
+      description: 'kine: render broadcast graphics and UI from TSX without a browser, built for AI agents.',
       bin: { kine: 'bin/kine.js' },
-      files: ['bin'],
+      files: ['bin', 'LICENSE-*'],
       dependencies: { '@kine/core': version },
       optionalDependencies: Object.fromEntries(TARGETS.map((t) => [`@kine/cli-${t}`, version])),
     }),
   );
-  write(path.join(dir, 'README.md'), `# @kine/cli\n\n\`npm i -D @kine/cli\`, затем \`npx kine new lower-third\`, \`npx kine check lower-third\`, \`npx kine test\`. Окружение — \`npx kine doctor\`, справка — \`npx kine docs\`.\n`);
+  docs(dir, [
+    '# @kine/cli',
+    '',
+    `The \`kine\` command: renders TSX scenes of broadcast graphics and interfaces without a browser. See [kine](${repo}).`,
+    '',
+    '```bash',
+    'npm i -D @kine/cli typescript',
+    'npx kine new lower-third',
+    'npx kine check lower-third',
+    'npx kine test',
+    '```',
+    '',
+    'Environment check: `npx kine doctor`. Reference: `npx kine docs`. The native binary comes from a platform package',
+    `(${TARGETS.map((t) => `\`@kine/cli-${t}\``).join(', ')}), picked by npm for your OS and CPU.`,
+  ]);
   return dir;
+}
+
+/**
+ * Лицензии крейтов, вкомпилированных в бинарь: MIT, Apache-2.0 и остальные требуют поставлять
+ * их тексты вместе с бинарём. Список — `cargo tree` для kine-cli под платформу сборки, тексты —
+ * файлы LICENSE / COPYING / NOTICE из исходников крейтов (и QuickJS внутри rquickjs-sys).
+ */
+function thirdParty() {
+  const tree = execSync('cargo tree -p kine-cli -e normal --prefix none --format "{p}"', { cwd: root, encoding: 'utf8' });
+  const used = new Set(tree.split(/\r?\n/).filter((l) => l && !l.includes('(')).map((l) => l.replace(/ \(\*\)$/, '').trim()));
+  const meta = JSON.parse(execSync('cargo metadata --format-version 1', { cwd: root, encoding: 'utf8', maxBuffer: 64 << 20 }));
+  const isText = (f) => /^(licen[cs]e|copying|notice)/i.test(f);
+  const crates = meta.packages.filter((p) => used.has(`${p.name} v${p.version}`)).sort((a, b) => a.name.localeCompare(b.name));
+  // Одинаковые тексты (Apache-2.0 у десятков крейтов) — один раз, со списком крейтов.
+  const texts = new Map();
+  const bare = [];
+  for (const p of crates) {
+    const dir = path.dirname(p.manifest_path);
+    const files = fs.readdirSync(dir).filter(isText).map((f) => path.join(dir, f));
+    for (const sub of ['quickjs', 'quickjs-ng']) {
+      const d = path.join(dir, sub);
+      if (fs.existsSync(d)) files.push(...fs.readdirSync(d).filter(isText).map((f) => path.join(d, f)));
+    }
+    if (!files.length) bare.push(p);
+    for (const f of files) {
+      const text = fs.readFileSync(f, 'utf8').replace(/\r\n/g, '\n').trim();
+      const key = text.replace(/\s+/g, ' ');
+      if (!texts.has(key)) texts.set(key, { text, users: [] });
+      texts.get(key).users.push(`${p.name} ${p.version}${f.includes('quickjs') ? ' (QuickJS)' : ''}`);
+    }
+  }
+  const out = [`Third-party software in the kine ${version} binary (${target})`, ''];
+  for (const p of crates) out.push(`${p.name} ${p.version} — ${p.license ?? 'see repository'}${p.repository ? ` — ${p.repository}` : ''}`);
+  if (bare.length) {
+    out.push('', `Crates without a license file (texts of their SPDX licenses: LICENSE-MIT, LICENSE-APACHE in this package): ${bare.map((p) => p.name).join(', ')}`);
+  }
+  for (const { text, users } of texts.values()) out.push('', '='.repeat(78), `Used by: ${users.join(', ')}`, '', text);
+  return `${out.join('\n')}\n`;
 }
 
 function platform() {
@@ -143,8 +215,10 @@ function platform() {
   if (targetOs !== 'win32') fs.chmodSync(path.join(dir, 'bin', exe), 0o755);
   write(
     path.join(dir, 'package.json'),
-    json({ name: `@kine/cli-${target}`, ...common, description: `Бинарь kine для ${target}; ставится через @kine/cli.`, os: [targetOs], cpu: [targetCpu], files: ['bin'] }),
+    json({ name: `@kine/cli-${target}`, ...common, description: `kine native binary for ${target}; installed by @kine/cli.`, os: [targetOs], cpu: [targetCpu], files: ['bin', 'LICENSE-*', 'THIRD-PARTY-LICENSES.txt'] }),
   );
+  write(path.join(dir, 'THIRD-PARTY-LICENSES.txt'), thirdParty());
+  docs(dir, [`# @kine/cli-${target}`, '', `Native [kine](${repo}) binary for ${target}. Install \`@kine/cli\` instead: it picks this package for your platform.`]);
   return dir;
 }
 
@@ -223,6 +297,8 @@ fs.mkdirSync(out, { recursive: true });
 const dirs = [core(), cli(), platform()];
 console.log(`kine ${version}: ${dirs.map((d) => path.relative(root, d)).join(', ')}`);
 if (flag('--pack') || flag('--smoke')) {
+  // Пакеты прошлых версий не должны попасть в публикацию вместе с новыми.
+  for (const f of fs.readdirSync(out)) if (f.endsWith('.tgz')) fs.rmSync(path.join(out, f));
   const tarballs = dirs.map(pack);
   console.log(tarballs.map((t) => `  ${path.relative(root, t)}`).join('\n'));
   if (flag('--smoke')) smoke(tarballs);

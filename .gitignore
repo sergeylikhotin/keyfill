@@ -8,3 +8,4 @@ out/
 .kine/
 # Снапшоты kine test — часть репозитория.
 !**/__snapshots__/**/*.png
+!assets/readme/*.png
