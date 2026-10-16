@@ -1,18 +1,22 @@
 //! Конвейер сцены: TSX → esbuild → QuickJS → дерево → кадр во времени.
 
+pub mod bundle;
 pub mod filmstrip;
+pub mod ops;
+pub mod output;
 pub mod session;
+pub mod sourcemap;
 pub mod time;
 pub mod video;
 pub mod view;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use kine_core::{EvalOptions, Frame, Scene};
 use kine_js::{LogLine, RunOptions};
 
+pub use bundle::{Bundle, bundle};
 pub use session::Session;
 
 /// Класс ошибки для кода выхода CLI: 2 — неверный вызов, 3 — сборка. Исключение JS
@@ -34,6 +38,16 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
+/// Помечает ошибку как неверный вызов, если она ещё не классифицирована: исключение JS
+/// и сборка сохраняют свой класс (иначе в сообщении появился бы лишний префикс).
+pub fn usage(e: anyhow::Error) -> anyhow::Error {
+    if e.downcast_ref::<kine_js::JsException>().is_some() || e.downcast_ref::<Failure>().is_some() {
+        e
+    } else {
+        e.context(Failure::Usage)
+    }
+}
+
 /// Корень репозитория kine: там лежат `packages/core` и `node_modules/esbuild`.
 pub fn kine_home() -> PathBuf {
     if let Some(home) = std::env::var_os("KINE_HOME") {
@@ -42,33 +56,8 @@ pub fn kine_home() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-fn slash(p: &Path) -> String {
+pub(crate) fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
-}
-
-/// Собирает сцену в один IIFE-скрипт через `packages/core/bundle.mjs`: dev-JSX с местами
-/// в исходнике, `@kine/core` из репозитория, импорты шрифтов как абсолютные пути к файлам.
-/// Точка входа — сцена (`defineScene`) или сценарий (`cues`).
-pub fn bundle(entry: &Path) -> Result<String> {
-    let home = std::path::absolute(kine_home())?;
-    if !home.join("node_modules/esbuild").exists() {
-        return Err(anyhow::anyhow!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home)).context(Failure::Build));
-    }
-    let entry = std::path::absolute(entry)?;
-    if !entry.exists() {
-        return Err(anyhow::anyhow!("сцена {} не найдена", slash(&entry)).context(Failure::Usage));
-    }
-    let out = Command::new("node")
-        .arg(home.join("packages/core/bundle.mjs"))
-        .arg(&entry)
-        .stdin(Stdio::null())
-        .output()
-        .context("не удалось запустить node для сборки сцены")?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
-        return Err(anyhow::anyhow!("{stderr}").context(Failure::Build));
-    }
-    Ok(String::from_utf8(out.stdout)?)
 }
 
 pub struct Rendered {

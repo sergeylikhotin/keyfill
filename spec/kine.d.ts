@@ -438,10 +438,17 @@ declare module '@kine/core' {
     readonly safe?: { readonly action?: number; readonly title?: number };
   }
 
-  export interface SceneDef {
+  export interface SceneDef<S extends PropSchema = {}> {
     readonly stage: StageConfig;
     readonly fps: number;
-    readonly root: () => KineElement;
+    /**
+     * Данные сцены: то, что меняется от выпуска к выпуску (имя, счёт, цвета команд).
+     * В CLI — `--props data.json` и `--set name=Иван`, в сценарии — `at(t, 'update', { ... })`.
+     */
+    readonly props?: S;
+    /** Значения по умолчанию; пропс без значения обязателен. */
+    readonly defaults?: NoInfer<Partial<InferProps<S>>>;
+    readonly root: (props: PropAccessors<InferProps<S>>) => KineElement;
     /** Файлы шрифтов из импортов; путь разрешает бандлер. Семейства берутся из самих файлов. */
     readonly fonts?: readonly FontFile[];
     /** Системные шрифты; для детерминированного рендера выключай и подключай файлы. По умолчанию true. */
@@ -449,14 +456,14 @@ declare module '@kine/core' {
     /** Таймлайны компонентов из *.motion.ts: у каждого экземпляра компонента — своё воспроизведение. */
     readonly timelines?: readonly Timeline<any>[];
   }
-  export function defineScene(def: SceneDef): SceneDef;
+  export function defineScene<const S extends PropSchema = {}>(def: SceneDef<S>): SceneDef<S>;
 
   // ─── Сценарий (*.cues.ts) ─────────────────────────────────────────────────
 
   const cueBrand: unique symbol;
   export type Cue = { readonly [cueBrand]: true };
 
-  export interface CueBuilder {
+  export interface CueBuilder<P = {}> {
     /**
      * play — узлы с presence начинают in, таймлайны — воспроизведение; stop — out, сцена снимается
      * после последнего out; next — снять остановку таймлайна (hold или цикл). С компонентом —
@@ -465,6 +472,8 @@ declare module '@kine/core' {
     at(t: number, cmd: 'play' | 'stop' | 'next', target?: Component<any, any, any>): Cue;
     /** Новые значения пропсов всех экземпляров компонента; изменения анимируются через transition. */
     at<C extends Component<any, any, any>>(t: number, cmd: 'update', target: C, props: Partial<PropsOf<C>>): Cue;
+    /** Новые значения пропсов самой сцены (`defineScene({ props })`); у сцены без пропсов — ошибка. */
+    at(t: number, cmd: 'update', props: [keyof P] extends [never] ? never : Partial<P>): Cue;
     /** Команда компонента с параметрами, на всех его экземплярах. */
     at<C extends Component<any, any, any>, K extends keyof CommandsOf<C> & string>(
       t: number,
@@ -483,7 +492,7 @@ declare module '@kine/core' {
    * Команда применяется на границе кадра (время округляется вверх до кадра).
    * Без сценария сцена получает play в момент 0.
    */
-  export function cues(scene: SceneDef, build: (b: CueBuilder) => readonly Cue[]): Cues;
+  export function cues<S extends PropSchema>(scene: SceneDef<S>, build: (b: CueBuilder<InferProps<S>>) => readonly Cue[]): Cues;
 
   export const source: {
     json<T>(path: string, o?: { watch?: boolean }): Accessor<T | undefined>;

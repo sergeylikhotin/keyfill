@@ -19,7 +19,13 @@ export type Cmd =
   | { op: 'cues'; items: { t: number; cmd: string; target?: string; props?: Record<string, unknown>; command?: string }[] }
   | { op: 'timelines'; items: readonly unknown[] }
   /** play / next / stop / emit от команды компонента; ядро исполнит в момент команды сценария. */
-  | { op: 'motion'; inst: string; cmd: string; marker?: string; name?: string; data?: unknown };
+  | { op: 'motion'; inst: string; cmd: string; marker?: string; name?: string; data?: unknown }
+  /** Схема пропсов сцены и ошибки входных данных из CLI. */
+  | { op: 'schema'; props: PropInfo[]; errors: string[] }
+  /** Описание компонента для `kine schema` и пульта. */
+  | { op: 'component'; name: string; props: PropInfo[]; parts: string[]; commands: { name: string; params: PropInfo[] }[] };
+
+export type PropInfo = { name: string; type: string; default?: unknown; required?: boolean };
 
 declare const __kine_emit: (json: string) => void;
 

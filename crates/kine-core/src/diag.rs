@@ -22,6 +22,9 @@ pub struct Diagnostic {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Подробности для машины: размеры, строка кода, кадры.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
 }
 
 impl fmt::Display for Diagnostic {
@@ -54,6 +57,7 @@ impl Diagnostics {
             source: source.map(Into::into),
             message: message.into(),
             hint: hint.map(Into::into),
+            detail: None,
         });
     }
 }

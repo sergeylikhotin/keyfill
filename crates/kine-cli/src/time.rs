@@ -4,11 +4,13 @@
 //! - `settled` — кадр «в эфире», когда закончились все `in` первого play;
 //! - `out`, `out+0.2`, `stats-5f` — маркер таймлайна со смещением: момент, когда воспроизведение
 //!   впервые проходит маркер;
-//! - `0..4`, `settled..out+0.5` — диапазон (раскадровка, позже `check`).
+//! - `0..4`, `settled..out+0.5` — диапазон (`check`, `filmstrip`, `video`);
+//! - там, где ждут диапазон, имя без смещения — сегмент: `in` (от первого play до settled),
+//!   маркер таймлайна (до следующего маркера), `out` без такого маркера (от первого stop до конца).
 //!
 //! Разбор отделён от вычисления: момент `settled` и маркеры известны только сессии.
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 use crate::Session;
 
@@ -109,6 +111,45 @@ pub fn resolve(m: &Moment, session: &mut Session) -> Result<f64> {
         bail!("момент {t:.3} с раньше начала сцены");
     }
     Ok(t)
+}
+
+/// Сегмент по имени: `in`, маркер таймлайна или `out`.
+pub fn segment(name: &str, session: &mut Session) -> Result<(f64, f64)> {
+    let markers: Vec<Vec<(String, f64)>> = session.scene.timelines.iter().map(crate::ops::timeline_markers).collect();
+    // Следующий маркер того же таймлайна и длина сегмента по времени таймлайна.
+    let next = markers.iter().find_map(|ms| {
+        let i = ms.iter().position(|(n, _)| n == name)?;
+        Some(ms.get(i + 1).map(|(n, tau)| (n.clone(), tau - ms[i].1)))
+    });
+    if let Some(next) = next {
+        let start = session.marker_time(name)?;
+        let end = match next {
+            // Конец — момент, когда воспроизведение проходит следующий маркер. Сегмент команды
+            // (`ctx.play(marker)`) до него не доходит, а возвращается назад: тогда берётся длина
+            // сегмента по таймлайну.
+            Some((n, len)) => session.marker_time(&n).unwrap_or(start + len),
+            None => session.end_time()?,
+        };
+        return Ok((start, end));
+    }
+    let first = |cmd: &str| session.cues().iter().find(|c| c.cmd == cmd).map(|c| c.t);
+    match name {
+        "in" => {
+            let play = first("play").unwrap_or(0.0);
+            Ok((play, session.settled_time()?))
+        }
+        "out" => {
+            let stop = first("stop").context("сегмент out: в сценарии нет stop; добавь --cue \"<время> stop\"")?;
+            Ok((stop, session.end_time()?))
+        }
+        _ => {
+            let mut known = vec!["in".to_string(), "out".to_string()];
+            known.extend(markers.iter().flatten().map(|(n, _)| n.clone()));
+            let mut seen = std::collections::HashSet::new();
+            known.retain(|n| seen.insert(n.clone()));
+            bail!("нет сегмента {name:?}; есть: {}", known.join(", "))
+        }
+    }
 }
 
 /// Время команды сценария: только абсолютное, секунды или кадры. Кадры переводятся

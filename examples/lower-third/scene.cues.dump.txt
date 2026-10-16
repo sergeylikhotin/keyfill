@@ -5,7 +5,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,884 521×142)  bg color.surfaceLive · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  motion opacity×0 · сдвиг -40,0  [in 0%]  [must inside]
    ├─ LowerThird#1/dot  box  (122,947 16×16)  bg color.accent · r 8  [loop]
    └─ LowerThird#1/panel/box[1]  box column gap 4  (154,902 437×106)  [in 0%]
-      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  motion opacity×0 · сдвиг 0,10  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  motion opacity×0 · сдвиг 0,10  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (154,974 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted  motion opacity×0 · сдвиг 0,10
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -20,7 +20,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,884 521×142)  bg color.surfaceLive · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  motion opacity×0.5 · сдвиг -12,0  [in 22%]  [must inside]
    ├─ LowerThird#1/dot  box  (122,947 16×16)  bg color.accent · r 8  motion opacity×0.97  [loop]
    └─ LowerThird#1/panel/box[1]  box column gap 4  (154,902 437×106)  [in 26%]
-      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  motion opacity×0.33 · сдвиг 0,5.12  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  motion opacity×0.33 · сдвиг 0,5.12  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (154,974 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted  motion opacity×0.01 · сдвиг 0,8.91
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -35,7 +35,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,884 521×142)  bg color.surfaceLive · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  [must inside]
    ├─ LowerThird#1/dot  box  (122,947 16×16)  bg color.accent · r 8  motion opacity×0.47  [loop]
    └─ LowerThird#1/panel/box[1]  box column gap 4  (154,902 437×106)
-      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (154,974 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -50,7 +50,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,888 517×138)  bg color.surface · r 12 · pad 16,24  [transition background 25%]  [must inside]
    ├─ LowerThird#1/dot  box  (120,949 16×16)  bg color.accent · r 8  motion opacity×0.35  [out 50%]
    └─ LowerThird#1/panel/box[1]  box column gap 4  (152,904 437×106)
-      ├─ LowerThird#1/title  text  (152,904 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (152,904 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (152,976 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -65,7 +65,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,888 485×138)  bg color.surface · r 12 · pad 16,24  [transition background 75%]  [must inside]
    ├─ LowerThird#1/dot  box  (hidden: when=false)
    └─ LowerThird#1/panel/box[1]  box column gap 4  (120,904 437×106)
-      ├─ LowerThird#1/title  text  (120,904 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (120,904 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (120,976 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -75,12 +75,12 @@ info must.contrast LowerThird#1/title: контраст не проверить:
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
 fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
-time: t=2.6s · кадр 130 · сцена playing · play@0, update@1.5 LowerThird, update@2.5 LowerThird
+time: t=2.6s · кадр 130 · сцена playing · play@0, update@1.5 LowerThird, update@2.5
 events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,888 873×138)  bg color.surface · r 12 · pad 16,24  [must inside]
    ├─ LowerThird#1/dot  box  (hidden: when=false)
    └─ LowerThird#1/panel/box[1]  box column gap 4  (120,904 825×106)
-      ├─ LowerThird#1/title  text  (120,904 825×68)  "Анна Смирнова-Ковалевская"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (120,904 825×68)  "Анна Смирнова-Ковалевская"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (120,976 825×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -90,12 +90,12 @@ info must.contrast LowerThird#1/title: контраст не проверить:
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
 fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
-time: t=3.6s · кадр 180 · сцена stopping · play@0, update@1.5 LowerThird, update@2.5 LowerThird, stop@3.5
+time: t=3.6s · кадр 180 · сцена stopping · play@0, update@1.5 LowerThird, update@2.5, stop@3.5
 events: 0s scene state:playing · 3.5s scene state:stopping
 └─ LowerThird#1/panel  box row gap 16  (96,888 873×138)  bg color.surface · r 12 · pad 16,24  motion opacity×0.67  [out 40%]  [must inside]
    ├─ LowerThird#1/dot  box  (hidden: when=false)
    └─ LowerThird#1/panel/box[1]  box column gap 4  (120,904 825×106)
-      ├─ LowerThird#1/title  text  (120,904 825×68)  "Анна Смирнова-Ковалевская"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (120,904 825×68)  "Анна Смирнова-Ковалевская"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (120,976 825×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info
@@ -105,11 +105,11 @@ info must.contrast LowerThird#1/title: контраст не проверить:
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
 fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
-time: t=3.76s · кадр 188 · сцена removed · play@0, update@1.5 LowerThird, update@2.5 LowerThird, stop@3.5
+time: t=3.76s · кадр 188 · сцена removed · play@0, update@1.5 LowerThird, update@2.5, stop@3.5
 events: 0s scene state:playing · 3.5s scene state:stopping · 3.75s scene state:removed
 сцена снята: в кадре ничего нет
 └─ LowerThird#1/panel  box row gap 16  (сцена снята)  [must inside]
    ├─ LowerThird#1/dot  box  (hidden: when=false)
    └─ LowerThird#1/panel/box[1]  box column gap 4  (сцена снята)
-      ├─ LowerThird#1/title  text  (сцена снята)  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (сцена снята)  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (сцена снята)

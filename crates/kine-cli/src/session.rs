@@ -8,14 +8,17 @@ use kine_core::motion::Clock;
 use kine_core::scene::Cue;
 use kine_core::text::{RunSpec, TextBlock, TextSource};
 use kine_core::{EvalOptions, Frame, MotionState, Scene, TextEngine, evaluate_at};
-use kine_js::{JsHost, LogLine, RunOptions};
+use kine_js::{JsException, JsHost, LogLine, RunOptions};
 
+use crate::sourcemap::SourceMap;
 use crate::time::{self, Offset};
+use crate::{Bundle, Failure};
 
 const COMMANDS: &[&str] = &["play", "stop", "next", "update", "invoke"];
 
 pub struct Session {
     js: JsHost,
+    map: Option<SourceMap>,
     pub scene: Scene,
     engine: TextEngine,
     pub motion: MotionState,
@@ -30,11 +33,15 @@ pub struct Session {
 
 impl Session {
     /// Запускает бандл сцены. `extra` — команды из `--cue`. Без сценария сцена получает play в 0.
-    pub fn open(source: &str, opts: &RunOptions, extra: &[CueArg]) -> Result<Session> {
-        let (js, first) = JsHost::start(source, opts)?;
+    pub fn open(bundle: &Bundle, opts: &RunOptions, extra: &[CueArg]) -> Result<Session> {
+        let (js, first) = JsHost::start(&bundle.code, opts).map_err(|e| map_js(bundle.map.as_ref(), e))?;
         let mut scene = Scene::default();
         for batch in &first.batches {
             scene.apply_batch(batch)?;
+        }
+        if !scene.props_errors.is_empty() {
+            let msg = format!("пропсы сцены:\n  {}", scene.props_errors.join("\n  "));
+            return Err(anyhow::anyhow!(msg).context(Failure::Usage));
         }
         let fps = scene.stage.as_ref().map(|s| s.fps as f64).context("в сцене нет stage: бандл должен вызвать mount(scene)")?;
         if fps <= 0.0 {
@@ -51,7 +58,7 @@ impl Session {
             cues.insert(0, Cue { t: 0.0, cmd: "play".into(), target: None, props: None, command: None });
         }
         for cue in &mut cues {
-            let usage = |msg: String| Err(anyhow::anyhow!(msg).context(crate::Failure::Usage));
+            let usage = |msg: String| Err(anyhow::anyhow!(msg).context(Failure::Usage));
             if !COMMANDS.contains(&cue.cmd.as_str()) {
                 return usage(format!("команда сценария {:?} не поддерживается; есть {}", cue.cmd, COMMANDS.join(", ")));
             }
@@ -63,7 +70,7 @@ impl Session {
             cue.t = snap(cue.t, fps);
         }
         cues.sort_by(|a, b| a.t.total_cmp(&b.t));
-        Ok(Session { js, scene, engine, motion, cues, next: 0, logs: first.logs, fps, now: 0.0, settled: None })
+        Ok(Session { js, map: bundle.map.clone(), scene, engine, motion, cues, next: 0, logs: first.logs, fps, now: 0.0, settled: None })
     }
 
     pub fn cues(&self) -> &[Cue] {
@@ -123,7 +130,7 @@ impl Session {
     /// Вызов JS на команде сценария: пакеты применяются, изменения анимируются, а команды
     /// движения из `ctx` исполняются в тот же момент.
     fn call_js(&mut self, name: &str, arg: &str, cue: &Cue) -> Result<()> {
-        let out = self.js.call(name, arg).with_context(|| format!("команда {}", cue.label()))?;
+        let out = self.js.call(name, arg).map_err(|e| map_js(self.map.as_ref(), e)).with_context(|| format!("команда {}", cue.label()))?;
         self.logs.extend(out.logs);
         for batch in &out.batches {
             self.scene.apply_batch(batch)?;
@@ -185,7 +192,7 @@ impl Session {
     /// Конец сценария: последняя команда и всё, что она запустила.
     pub fn end_time(&mut self) -> Result<f64> {
         let last = self.cues.last().map_or(0.0, |c| c.t);
-        self.advance(last)?;
+        self.advance(last.max(self.now))?;
         let settled = self.motion.settled_at.unwrap_or(0.0);
         Ok(self.snap(self.motion.horizon.max(last).max(settled)))
     }
@@ -209,6 +216,14 @@ impl Session {
         let mut block = self.engine.build(TextSource { runs: vec![RunSpec { text: text.into(), style: None }], look, fit: None });
         block.fit_to(&mut self.engine, None);
         Some(block)
+    }
+}
+
+/// Стек исключения JS через sourcemap: строки TSX вместо строк бандла.
+fn map_js(map: Option<&SourceMap>, e: anyhow::Error) -> anyhow::Error {
+    match (map, e.downcast_ref::<JsException>()) {
+        (Some(map), Some(ex)) => anyhow::Error::new(JsException(map.rewrite_stack(&ex.0))),
+        _ => e,
     }
 }
 

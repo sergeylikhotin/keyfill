@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::diag::Diagnostic;
@@ -53,6 +53,43 @@ pub enum Cmd {
     Timelines { items: Vec<Value> },
     /// play / next / stop / emit от команды компонента.
     Motion(MotionCmd),
+    /// Схема пропсов сцены и ошибки входных данных (`--props`, `--set`).
+    Schema {
+        props: Vec<PropInfo>,
+        #[serde(default)]
+        errors: Vec<String>,
+    },
+    /// Описание компонента: пропсы, части, команды.
+    Component(ComponentInfo),
+}
+
+/// Пропс сцены, компонента или параметр команды.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PropInfo {
+    pub name: String,
+    /// `string`, `number`, `boolean` или `json` (тип из `prop<T>()`).
+    #[serde(rename = "type")]
+    pub ty: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct CommandInfo {
+    pub name: String,
+    pub params: Vec<PropInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ComponentInfo {
+    pub name: String,
+    pub props: Vec<PropInfo>,
+    #[serde(default)]
+    pub parts: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
 }
 
 /// Команда движения, которую отправила команда компонента; ядро исполняет её в момент команды сценария.
@@ -194,6 +231,11 @@ pub struct Scene {
     pub timelines: Vec<Value>,
     /// Команды движения от JS, ещё не исполненные: их забирает сессия после каждого пакета.
     pub motion_cmds: Vec<MotionCmd>,
+    /// Пропсы сцены (`defineScene({ props, defaults })`).
+    pub props: Vec<PropInfo>,
+    /// Ошибки входных пропсов: неизвестное имя, неверный тип, не задан обязательный.
+    pub props_errors: Vec<String>,
+    pub components: Vec<ComponentInfo>,
 }
 
 impl Scene {
@@ -239,6 +281,11 @@ impl Scene {
             Cmd::Cues { items } => self.cues.extend(items),
             Cmd::Timelines { items } => self.timelines.extend(items),
             Cmd::Motion(m) => self.motion_cmds.push(m),
+            Cmd::Schema { props, errors } => {
+                self.props = props;
+                self.props_errors = errors;
+            }
+            Cmd::Component(c) => self.components.push(c),
             Cmd::Theme { values } => {
                 self.theme.extend(values);
             }

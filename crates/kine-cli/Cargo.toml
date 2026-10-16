@@ -13,6 +13,7 @@ kine-core.workspace = true
 kine-render.workspace = true
 kine-js.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lib]

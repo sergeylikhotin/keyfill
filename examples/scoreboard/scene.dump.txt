@@ -4,9 +4,9 @@ time: t=1.26s · кадр 63 · сцена playing · play@0
 events: 0s scene state:playing · 0s Scoreboard#1 state:in · 0.6s Scoreboard#1 emit:reveal-done · 0.7s Scoreboard#1 marker:ready · 0.7s Scoreboard#1 state:hold
 └─ Scoreboard#1/panel  box stack  (96,54 520×184)  [timeline hold τ=0.7 на ready]  [must inside]
    ├─ Scoreboard#1/panel/box[0]  box grid  (96,54 520×184)  bg color.panel · r 14 · pad 20,24
-   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/home  text  (120,74 384×49)  "Динамо Москва"  Inter 600 34px · color.text  [must fit,contrast]  [else×2]
    │  ├─ Scoreboard#1/homeScore  text  (520,74 72×49)  "2"  Inter 600 40px · color.text
-   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must contrast,fit]  [else×2]
+   │  ├─ Scoreboard#1/away  text  (120,133 384×49)  "Крылья Советов Самара"  Inter 600 34px (fit 34→30.5) · color.text  [must fit,contrast]  [else×2]
    │  ├─ Scoreboard#1/awayScore  text  (520,133 72×49)  "1"  Inter 600 40px · color.text
    │  ├─ Scoreboard#1/status  text  (120,192 472×26)  "● LIVE · 2-й тайм · 67:13"  Inter 400 22px · color.muted · span×1
    │  └─ Scoreboard#1/panel/box[0]/box[0]  box  (120,224 48×3)  bg color.live · r 2

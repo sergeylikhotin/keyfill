@@ -37,7 +37,7 @@ pub struct ViewOptions {
 struct SceneState {
     entry: PathBuf,
     fingerprint: u64,
-    source: Result<String, String>,
+    source: Result<crate::Bundle, String>,
     session: Option<Session>,
     info: Option<Value>,
 }

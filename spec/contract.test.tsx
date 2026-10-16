@@ -69,8 +69,10 @@ cues(demo, ({ at }) => [
   at(2, 'update', LowerThird, { live: 'yes' }),
   // @ts-expect-error неизвестная команда
   at(3, 'pause'),
-  // @ts-expect-error update без компонента
+  // @ts-expect-error update без пропсов
   at(3, 'update'),
+  // @ts-expect-error у demo нет пропсов сцены
+  at(3, 'update', { name: 'Иван' }),
   at(4, 'next', Scoreboard),
   at(4, 'invoke', Scoreboard, 'goal', { side: 'home' }),
   // @ts-expect-error у Scoreboard нет команды penalty
@@ -115,3 +117,34 @@ count('3');
 clock({ from: '67:12' });
 // @ts-expect-error stagger каскадирует движение, а не изинг
 stagger(0.05, tween(0.2));
+
+// Пропсы сцены: defaults и update в сценарии проверяются по схеме, root получает аксессоры.
+const show = defineScene({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  props: { guest: String, score: Number },
+  defaults: { guest: 'Анна' },
+  root: (p) => <LowerThird name={p.guest} role={() => String(p.score())} live={true} tags={[]} />,
+});
+cues(show, ({ at }) => [
+  at(1, 'update', { score: 2 }),
+  // @ts-expect-error score — число
+  at(1, 'update', { score: '2' }),
+  // @ts-expect-error у сцены нет пропса guests
+  at(1, 'update', { guests: 'Иван' }),
+]);
+defineScene({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  props: { guest: String },
+  // @ts-expect-error значение по умолчанию — строка
+  defaults: { guest: 5 },
+  root: () => <Box />,
+});
+defineScene({
+  stage: { ref: [1920, 1080] },
+  fps: 50,
+  props: { guest: String },
+  // @ts-expect-error guest — аксессор, а не строка
+  root: (p) => <LowerThird name={p.guest.toUpperCase()} role="" live={true} tags={[]} />,
+});

@@ -5,7 +5,7 @@ events: 0s scene state:playing
 └─ LowerThird#1/panel  box row gap 16  (96,884 521×142)  bg color.surfaceLive · r 12 · pad 16,24 · border 2 color.accent (look[1] on)  [must inside]
    ├─ LowerThird#1/dot  box  (122,947 16×16)  bg color.accent · r 8  motion opacity×0.47  [loop]
    └─ LowerThird#1/panel/box[1]  box column gap 4  (154,902 437×106)
-      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must contrast,fit]  [else×3]
+      ├─ LowerThird#1/title  text  (154,902 437×68)  "Анна Смирнова"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]
       └─ LowerThird#1/subtitle  text  (154,974 437×34)  "ВЕДУЩАЯ"  Inter 400 28px · color.muted
 
 diagnostics: 0 error, 0 warn, 1 info

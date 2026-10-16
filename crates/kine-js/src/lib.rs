@@ -17,11 +17,14 @@ pub struct RunOptions {
     pub seed: u32,
     /// Значение `Date.now()` и `performance.now()` в миллисекундах.
     pub now_ms: f64,
+    /// Пропсы сцены из CLI, JSON `{ values, raw }`: `values` — из `--props`, `raw` — строки
+    /// из `--set`, их приводит к типам схемы сама сцена.
+    pub props: Option<String>,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { seed: 1, now_ms: 0.0 }
+        Self { seed: 1, now_ms: 0.0, props: None }
     }
 }
 
@@ -54,6 +57,7 @@ const PRELUDE: &str = r#"
   };
   Date.now = () => __KINE_NOW__;
   globalThis.performance = { now: () => __KINE_NOW__ };
+  globalThis.__kine_props = __KINE_PROPS__;
   const noTimers = () => {
     throw new Error('kine: таймеров нет, время ведёт ядро: движение — presence/transition/timeline, смена данных — команды сценария (cues)');
   };
@@ -118,7 +122,8 @@ fn init(ctx: &Context, out: &Rc<RefCell<RunOutput>>, source: &str, opts: &RunOpt
 
         let prelude = PRELUDE
             .replace("__KINE_SEED__", &opts.seed.to_string())
-            .replace("__KINE_NOW__", &format!("{:?}", opts.now_ms));
+            .replace("__KINE_NOW__", &format!("{:?}", opts.now_ms))
+            .replace("__KINE_PROPS__", opts.props.as_deref().unwrap_or("null"));
         ctx.eval::<(), _>(prelude).catch(&ctx).map_err(js_error)?;
         ctx.eval::<(), _>(source).catch(&ctx).map_err(js_error)?;
         Ok(())
@@ -168,7 +173,7 @@ mod tests {
     #[test]
     fn time_and_random_are_deterministic() {
         let src = "__kine_emit(JSON.stringify([Date.now(), performance.now(), Math.random(), Math.random()]));";
-        let opts = RunOptions { seed: 42, now_ms: 1500.0 };
+        let opts = RunOptions { seed: 42, now_ms: 1500.0, ..Default::default() };
         let a = run_bundle(src, &opts).unwrap();
         let b = run_bundle(src, &opts).unwrap();
         assert_eq!(a.batches, b.batches);

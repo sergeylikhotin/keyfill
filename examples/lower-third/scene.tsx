@@ -10,5 +10,8 @@ export default defineScene({
   fps: 50,
   fonts: [interRegular, interSemiBold],
   systemFonts: false,
-  root: () => <LowerThird name="Анна Смирнова" role="Ведущая" live={live} tags={[]} />,
+  // Данные выпуска: kine render scene.tsx --set name="Иван Петров" или --props guest.json.
+  props: { name: String, role: String },
+  defaults: { name: 'Анна Смирнова', role: 'Ведущая' },
+  root: (p) => <LowerThird name={p.name} role={p.role} live={live} tags={[]} />,
 });

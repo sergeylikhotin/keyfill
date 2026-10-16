@@ -2,7 +2,7 @@
 // его типами, а conformance.ts проверяет, что каждый экспорт спеки здесь есть и совместим.
 
 import type * as S from '@kine/core';
-import { host } from './host';
+import { host, type PropInfo } from './host';
 import { batch, computed, effect, runView, signal, untrack, type Accessor } from './signals';
 
 export { batch, computed, effect, signal, untrack };
@@ -255,6 +255,14 @@ export function Span(p: Props): KineElement {
 
 export const prop: typeof S.prop = () => brand({ $prop: true });
 
+type PropKind = 'string' | 'number' | 'boolean' | 'json';
+const kindOf = (c: unknown): PropKind => (c === String ? 'string' : c === Number ? 'number' : c === Boolean ? 'boolean' : 'json');
+const describeProps = (schema: Props | undefined): PropInfo[] =>
+  Object.keys(schema ?? {}).map((name) => ({ name, type: kindOf(schema![name]) }));
+const fitsKind = (v: unknown, kind: PropKind) =>
+  kind === 'json' || (kind === 'number' ? typeof v === 'number' && Number.isFinite(v) : typeof v === kind);
+const show = (v: unknown) => JSON.stringify(v) ?? String(v);
+
 const counters = new Map<string, number>();
 
 /** Экземпляры компонентов: команды сценария `update` и `invoke` адресуют их по имени компонента. */
@@ -272,6 +280,14 @@ const motionCmd = (inst: string, cmd: string, extra: Record<string, unknown> = {
 
 export const component: typeof S.component = (def) => {
   if (typeof def.name !== 'string') throw new KineError('component(): нужно поле name');
+  const commandDefs = (def.commands ?? {}) as Record<string, { params?: Props }>;
+  host.emit({
+    op: 'component',
+    name: def.name,
+    props: describeProps(def.props),
+    parts: [...(def.parts ?? [])],
+    commands: Object.keys(commandDefs).map((name) => ({ name, params: describeProps(commandDefs[name].params) })),
+  });
   const C = (p: Props): KineElement => {
     const n = (counters.get(def.name) ?? 0) + 1;
     counters.set(def.name, n);
@@ -352,16 +368,86 @@ export const defineScene: typeof S.defineScene = (def) => def;
 type CueItem = { t: number; cmd: string; target?: string; props?: Record<string, unknown>; command?: string };
 
 export const cues: typeof S.cues = (scene, build) => {
-  const at = (t: number, cmd: string, target?: { kineName: string }, a?: unknown, b?: unknown): CueItem => {
+  const at = (t: number, cmd: string, target?: unknown, a?: unknown, b?: unknown): CueItem => {
     if (typeof t !== 'number' || !(t >= 0)) throw new KineError(`cues: время должно быть числом ≥ 0, получено ${t}`);
-    if ((cmd === 'update' || cmd === 'invoke') && !target?.kineName) {
-      throw new KineError(`cues: ${cmd} требует компонент: at(t, "${cmd}", Component, ...)`);
+    const name = (target as { kineName?: string } | undefined)?.kineName;
+    // update без компонента — пропсы самой сцены: at(t, 'update', { name: 'Иван' }).
+    if (cmd === 'update' && !name) {
+      if (!target || typeof target !== 'object') {
+        throw new KineError('cues: update принимает компонент и его пропсы или пропсы сцены: at(t, "update", { ... })');
+      }
+      return { t, cmd, props: target as Record<string, unknown> };
     }
-    if (cmd === 'invoke') return { t, cmd, target: target!.kineName, command: a as string, props: b as Record<string, unknown> };
-    return { t, cmd, target: target?.kineName, props: a as Record<string, unknown> | undefined };
+    if (cmd === 'invoke' && !name) throw new KineError('cues: invoke требует компонент: at(t, "invoke", Component, "команда", { ... })');
+    if (cmd === 'invoke') return { t, cmd, target: name, command: a as string, props: b as Record<string, unknown> };
+    return { t, cmd, target: name, props: a as Record<string, unknown> | undefined };
   };
   return brand({ $cues: true, scene, items: build(brand({ at })) });
 };
+
+/** Пропсы сцены — ячейки, как у компонента; `update` без компонента меняет их. */
+let sceneSet: ((key: string, value: unknown) => void) | undefined;
+
+/** Пропсы из CLI: `values` — из --props, `raw` — строки из --set, приводятся к типу схемы. */
+type PropsInput = { values?: Record<string, unknown>; raw?: Record<string, string> };
+
+function sceneProps(scene: Props): { accessors: Props; errors: string[] } {
+  const input = ((globalThis as any).__kine_props ?? {}) as PropsInput;
+  const schema: Props = scene.props ?? {};
+  const defaults: Props = scene.defaults ?? {};
+  const errors: string[] = [];
+  const known = Object.keys(schema);
+  const list = known.length ? `есть: ${known.join(', ')}` : 'у сцены нет пропсов';
+  for (const k of [...Object.keys(input.values ?? {}), ...Object.keys(input.raw ?? {})]) {
+    if (!(k in schema)) errors.push(`у сцены нет пропса "${k}"; ${list}`);
+  }
+  const accessors: Props = {};
+  const slots: Record<string, S.Signal<unknown>> = {};
+  for (const k of known) {
+    const kind = kindOf(schema[k]);
+    const raw = input.raw && k in input.raw ? input.raw[k] : undefined;
+    let v: unknown;
+    if (raw !== undefined) {
+      if (kind === 'string') v = raw;
+      else if (kind === 'number') v = raw.trim() === '' ? NaN : Number(raw);
+      else if (kind === 'boolean') v = raw === 'true' ? true : raw === 'false' ? false : raw;
+      else {
+        try {
+          v = JSON.parse(raw);
+        } catch {
+          errors.push(`--set ${k}: ожидается JSON, получено ${raw}`);
+          continue;
+        }
+      }
+    } else if (input.values && k in input.values) v = input.values[k];
+    else if (k in defaults) v = defaults[k];
+    else {
+      errors.push(`не задан обязательный пропс "${k}" (${kind}): --set ${k}=… или --props data.json`);
+      continue;
+    }
+    if (!fitsKind(v, kind)) {
+      errors.push(`пропс "${k}": ожидается ${kind}, получено ${raw ?? show(v)}`);
+      continue;
+    }
+    const slot = signal<unknown>(v);
+    slots[k] = slot;
+    accessors[k] = () => slot();
+  }
+  sceneSet = (key, value) => {
+    if (!(key in slots)) throw new KineError(`update: у сцены нет пропса "${key}"; ${list}`);
+    slots[key].set(value);
+  };
+  host.emit({
+    op: 'schema',
+    props: known.map((name) => ({
+      name,
+      type: kindOf(schema[name]),
+      ...(name in defaults ? { default: defaults[name] } : { required: true }),
+    })),
+    errors,
+  });
+  return { accessors, errors };
+}
 
 const instancesOf = (target: string, what: string) => {
   const found = instances.filter((i) => i.component === target);
@@ -371,7 +457,14 @@ const instancesOf = (target: string, what: string) => {
 
 /** Команда `update` из ядра: новые значения пропсов всех экземпляров компонента. */
 (globalThis as any).__kine_update = (json: string) => {
-  const { target, props } = JSON.parse(json) as { target: string; props: Record<string, unknown> };
+  const { target, props } = JSON.parse(json) as { target: string | null; props: Record<string, unknown> };
+  if (target === null) {
+    batch(() => {
+      for (const [k, v] of Object.entries(props ?? {})) sceneSet!(k, v);
+    });
+    host.flush();
+    return;
+  }
   const found = instancesOf(target, 'update');
   batch(() => {
     for (const i of found) for (const [k, v] of Object.entries(props ?? {})) i.set(k, v);
@@ -388,6 +481,12 @@ const instancesOf = (target: string, what: string) => {
 
 export function mount(entry: Props) {
   const scene = entry.$cues ? entry.scene : entry;
+  const { accessors, errors } = sceneProps(scene);
+  if (errors.length) {
+    // Неверные входные данные — ошибка вызова: сцену не строим, ядро покажет ошибки и схему.
+    host.flush();
+    return;
+  }
   const stage = host.create('stage');
   host.emit({
     op: 'stage',
@@ -408,7 +507,7 @@ export function mount(entry: Props) {
         message: 'scene.root читает сигнал вне реактивного контекста: значение не будет обновляться',
         hint: 'передавай сигнал в пропс целиком (live={live}), а не его значение (live={live()})',
       }),
-    () => scene.root(),
+    () => scene.root(accessors),
   );
   if (!isElement(root)) throw new KineError('scene.root должен вернуть элемент');
   host.insert(stage, root.id);

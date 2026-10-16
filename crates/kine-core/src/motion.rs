@@ -733,7 +733,7 @@ pub struct ChannelInfo {
 }
 
 /// Слой presence: сдвиги и множители поверх `look`, не участвуют в `must`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct RelMotion {
     pub dx: f32,
     pub dy: f32,

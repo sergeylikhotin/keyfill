@@ -48,7 +48,7 @@ pub struct Strip {
     pub display: DisplayList,
     pub frames: Vec<Frame>,
     /// Дамп каждого кадра, снятый в его момент (данные сцены могли меняться между кадрами).
-    pub dumps: Vec<String>,
+    pub dumps: Vec<kine_core::dump::Dump>,
 }
 
 /// Кадры в моменты `times` и их общая раскадровка.
@@ -59,7 +59,7 @@ pub fn build(session: &mut Session, times: &[f64], eval: EvalOptions, opts: &Opt
     let mut dumps = Vec::with_capacity(times.len());
     for &t in times {
         let frame = session.frame_at(t, eval)?;
-        dumps.push(kine_core::dump::dump(&session.scene, &frame));
+        dumps.push(kine_core::dump::build(&session.scene, &frame));
         frames.push(frame);
     }
     let size = frames.first().map_or([1920.0, 1080.0], |f| f.size);

@@ -1,4 +1,6 @@
-// Бандлер сцены для kine: `node bundle.mjs <scene.tsx>` печатает IIFE-бандл в stdout.
+// Бандлер сцены для kine: `node bundle.mjs <scene.tsx>` печатает в stdout JSON
+// `{ code, map, inputs }` — IIFE-бандл, его sourcemap и все входные файлы (для кэша kine).
+// При ошибке печатает `{ errors: [{ file, line, column, text, lineText }] }` и выходит с кодом 1.
 //
 // JSX собирается в dev-режиме (у элементов есть место в исходнике), `@kine/core` указывает
 // на реализацию рядом с этим файлом, а импорт шрифта (`import inter from './Inter.otf'`)
@@ -27,18 +29,30 @@ const fonts = {
   },
 };
 
+const cwd = process.cwd();
 const entryPath = path.resolve(entry).replaceAll('\\', '/');
+const slash = (p) => p.replaceAll('\\', '/');
+// Пути в выводе — относительно каталога запуска, как места в dev-JSX; вне него — абсолютные.
+const shown = (abs) => {
+  const rel = path.relative(cwd, abs);
+  return slash(rel.startsWith('..') || path.isAbsolute(rel) ? abs : rel);
+};
 
 try {
   const result = await build({
     stdin: {
       contents: `import scene from ${JSON.stringify(entryPath)};\nimport { mount } from '@kine/core';\nmount(scene);\n`,
-      resolveDir: process.cwd(),
+      resolveDir: cwd,
       sourcefile: 'kine-entry.ts',
       loader: 'ts',
     },
     bundle: true,
     write: false,
+    // Файл не пишется; outfile задаёт только базу для путей в sourcemap.
+    outfile: path.join(cwd, 'kine-bundle.js'),
+    sourcemap: 'external',
+    sourcesContent: false,
+    metafile: true,
     format: 'iife',
     platform: 'neutral',
     target: 'es2020',
@@ -49,14 +63,22 @@ try {
     plugins: [fonts],
     logLevel: 'silent',
   });
-  process.stdout.write(result.outputFiles[0].text);
+  const code = result.outputFiles.find((f) => f.path.endsWith('.js')).text;
+  const map = JSON.parse(result.outputFiles.find((f) => f.path.endsWith('.map')).text);
+  map.sources = map.sources.map((s) => shown(path.resolve(cwd, s)));
+  const inputs = Object.keys(result.metafile.inputs)
+    .filter((p) => p !== '<stdin>')
+    .map((p) => slash(path.resolve(cwd, p)));
+  process.stdout.write(JSON.stringify({ code, map, inputs }));
 } catch (e) {
-  // Ошибки esbuild уже содержат файл, строку и фрагмент кода — отдаём их как есть.
-  for (const err of e.errors ?? []) {
-    const loc = err.location ? `${err.location.file}:${err.location.line}:${err.location.column + 1}: ` : '';
-    console.error(`${loc}${err.text}`);
-    if (err.location?.lineText) console.error(`    ${err.location.lineText}`);
-  }
-  if (!e.errors) console.error(String(e));
+  // У ошибок esbuild есть файл, строка и фрагмент кода — отдаём их структурой.
+  const errors = (e.errors ?? [{ text: String(e) }]).map((err) => ({
+    file: err.location ? shown(path.resolve(cwd, err.location.file)) : undefined,
+    line: err.location?.line,
+    column: err.location ? err.location.column + 1 : undefined,
+    text: err.text,
+    lineText: err.location?.lineText,
+  }));
+  process.stdout.write(JSON.stringify({ errors }));
   process.exit(1);
 }
