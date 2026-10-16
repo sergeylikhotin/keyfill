@@ -65,6 +65,9 @@ package version.
   that part moves and resizes. The same instance in another state glides to its new place with
   `transition.layout`, so a morph (a centered match card becoming the corner scoreboard) is
   composition: one component, a `mode` prop, a state anchor. Example `examples/match/MatchCard.tsx`.
+- A test plays a match over `keyfill serve` (states, choreography, preview and take, a panel turning
+  back mid-out, interruptions cancelling delayed steps) and checks that replaying its journal gives
+  the same frames, pixel for pixel.
 
 ### Changed
 

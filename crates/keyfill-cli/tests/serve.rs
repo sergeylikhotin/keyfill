@@ -381,3 +381,101 @@ fn live_show_matches_its_journal() {
     let frames: Vec<u64> = shots.iter().map(|(n, _)| *n).collect();
     assert!(frames.windows(2).all(|w| w[0] < w[1]), "снимки по ходу эфира: {frames:?}");
 }
+
+/// Веха M5: эфир канала с состояниями через настоящий `serve` — переходы с расписанием, морф
+/// карточки (тот же экземпляр), preview и take, разворот уходящей плашки, цепочка прерываний с
+/// отменой неначатого шага. События идут в ожидаемом порядке, живые кадры равны журналу.
+#[test]
+fn live_match_with_states_matches_its_journal() {
+    let Some(home) = home() else { return };
+    let journal = home.join("target/tmp-serve/journal-match");
+    let _ = std::fs::remove_dir_all(&journal);
+    let server = serve_channel(&home, "examples/match/channel.tsx", &journal, &[]);
+    let addr = server.addr.clone();
+    let mut c = Client::connect(&addr, "");
+    let mut shots = Vec::new();
+    let mut n = 0;
+    let mut ask = |c: &mut Client, msg: Value| {
+        n += 1;
+        let ack = c.ask(msg, &n.to_string());
+        assert!(ack["results"].as_array().is_some_and(|r| r.iter().all(|r| r["status"] == "ok")), "{ack}");
+        ack
+    };
+    let state = |name: &str| json!({ "cmd": "state", "name": name });
+    let channel = |c: &mut Client, name: &'static str| c.wait(move |v| v["type"] == "event" && v["source"] == "channel" && v["kind"] == "state" && v["name"] == name);
+    let pause = |ms| std::thread::sleep(Duration::from_millis(ms));
+
+    // Заставка по центру, затем live: та же карточка едет в угол (снимок посреди морфа).
+    ask(&mut c, json!({ "cmd": "batch", "cmds": [{ "cmd": "update", "props": { "home": "Спартак", "away": "Зенит" } }, state("intro")] }));
+    c.wait(|v| v["type"] == "event" && v["source"] == "MatchCard#1" && v["name"] == "playing");
+    pause(400);
+    shots.push(capture(&addr));
+    ask(&mut c, state("live"));
+    channel(&mut c, "live");
+    pause(150);
+    shots.push(capture(&addr));
+    ask(&mut c, json!({ "cmd": "update", "props": { "homeScore": 1 } }));
+    pause(200);
+    shots.push(capture(&addr));
+
+    // Интервью готовится в preview и уходит в эфир take; гость входит по расписанию (+0.3 с).
+    ask(&mut c, json!({ "cmd": "batch", "to": "preview", "cmds": [{ "cmd": "update", "props": { "guest": "Анна Смирнова", "guestRole": "Комментатор" } }, state("interview")] }));
+    ask(&mut c, json!({ "cmd": "take" }));
+    c.wait(|v| v["type"] == "event" && v["source"] == "LowerThird#1" && v["name"] == "playing");
+    pause(300);
+    shots.push(capture(&addr));
+
+    // Прерывания: гость уходит и сразу возвращается (разворот), затем pregame → live → var подряд:
+    // отложенный вход карточки (sequence) отменён, её разворачивает var.
+    ask(&mut c, state("live"));
+    ask(&mut c, state("interview"));
+    pause(150);
+    shots.push(capture(&addr));
+    ask(&mut c, state("pregame"));
+    ask(&mut c, state("live"));
+    ask(&mut c, state("var"));
+    channel(&mut c, "var");
+    pause(400);
+    shots.push(capture(&addr));
+    ask(&mut c, state("break"));
+    channel(&mut c, "break");
+    pause(300);
+    shots.push(capture(&addr));
+
+    let states: Vec<&str> = c.seen.iter().filter(|v| v["type"] == "event" && v["source"] == "channel" && v["kind"] == "state").filter_map(|v| v["name"].as_str()).collect();
+    assert_eq!(states, ["intro", "live", "interview", "live", "interview", "pregame", "live", "var", "break"]);
+    let sources: std::collections::BTreeSet<&str> = c.seen.iter().filter(|v| v["type"] == "event").filter_map(|v| v["source"].as_str()).collect();
+    assert!(!sources.contains("MatchCard#2"), "карточка — один экземпляр во всём эфире: {sources:?}");
+    // Гость: один экземпляр, развёрнут посреди ухода; в pregame он же стал представлением встречи.
+    let guest: Vec<String> = c
+        .seen
+        .iter()
+        .filter(|v| v["type"] == "event" && v["source"] == "LowerThird#1" && v["kind"] == "state")
+        .map(|v| v["name"].as_str().unwrap().to_string())
+        .collect();
+    let want = ["loaded 20", "playing", "stopping", "playing"];
+    let mut rest = guest.iter();
+    for w in want {
+        assert!(rest.any(|g| g == w), "нет {w} по порядку в {guest:?}");
+    }
+    assert!(!sources.contains("LowerThird#2"), "второй копии гостя нет: {sources:?}");
+    drop(c);
+    drop(server);
+
+    let file = std::fs::read_dir(&journal).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with(".journal.jsonl")).unwrap();
+    let j = keyfill_cli::channel::Journal::read(&file).unwrap();
+    let bundle = keyfill_cli::bundle(&j.channel_path(&file)).unwrap();
+    let run = keyfill_js::RunOptions { seed: j.header.seed, now_ms: j.header.now, ..Default::default() };
+    let air = keyfill_core::EvalOptions { mode: keyfill_core::Mode::Air, background: None };
+    for (n, live) in &shots {
+        let mut replay = keyfill_cli::Session::open(&bundle, &run, &[], &j.batches).unwrap();
+        let t = replay.frame_time(*n);
+        let frame = replay.frame_at(t, air).unwrap();
+        let pixmap = keyfill_render::render(&frame, &keyfill_render::RenderOptions::default()).unwrap();
+        let img = keyfill_render::image(&pixmap);
+        let diff = img.rgba.iter().zip(&live.rgba).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "кадр {n}: {diff} байт отличаются от эфира");
+    }
+    let frames: Vec<u64> = shots.iter().map(|(n, _)| *n).collect();
+    assert!(frames.windows(2).all(|w| w[0] < w[1]), "снимки по ходу эфира: {frames:?}");
+}
