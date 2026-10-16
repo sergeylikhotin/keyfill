@@ -6,6 +6,8 @@ export type Cmd =
   | { op: 'set'; id: number; key: string; value: unknown }
   | { op: 'insert'; parent: number; child: number; before?: number }
   | { op: 'remove'; id: number }
+  /** Уйти через out и удалиться после ухода: элемент For, экземпляр канала после stop. */
+  | { op: 'release'; id: number }
   /** Файл — канал: каталог компонентов для слоёв. */
   | { op: 'channel'; components: string[] }
   /** Ответ канала на команду ядра. */

@@ -1,0 +1,11 @@
+stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
+fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
+time: t=0.3s · кадр 15 · сцена playing · play@0
+events: 0s scene state:playing
+└─ Standings#1/panel  box  (1264,54 560×114)  bg color.panel · r 14 · pad 20,24  [must inside]
+   ├─ Standings#1/title  text  (1288,74 512×26)  "ТУРНИРНАЯ ТАБЛИЦА"  Inter 400 22px · color.muted
+   └─ Standings#1/panel/box[0]  box grid  (1288,100 512×48)
+      └─ Standings#1/panel/box[0]/box[key=kss]  box grid  (1288,100 512×48)  pad 6,0
+         ├─ Standings#1/panel/box[0]/box[key=kss]/text[0]  text  (1288,106 40×36)  "1"  Inter 400 30px · color.muted
+         ├─ Standings#1/panel/box[0]/box[key=kss]/text[1]  text  (1340,106 384×36)  "Крылья Советов Самара Самарс…"  Inter 400 30px (fit 30→22) (обрезан) · color.text  [must fit]
+         └─ Standings#1/panel/box[0]/box[key=kss]/text[2]  text  (1736,106 64×36)  "30"  Inter 600 30px · color.text

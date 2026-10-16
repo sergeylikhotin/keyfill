@@ -1,5 +1,5 @@
 // Канал для тестов: команда, которая падает посреди исполнения, и компонент без presence.
-import { Box, Text, component, defineChannel, prop } from '@keyfill/core';
+import { Box, For, Text, component, defineChannel, fade, prop, tween } from '@keyfill/core';
 
 const Counter = component({
   name: 'Counter',
@@ -21,4 +21,15 @@ const Counter = component({
   },
 });
 
-export default defineChannel({ stage: { ref: [640, 360] }, fps: 25, components: [Counter] });
+// Список по данным внутри экземпляра канала: строки уходят через out и снимаются с экземпляром.
+const Names = component({
+  name: 'Names',
+  props: { names: prop.list(String) },
+  view: ({ names }) => (
+    <Box anchor={{ to: 'titleSafe', at: 'bottom-left' }}>
+      <For each={names}>{(n) => <Text presence={{ out: fade([1, 0], tween(0.2)) }}>{n}</Text>}</For>
+    </Box>
+  ),
+});
+
+export default defineChannel({ stage: { ref: [640, 360] }, fps: 25, components: [Counter, Names] });

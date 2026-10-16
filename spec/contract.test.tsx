@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, clock, component, count, cues, defineChannel, defineConfig, defineScene, hex, prop, stagger, test, timeline, tween } from '@keyfill/core';
+import { Box, For, Text, clock, component, count, cues, defineChannel, defineConfig, defineScene, hex, prop, stagger, test, timeline, tween } from '@keyfill/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
@@ -203,3 +203,16 @@ prop<string[]>();
 defineChannel({ stage: { ref: [1920, 1080] }, fps: 50, components: [LowerThird, Scoreboard, Card2] });
 // @ts-expect-error каталог — компоненты, а не имена
 defineChannel({ stage: { ref: [1920, 1080] }, fps: 50, components: ['LowerThird'] });
+
+// Списки по данным: у объектов ключ by обязателен, у строк и чисел — само значение.
+const rowsData = [{ id: 'zen', name: 'Зенит' }];
+<Box>
+  <For each={rowsData} by={(r) => r.id}>{(r, i) => <Text>{() => `${i() + 1}. ${r().name}`}</Text>}</For>
+  <For each={['a', 'b']}>{(s) => <Text>{s}</Text>}</For>
+</Box>;
+// @ts-expect-error у объектов нужен by
+<For each={rowsData}>{(r) => <Text>{() => r().name}</Text>}</For>;
+// @ts-expect-error ключ — строка или число
+<For each={rowsData} by={(r) => r}>{(r) => <Text>{() => r().name}</Text>}</For>;
+// @ts-expect-error у элемента нет поля title: тип выводится из each
+<For each={rowsData} by={(r) => r.id}>{(r) => <Text>{() => r().title}</Text>}</For>;

@@ -2,6 +2,7 @@
 //! сценария, не на кадрах. Время сессии идёт вперёд; запрос момента раньше текущего
 //! перезапускает сессию с начала, поэтому кадр зависит только от момента, а не от пути к нему.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
@@ -47,6 +48,8 @@ pub struct Session {
     /// Пачки команд канала: из журнала и принятые `command` в этой сессии.
     batches: Vec<Batch>,
     next_batch: usize,
+    /// Отпущенные корни (элементы `For`, экземпляры после stop): удаляются, когда кончится уход.
+    releasing: Vec<u32>,
     pub logs: Vec<LogLine>,
     pub fps: f64,
     now: f64,
@@ -116,6 +119,7 @@ impl Session {
             channel,
             batches: batches.to_vec(),
             next_batch: 0,
+            releasing: Vec::new(),
             logs: first.logs,
             fps,
             now: 0.0,
@@ -348,7 +352,7 @@ impl Session {
                     return reject(format!("play {layer}: на слое ничего не загружено; play {layer} <Компонент> {{…}} или load"));
                 };
                 if let Some(old) = slot.current.take() {
-                    self.leave(*layer, old, t);
+                    self.leave(*layer, old, t)?;
                 }
                 self.event(t, &inst.name, "state", "playing".into());
                 self.motion.play(&self.scene, Some(&[inst.root]), t);
@@ -363,7 +367,7 @@ impl Session {
             }
             Command::Stop { layer } => {
                 match self.layer_mut(*layer).current.take() {
-                    Some(inst) => self.leave(*layer, inst, t),
+                    Some(inst) => self.leave(*layer, inst, t)?,
                     None => self.event(t, "channel", "ignored", format!("stop {layer}: на слое ничего не показано")),
                 }
                 Ok(())
@@ -411,33 +415,50 @@ impl Session {
     }
 
     /// Экземпляр уходит через `out`; удалится, когда уход кончится.
-    fn leave(&mut self, layer: u32, mut inst: Inst, t: f64) {
+    /// Экземпляр отпускается: JS снимает его эффекты, ядро ведёт `out` и удалит узлы после ухода.
+    fn leave(&mut self, layer: u32, mut inst: Inst, t: f64) -> Result<(), CmdError> {
         self.event(t, &inst.name, "state", "stopping".into());
-        self.motion.stop(&self.scene, Some(&[inst.root]), t);
+        self.layer_js(serde_json::json!({ "op": "release", "inst": inst.name }), t)?;
         inst.state = InstState::Leaving;
         self.layer_mut(layer).leaving.push(inst);
+        Ok(())
     }
 
-    /// Удаляет ушедшие экземпляры: их `out` кончился до `t`. Момент события — конец ухода.
+    /// Удаляет отпущенные узлы, уход которых кончился до `t`; у канала — и уходящие экземпляры
+    /// со слоёв, с событием `removed` в момент конца ухода.
     fn sweep(&mut self, t: f64) -> Result<()> {
-        let Some(state) = &self.channel else { return Ok(()) };
-        let mut done = Vec::new();
-        for (&layer, slot) in &state.layers {
-            for inst in &slot.leaving {
-                if let Some(at) = self.motion.hide_time(inst.root).filter(|at| *at <= t + 1e-9) {
-                    done.push((layer, inst.clone(), at));
-                }
+        let mut gone = BTreeMap::new();
+        let motion = &self.motion;
+        self.releasing.retain(|&root| match motion.hide_time(root) {
+            Some(at) if at <= t + 1e-9 => {
+                gone.insert(root, at);
+                false
+            }
+            _ => true,
+        });
+        for &root in gone.keys() {
+            if self.scene.nodes.contains_key(&root) {
+                self.scene.remove(root)?;
             }
         }
-        for (layer, inst, at) in done {
-            self.layer_mut(layer).leaving.retain(|i| i.root != inst.root);
-            self.unmount(&inst, at).map_err(|e| match e {
-                CmdError::Failed(e) => e,
-                CmdError::Rejected(m) => anyhow::anyhow!(m.join("; ")),
-            })?;
+        let removed = std::mem::take(&mut self.scene.removed);
+        if !removed.is_empty() {
+            self.motion.forget(&removed);
         }
-        if let Some(c) = &mut self.channel {
-            c.layers.retain(|_, l| !l.is_empty());
+        let Some(state) = &mut self.channel else { return Ok(()) };
+        let mut events = Vec::new();
+        for slot in state.layers.values_mut() {
+            slot.leaving.retain(|inst| {
+                let alive = !gone.contains_key(&inst.root);
+                if !alive {
+                    events.push((gone[&inst.root], inst.name.clone()));
+                }
+                alive
+            });
+        }
+        state.layers.retain(|_, l| !l.is_empty());
+        for (at, name) in events {
+            self.event(at, &name, "state", "removed".into());
         }
         Ok(())
     }
@@ -510,13 +531,13 @@ impl Session {
         let out = match result {
             Ok(out) => out,
             Err(e) => {
-                self.absorb(out.unwrap_or_default(), t).map_err(CmdError::Failed)?;
+                self.absorb(out.unwrap_or_default(), t, None).map_err(CmdError::Failed)?;
                 let replies = std::mem::take(&mut self.scene.replies);
                 self.take_values(&replies);
                 return Err(CmdError::Failed(e));
             }
         };
-        self.absorb(out, t).map_err(CmdError::Failed)?;
+        self.absorb(out, t, None).map_err(CmdError::Failed)?;
         let replies = std::mem::take(&mut self.scene.replies);
         self.take_values(&replies);
         if let Some(LayerReply::Rejected { errors }) = replies.iter().find(|r| matches!(r, LayerReply::Rejected { .. })) {
@@ -526,7 +547,9 @@ impl Session {
     }
 
     /// Применяет то, что отправил JS: пакеты, удаления, движение.
-    fn absorb(&mut self, out: keyfill_js::RunOutput, t: f64) -> Result<()> {
+    /// Применяет то, что отправил JS: пакеты, удаления, движение, уходы. `label` — команда
+    /// сценария для сообщений об ошибках движения.
+    fn absorb(&mut self, out: keyfill_js::RunOutput, t: f64, label: Option<&str>) -> Result<()> {
         self.logs.extend(out.logs);
         for batch in &out.batches {
             self.scene.apply_batch(batch)?;
@@ -536,9 +559,16 @@ impl Session {
             self.motion.forget(&removed);
         }
         self.motion.observe(&self.scene, t);
+        // Уход — после observe: узел, созданный и отпущенный одной командой, уже известен движению.
+        let released = std::mem::take(&mut self.scene.released);
+        if !released.is_empty() {
+            self.motion.release(&self.scene, &released, t);
+            self.releasing.extend(released);
+        }
         for m in std::mem::take(&mut self.scene.motion_cmds) {
             if let Err(e) = self.motion.instance_cmd(&self.scene, &m.inst, &m.action, t) {
-                self.motion.diagnostics.push(Level::Error, "command.motion", &m.inst, None, e, None);
+                let msg = label.map_or(e.clone(), |l| format!("{l}: {e}"));
+                self.motion.diagnostics.push(Level::Error, "command.motion", &m.inst, None, msg, None);
             }
         }
         Ok(())
@@ -552,17 +582,7 @@ impl Session {
     /// движения из `ctx` исполняются в тот же момент.
     fn call_js(&mut self, name: &str, arg: &str, cue: &Cue) -> Result<()> {
         let out = self.js.call(name, arg).map_err(|e| map_js(self.bundle.map.as_ref(), e)).with_context(|| format!("команда {}", cue.label()))?;
-        self.logs.extend(out.logs);
-        for batch in &out.batches {
-            self.scene.apply_batch(batch)?;
-        }
-        self.motion.observe(&self.scene, cue.t);
-        for m in std::mem::take(&mut self.scene.motion_cmds) {
-            if let Err(e) = self.motion.instance_cmd(&self.scene, &m.inst, &m.action, cue.t) {
-                self.motion.diagnostics.push(Level::Error, "command.motion", &m.inst, None, format!("{}: {e}", cue.label()), None);
-            }
-        }
-        Ok(())
+        self.absorb(out, cue.t, Some(&cue.label()))
     }
 
     /// Момент, когда воспроизведение впервые проходит маркер таймлайна.

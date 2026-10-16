@@ -207,15 +207,169 @@ const element = (id: number): KeyfillElement => ({ __keyfill: 'element', id });
 
 export function Box(p: Props): KeyfillElement {
   const id = createNode('box', p);
+  // Дети — элементы и списки For; список вставляет свои элементы перед следующим ребёнком.
+  const slots: (number | ListRegion)[] = [];
   for (const c of flat(p.children)) {
     if (isEmpty(c)) continue;
     if (isSpan(c)) throw new KeyfillError('Span бывает только внутри <Text>', c.src ?? p.__src);
+    if (isFor(c)) {
+      slots.push(new ListRegion(id, c));
+      continue;
+    }
     if (!isElement(c)) {
-      throw new KeyfillError(`Box принимает только элементы; текст оборачивай в <Text>. Получено: ${JSON.stringify(c)}`, p.__src);
+      throw new KeyfillError(`Box принимает только элементы и <For>; текст оборачивай в <Text>. Получено: ${JSON.stringify(c)}`, p.__src);
     }
     host.insert(id, c.id);
+    slots.push(c.id);
   }
+  slots.forEach((s, i) => {
+    if (typeof s === 'number') return;
+    s.anchor = () => {
+      for (const next of slots.slice(i + 1)) {
+        const first = typeof next === 'number' ? next : next.first();
+        if (first !== undefined) return first;
+      }
+      return undefined;
+    };
+    s.start();
+  });
   return element(id);
+}
+
+// ─── Списки по данным ───────────────────────────────────────────────────────
+
+type ForDesc = {
+  __keyfill: 'for';
+  each: unknown;
+  by?: (item: unknown, index: number) => unknown;
+  render: (item: Accessor<unknown>, index: Accessor<number>) => unknown;
+  src?: string;
+};
+const isFor = (v: unknown): v is ForDesc => !!v && (v as ForDesc).__keyfill === 'for';
+
+/** Список элементов по данным: `<For each={p.players} by={(pl) => pl.id}>{(pl, i) => <Row … />}</For>`. */
+export const For: typeof S.For = ((p: Props) => {
+  if (typeof p.children !== 'function') throw new KeyfillError('For: ребёнок — функция (item, index) => <…/>', p.__src);
+  if (p.by !== undefined && typeof p.by !== 'function') throw new KeyfillError('For: by — функция (item) => ключ', p.__src);
+  return brand({ __keyfill: 'for', each: p.each, by: p.by, render: p.children, src: p.__src });
+}) as typeof S.For;
+
+type ListItem = { key: string; root: number; value: S.Signal<{ v: unknown }>; index: S.Signal<number>; dispose: () => void };
+
+/**
+ * Элементы `For` внутри контейнера. Ключ решает, что такое «тот же элемент»: тот же ключ с
+ * новыми данными — обновление (узлы остаются, значения идут через transition), новый ключ —
+ * монтирование и `in`, пропавший — `release`: ядро проигрывает `out` и удаляет узлы.
+ */
+class ListRegion {
+  private items = new Map<string, ListItem>();
+  private order: ListItem[] = [];
+  anchor: () => number | undefined = () => undefined;
+
+  constructor(
+    private parent: number,
+    private desc: ForDesc,
+  ) {}
+
+  first(): number | undefined {
+    return this.order[0]?.root;
+  }
+
+  start() {
+    effect(() => {
+      const list = read(this.desc.each);
+      if (!Array.isArray(list)) throw new KeyfillError(`For: each — массив, получено ${JSON.stringify(list)}`, this.desc.src);
+      untrack(() => this.reconcile(list));
+    });
+  }
+
+  private keyOf(v: unknown, i: number): string {
+    if (this.desc.by) return String(this.desc.by(v, i));
+    if (typeof v === 'string' || typeof v === 'number') return String(v);
+    throw new KeyfillError('For: у элементов-объектов нужен ключ: by={(item) => item.id}', this.desc.src);
+  }
+
+  private create(key: string, v: unknown, i: number): ListItem {
+    const value = signal({ v });
+    const index = signal(i);
+    const mounted = createRoot(() =>
+      runView(
+        untracked(
+          `For[${key}]`,
+          'элемент For читает сигнал вне реактивного контекста: значение не будет обновляться',
+          'данные элемента — аксессор: (item) => <Text>{() => item().name}</Text>',
+          this.desc.src,
+        ),
+        () => this.desc.render(() => value().v, index),
+      ),
+    );
+    if (!isElement(mounted.value)) {
+      mounted.dispose();
+      throw new KeyfillError('For: функция элемента должна вернуть один элемент', this.desc.src);
+    }
+    host.set(mounted.value.id, 'key', key);
+    return { key, root: mounted.value.id, value, index, dispose: mounted.dispose };
+  }
+
+  private reconcile(list: readonly unknown[]) {
+    const next: ListItem[] = [];
+    const seen = new Set<string>();
+    list.forEach((v, i) => {
+      const key = this.keyOf(v, i);
+      if (seen.has(key)) {
+        const message = `For: ключ "${key}" повторяется; показан первый элемент с ним`;
+        host.emit({ op: 'diag', level: 'warn', rule: 'list.duplicate-key', node: 'For', source: this.desc.src, message, hint: 'ключ by должен быть уникален в списке: id, а не имя' });
+        return;
+      }
+      seen.add(key);
+      const it = this.items.get(key);
+      if (it) {
+        it.value.set({ v });
+        it.index.set(i);
+        next.push(it);
+      } else {
+        const created = this.create(key, v, i);
+        this.items.set(key, created);
+        next.push(created);
+      }
+    });
+    for (const [key, it] of this.items) {
+      if (seen.has(key)) continue;
+      it.dispose();
+      host.emit({ op: 'release', id: it.root });
+      this.items.delete(key);
+    }
+    // Двигаются только новые и переставленные: элементы, сохранившие взаимный порядок, стоят,
+    // и уходящие остаются там, где были, пока доигрывают out.
+    const old = new Map(this.order.map((it, i) => [it, i]));
+    const stable = increasing(next.map((it) => old.get(it) ?? -1));
+    this.order = next;
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (stable.has(i)) continue;
+      host.insert(this.parent, next[i].root, i + 1 < next.length ? next[i + 1].root : this.anchor());
+    }
+  }
+}
+
+/** Номера элементов наибольшей возрастающей подпоследовательности `seq` (отрицательные пропускаются). */
+function increasing(seq: number[]): Set<number> {
+  const tails: number[] = [];
+  const prev = new Array<number>(seq.length).fill(-1);
+  seq.forEach((v, i) => {
+    if (v < 0) return;
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (seq[tails[mid]] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) prev[i] = tails[lo - 1];
+    tails[lo] = i;
+  });
+  const out = new Set<number>();
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) out.add(i);
+  return out;
 }
 
 export function Text(p: Props): KeyfillElement {
@@ -569,6 +723,7 @@ type LayerCmd =
   | { op: 'mount'; component: string; props?: Props; before?: number }
   | { op: 'update'; inst: string; props: Props }
   | { op: 'invoke'; inst: string; command: string; params?: Props }
+  | { op: 'release'; inst: string }
   | { op: 'unmount'; inst: string };
 
 const reject = (errors: string[]) => host.emit({ op: 'layer', reply: 'rejected', errors });
@@ -623,11 +778,13 @@ function layerCmd(c: LayerCmd) {
       inst.invoke(c.command, c.params ?? {});
       return values(inst);
     }
+    // release — уйти через out (узлы удалит ядро после ухода), unmount — убрать сразу.
+    case 'release':
     case 'unmount': {
       const item = channel.live.get(c.inst);
       if (!item) return;
       item.dispose();
-      host.emit({ op: 'remove', id: item.inst.root });
+      host.emit({ op: c.op === 'release' ? 'release' : 'remove', id: item.inst.root });
       channel.live.delete(c.inst);
       instances = instances.filter((i) => !item.created.includes(i));
       return;
@@ -643,7 +800,7 @@ function layerCmd(c: LayerCmd) {
   } catch (e) {
     // Команда упала посреди исполнения: ядру нужны пропсы экземпляра после частичного эффекта.
     const item = 'inst' in c ? channel.live.get(c.inst) : undefined;
-    if (item && c.op !== 'unmount') values(item.inst);
+    if (item && c.op !== 'unmount' && c.op !== 'release') values(item.inst);
     throw e;
   } finally {
     host.flush();

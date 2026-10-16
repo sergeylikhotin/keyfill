@@ -37,6 +37,7 @@ export const Text: typeof Spec.Text = Impl.Text;
 export const Span: typeof Spec.Span = Impl.Span;
 export const Image: typeof Spec.Image = Impl.Image;
 export const Shape: typeof Spec.Shape = Impl.Shape;
+export const For: typeof Spec.For = Impl.For;
 export const defineTheme: typeof Spec.defineTheme = Impl.defineTheme;
 export const setTheme: typeof Spec.setTheme = Impl.setTheme;
 export const defineScene: typeof Spec.defineScene = Impl.defineScene;

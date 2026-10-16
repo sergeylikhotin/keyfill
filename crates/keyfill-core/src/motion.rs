@@ -955,6 +955,9 @@ impl MotionState {
         let visible = effective_visibility(scene);
         let mut enter = Vec::new();
         let mut leave = Vec::new();
+        // Что было до этих команд: новые узлы под ними — элементы, добавленные данными (For).
+        let known: BTreeSet<u32> = self.nodes.keys().copied().collect();
+        let mut fresh = Vec::new();
         let with_timeline: Vec<String> = scene.timelines.iter().map(|d| d.component.clone()).collect();
         let ids: Vec<u32> = scene.nodes.keys().copied().collect();
         for id in ids {
@@ -964,6 +967,7 @@ impl MotionState {
             }
             let is_new = !self.nodes.contains_key(&id);
             if is_new {
+                fresh.push(id);
                 let mut presence_raw = node.props.get("presence");
                 // Корнем компонента с таймлайном управляет таймлайн, а не presence.
                 if presence_raw.is_some()
@@ -989,6 +993,8 @@ impl MotionState {
 
             let (targets, transitions) = self.targets_of(scene, id);
             let st = self.nodes.get_mut(&id).expect("node state");
+            // Дети меняются: элементы списка добавляются, уходят и переставляются.
+            st.children.clone_from(&node.children);
             for (&ch, &new) in &targets {
                 let Some(&old) = st.targets.get(&ch) else { continue };
                 if old == new || is_new {
@@ -1040,8 +1046,111 @@ impl MotionState {
         for id in leave {
             self.leave(id, t);
         }
+        let runs_before = self.runs.len();
         self.build_runs(scene);
+        let added = self.enter_added(scene, &known, &fresh, &visible, t);
+        for i in runs_before..self.runs.len() {
+            if added.contains(&self.runs[i].root) {
+                self.run_play(i, t);
+            }
+        }
         self.initialized = true;
+    }
+
+    /// Узлы, которые данные добавили в уже играющую сцену (элементы `For`), входят сразу: своё
+    /// `in`, а у элемента без своего `in` — каскад `stagger` контейнера, по порядку среди
+    /// добавленных вместе. Новый корень под stage (экземпляр канала) ждёт своего play.
+    fn enter_added(&mut self, scene: &Scene, known: &BTreeSet<u32>, fresh: &[u32], visible: &BTreeMap<u32, bool>, t: f64) -> BTreeSet<u32> {
+        let mut entered = BTreeSet::new();
+        if self.scene != ScenePhase::Playing || fresh.is_empty() {
+            return entered;
+        }
+        let stage = scene.stage.as_ref().map(|s| s.id);
+        let top = |mut id: u32| {
+            while let Some(p) = scene.node(id).parent.filter(|p| Some(*p) != stage) {
+                id = p;
+            }
+            id
+        };
+        let added: Vec<u32> = fresh
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let root = top(id);
+                known.contains(&root) && !self.pending.contains(&root) && visible.get(&id).copied().unwrap_or(false)
+            })
+            .collect();
+        for &id in &added {
+            self.enter(id, t);
+            entered.insert(id);
+        }
+        let mut by_parent: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for &id in &added {
+            if let Some(p) = scene.node(id).parent.filter(|p| known.contains(p)) {
+                by_parent.entry(p).or_default().push(id);
+            }
+        }
+        for (p, kids) in by_parent {
+            let Some(enter) = self.nodes.get(&p).and_then(|s| s.presence.as_ref()).and_then(|pr| pr.enter.clone()) else { continue };
+            let own_in = |s: &NodeState| s.presence.as_ref().is_some_and(|pr| pr.enter.is_some());
+            let order: Vec<u32> =
+                scene.node(p).children.iter().copied().filter(|c| kids.contains(c) && !self.nodes.get(c).is_some_and(own_in)).collect();
+            for part in &enter.per_child {
+                let mut order = order.clone();
+                if part.reverse {
+                    order.reverse();
+                }
+                for (i, c) in order.into_iter().enumerate() {
+                    let shifted = part.program.clone().shifted(part.offset + part.step * i as f64);
+                    let end = t + shifted.duration;
+                    self.nodes.get_mut(&c).expect("node state").start(&shifted, t, "in", false);
+                    self.settled_at = Some(self.settled_at.map_or(end, |s| s.max(end)));
+                    self.horizon = self.horizon.max(end);
+                }
+            }
+        }
+        entered
+    }
+
+    /// Узлы, которые данные убрали (элементы `For`, экземпляры канала после stop): уходят через
+    /// свой `out` (и таймлайн — на маркер `out`), а элемент без своего `out` — по каскаду `out`
+    /// контейнера. Когда уход кончился, `hide_time` корня говорит, что его можно удалить.
+    pub fn release(&mut self, scene: &Scene, roots: &[u32], t: f64) {
+        for &r in roots {
+            self.stop(scene, Some(&[r]), t);
+        }
+        let mut by_parent: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for &r in roots {
+            if let Some(p) = scene.node(r).parent.filter(|p| !roots.contains(p)) {
+                by_parent.entry(p).or_default().push(r);
+            }
+        }
+        for (p, kids) in by_parent {
+            let Some(exit) = self.nodes.get(&p).and_then(|s| s.presence.as_ref()).and_then(|pr| pr.exit.clone()) else { continue };
+            let own_out = |s: &NodeState| s.presence.as_ref().is_some_and(|pr| pr.exit.is_some());
+            let order: Vec<u32> = scene
+                .node(p)
+                .children
+                .iter()
+                .copied()
+                .filter(|c| kids.contains(c) && self.nodes.get(c).is_some_and(|s| s.visible && !own_out(s)))
+                .collect();
+            for part in &exit.per_child {
+                let mut order = order.clone();
+                if part.reverse {
+                    order.reverse();
+                }
+                for (i, c) in order.into_iter().enumerate() {
+                    let shifted = part.program.clone().shifted(part.offset + part.step * i as f64);
+                    let end = t + shifted.duration;
+                    let st = self.nodes.get_mut(&c).expect("node state");
+                    st.start(&shifted, t, "out", true);
+                    st.phase = Phase::Out { start: t, end };
+                    st.hide_at = Some(st.hide_at.map_or(end, |h| h.max(end)));
+                    self.schedule(end, Event::OutEnd(c));
+                }
+            }
+        }
     }
 
     /// Воспроизведения таймлайнов для экземпляров, у которых их ещё нет: при монтировании

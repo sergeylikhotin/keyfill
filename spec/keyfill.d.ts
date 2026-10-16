@@ -484,6 +484,23 @@ declare module '@keyfill/core' {
   /** Только внутри Text, наследует его текстовые свойства. */
   export function Span(p: { look?: Reactive<LookInput<TextLook>>; children?: Child }): KeyfillElement;
   export function Image(p: NodeProps<BoxLook> & { src: string; fit?: 'cover' | 'contain' | 'fill' }): KeyfillElement;
+
+  /** Ключ элемента списка: по нему `For` узнаёт «тот же элемент» при новых данных. */
+  export type ListKey = string | number;
+  /**
+   * Элементы по данным, внутри `Box`: `<For each={p.players} by={(pl) => pl.id}>{(pl, i) => <Row … />}</For>`.
+   * Тот же ключ с новыми данными — обновление (узлы остаются, значения идут через `transition`),
+   * новый ключ — монтирование и `in` (своё или каскад `stagger` контейнера), пропавший — `out`
+   * и удаление. У объектов ключ `by` обязателен; у строк и чисел ключ — само значение.
+   * Элемент получает аксессоры: `item()` — данные, `index()` — место в списке. В дампе адрес
+   * элемента — по ключу: `box[key=zenit]`.
+   */
+  export function For<const T>(
+    p: {
+      readonly each: Reactive<readonly T[]>;
+      readonly children: (item: Accessor<T>, index: Accessor<number>) => KeyfillElement;
+    } & (T extends ListKey ? { readonly by?: (item: T, index: number) => ListKey } : { readonly by: (item: T, index: number) => ListKey }),
+  ): KeyfillElement;
   export function Shape(p: NodeProps<BoxLook> & { path: string; stroke?: { width: Len; paint: Paint }; fill?: Paint }): KeyfillElement;
 
   // ─── Тема, сцена, данные ──────────────────────────────────────────────────

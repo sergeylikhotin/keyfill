@@ -88,16 +88,25 @@ export function effect(fn: () => void | (() => void)): void {
   c.run();
 }
 
-/** Исполняет `fn` владельцем эффектов; `dispose` снимает все эффекты, созданные под ним. */
+/**
+ * Исполняет `fn` владельцем эффектов; `dispose` снимает все эффекты, созданные под ним.
+ * Корень внутри другого владельца (элемент списка в экземпляре) снимается и вместе с ним.
+ */
 export function createRoot<T>(fn: () => T): { value: T; dispose: () => void } {
   const list: Computation[] = [];
-  const prev = owner;
+  const parent = owner;
+  const dispose = () => {
+    list.splice(0).forEach((c) => c.dispose!());
+    const i = parent?.indexOf(link) ?? -1;
+    if (i >= 0) parent!.splice(i, 1);
+  };
+  const link: Computation = { deps: new Set(), run() {}, dispose };
+  parent?.push(link);
   owner = list;
   try {
-    const value = fn();
-    return { value, dispose: () => list.splice(0).forEach((c) => c.dispose!()) };
+    return { value: fn(), dispose };
   } finally {
-    owner = prev;
+    owner = parent;
   }
 }
 

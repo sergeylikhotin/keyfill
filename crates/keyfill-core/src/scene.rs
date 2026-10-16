@@ -31,8 +31,13 @@ pub enum Cmd {
         #[serde(default)]
         before: Option<u32>,
     },
-    /// Удалить узел вместе с поддеревом: экземпляр снят с канала.
+    /// Удалить узел вместе с поддеревом сразу, без анимации (`clear`).
     Remove {
+        id: u32,
+    },
+    /// Отпустить узел: он уходит через `out` и удаляется, когда уход кончится. Так уходят
+    /// элементы `For`, которых больше нет в данных, и экземпляры канала после stop.
+    Release {
         id: u32,
     },
     Text {
@@ -271,6 +276,11 @@ impl Node {
         self.props.get("instance")?.get("name")?.as_str()
     }
 
+    /// Ключ элемента списка `For`.
+    pub fn key(&self) -> Option<&str> {
+        self.props.get("key")?.as_str()
+    }
+
     /// Часть компонента: (`LowerThird#1`, `panel`).
     pub fn part(&self) -> Option<(&str, &str)> {
         let p = self.props.get("part")?;
@@ -314,6 +324,8 @@ pub struct Scene {
     pub replies: Vec<LayerReply>,
     /// Узлы, удалённые командами `remove`; их забирает сессия, чтобы движение их забыло.
     pub removed: Vec<u32>,
+    /// Узлы, отпущенные командами `release`; их уход ведёт сессия.
+    pub released: Vec<u32>,
 }
 
 impl Scene {
@@ -356,6 +368,10 @@ impl Scene {
             }
             Cmd::Remove { id } => {
                 self.remove(id)?;
+            }
+            Cmd::Release { id } => {
+                self.node_mut(id)?;
+                self.released.push(id);
             }
             Cmd::Channel { components } => self.channel = Some(components),
             Cmd::Layer(r) => self.replies.push(r),
@@ -461,10 +477,14 @@ impl Scene {
         let Some(parent) = node.parent else {
             return format!("{}?{id}", node.kind.name());
         };
+        // Элемент списка For — по ключу: адрес не меняется при пересортировке и росте списка.
+        if let Some(key) = node.key() {
+            return format!("{}/{}[key={key}]", self.path(parent), node.kind.name());
+        }
         let siblings = &self.node(parent).children;
         let index = siblings
             .iter()
-            .filter(|c| self.node(**c).kind == node.kind)
+            .filter(|c| self.node(**c).kind == node.kind && self.node(**c).key().is_none())
             .position(|c| *c == id)
             .unwrap_or(0);
         format!("{}/{}[{index}]", self.path(parent), node.kind.name())

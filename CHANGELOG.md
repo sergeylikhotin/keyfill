@@ -24,6 +24,12 @@ package version.
   `schema`, and replays to the same frames as the live session that wrote it. New diagnostics
   `channel.rejected` and `journal.diverged`; new help topics `keyfill docs props` and `keyfill docs channel`.
 
+- Lists from data: `<For each={...} by={(item) => item.id}>{(item, index) => ...}</For>` inside a `Box`.
+  The same key keeps its nodes and animates new values, a new key mounts and plays `in` (its own or
+  the container's `stagger`), a missing key plays `out` in place and is removed afterwards; only moved
+  items are reordered. Items are addressed by key in dumps (`box[key=zen]`). New diagnostic
+  `list.duplicate-key`, help topic `keyfill docs list`, example `examples/standings`.
+
 ### Changed
 
 - **Breaking:** `prop<T>()` is replaced by `prop.json<T>()`.
