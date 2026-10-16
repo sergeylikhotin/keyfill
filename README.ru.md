@@ -16,7 +16,7 @@ npm i -D @keyfill/cli typescript
 npx keyfill new lower-third
 ```
 
-`@keyfill/cli` ставит команду `keyfill`, `@keyfill/core` (API сцен, рантайм, бандлер), esbuild и нативный бинарь под платформу. `keyfill new` создаёт сцену из шаблона, а в новом проекте ещё `tsconfig.json`, `keyfill.config.ts` и шрифт Inter; дальше `npx keyfill check lower-third`, `npx keyfill test`, `npx tsc -p .`. Окружение проверяет `npx keyfill doctor`. Пакеты собираются из репозитория (`npm run npm:pack`, проверка установки в чистый проект — `npm run npm:smoke`); в npm они пока не опубликованы.
+`@keyfill/cli` ставит команду `keyfill`, `@keyfill/core` (API сцен, рантайм, бандлер), esbuild и нативный бинарь под платформу. `keyfill new` создаёт сцену из шаблона, а в новом проекте ещё `tsconfig.json`, `keyfill.config.ts` и шрифт Inter; дальше `npx keyfill check lower-third`, `npx keyfill test`, `npx tsc -p .`. Окружение проверяет `npx keyfill doctor`. На Linux бинарю нужны glibc 2.35+ (Ubuntu 22.04+, Debian 12+) и `libfontconfig1`: в минимальных Docker-образах её может не быть. Пакеты собираются из репозитория (`npm run npm:pack`, проверка установки в чистый проект — `npm run npm:smoke`); в npm они пока не опубликованы.
 
 ## Быстрый старт в репозитории
 

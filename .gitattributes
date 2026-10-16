@@ -1,0 +1,8 @@
+# Одни и те же байты на любой ОС: git на Windows не превращает LF в CRLF, и npm-пакеты
+# @keyfill/core и @keyfill/cli из сборок на Windows, Linux и macOS совпадают побайтно.
+* text=auto eol=lf
+*.png binary
+*.otf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

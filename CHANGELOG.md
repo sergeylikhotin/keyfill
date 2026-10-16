@@ -29,7 +29,7 @@ First public prerelease. Linux and macOS binaries are built by CI and have not b
 - `keyfill test` with dump and pixel snapshots, `keyfill perf`, `keyfill explain` and `keyfill docs` built
   into the binary, `keyfill.config.ts`.
 - `keyfill new` templates, `keyfill doctor`, `keyfill cache`; npm packages `@keyfill/cli`, `@keyfill/core` and
-  native binaries for win32-x64, linux-x64 and darwin-arm64. Intel Macs (darwin-x64) build from
+  native binaries for win32-x64, linux-x64 (glibc 2.35+, libfontconfig) and darwin-arm64. Intel Macs (darwin-x64) build from
   source with `cargo build --release`.
 
 [Unreleased]: https://github.com/sergeylikhotin/keyfill/compare/v0.1.0-alpha.1...HEAD

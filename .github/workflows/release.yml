@@ -21,7 +21,8 @@ jobs:
       matrix:
         include:
           - { os: windows-latest, target: win32-x64, binary: target/release/keyfill.exe }
-          - { os: ubuntu-latest, target: linux-x64, binary: target/release/keyfill }
+          # Ubuntu 22.04: бинарь требует glibc 2.35 и запускается на Ubuntu 22.04+ и Debian 12+.
+          - { os: ubuntu-22.04, target: linux-x64, binary: target/release/keyfill }
           - { os: macos-14, target: darwin-arm64, binary: target/release/keyfill }
     runs-on: ${{ matrix.os }}
     steps:

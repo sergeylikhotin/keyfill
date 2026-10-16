@@ -70,7 +70,9 @@ npx tsc -p .
 the native binary for your platform (win32-x64, linux-x64, darwin-arm64; on an Intel Mac, build from
 source). `keyfill new`
 creates a scene from a template and, in a fresh project, `tsconfig.json`, `keyfill.config.ts` and the
-Inter font. `npx keyfill doctor` checks the environment. Video output needs `ffmpeg` in `PATH`.
+Inter font. `npx keyfill doctor` checks the environment. Video output needs `ffmpeg` in `PATH`. On Linux
+the binary needs glibc 2.35+ (Ubuntu 22.04+, Debian 12+) and `libfontconfig1`, which minimal container
+images may lack.
 
 ## Commands
 
