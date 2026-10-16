@@ -652,6 +652,8 @@ declare module '@keyfill/core' {
     readonly out?: string;
     /** Именованные сцены: `keyfill render lower`. Пути — от каталога конфига. */
     readonly scenes?: { readonly [name: string]: string };
+    /** Каналы `keyfill serve`: номер → файл канала (`defineChannel`), от каталога конфига. */
+    readonly channels?: { readonly [channel: number]: string };
   }
 
   export function defineConfig(c: KeyfillConfig): KeyfillConfig;

@@ -1460,6 +1460,38 @@ impl MotionState {
         }
     }
 
+    /// play «сразу в эфире»: `in` уже закончился к моменту `t`, таймлайн стоит там, где
+    /// воспроизведение останавливается первым (hold или цикл). Для подъёма после сбоя и preview:
+    /// зритель не должен видеть повторный выход графики. События in и маркеров — в прошлом.
+    pub fn play_settled(&mut self, scene: &Scene, roots: &[u32], t: f64) {
+        let saved = self.settled_at;
+        for root in roots {
+            self.pending.remove(root);
+        }
+        for &root in roots {
+            for id in Self::subtree(scene, root) {
+                let Some(st) = self.nodes.get_mut(&id) else { continue };
+                st.hide_at = None;
+                if !(matches!(st.phase, Phase::Waiting | Phase::Gone) && st.visible) {
+                    continue;
+                }
+                self.enter(id, t);
+                // Длительность in известна, когда он запущен: тот же in, но начатый раньше на неё.
+                if let Some(Phase::In { start, end }) = self.nodes.get(&id).map(|s| s.phase)
+                    && end.is_finite()
+                {
+                    self.nodes.get_mut(&id).expect("node state").phase = Phase::Waiting;
+                    self.enter(id, t - (end - start));
+                }
+            }
+        }
+        for i in self.runs_of(roots) {
+            let tau = self.runs[i].def.settle_tau();
+            self.run_play(i, t - tau);
+        }
+        self.settled_at = Some(saved.map_or(t, |s| s.max(t)));
+    }
+
     /// stop: узлы с `out` начинают его, таймлайны прыгают на маркер `out`; сцена (или экземпляр)
     /// снимается, когда закончится последний. Узлы без `out` остаются на экране до снятия.
     pub fn stop(&mut self, scene: &Scene, roots: Option<&[u32]>, t: f64) {

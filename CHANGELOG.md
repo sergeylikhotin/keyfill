@@ -30,6 +30,14 @@ package version.
   items are reordered. Items are addressed by key in dumps (`box[key=zen]`). New diagnostic
   `list.duplicate-key`, help topic `keyfill docs list`, example `examples/standings`.
 
+- `keyfill serve`: live channels (from arguments or `channels` in `keyfill.config.ts`) on their own
+  frame clocks. WebSocket `/ws` takes layer commands, atomic `batch`, `take` and `discard`, and sends
+  acks with the frame, events, state, preview and air diagnostics; HTTP gives `/schema` (catalog and
+  JSON Schema), `/state` and `/monitor/<N>.png`. Preview is the program snapshot plus staged
+  commands, checked before air. Accepted commands are journaled as the show runs; `--resume`
+  brings channels back from the last journal straight to air (`play` with `instant`). Loopback only
+  unless a token is given. Help topic `keyfill docs serve`.
+
 ### Changed
 
 - **Breaking:** `prop<T>()` is replaced by `prop.json<T>()`.

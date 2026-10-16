@@ -94,17 +94,20 @@ pub fn serve(opts: ViewOptions) -> Result<()> {
 
 // ─── HTTP ───────────────────────────────────────────────────────────────────
 
-struct Request {
-    path: String,
-    query: Vec<(String, String)>,
-    range: Option<String>,
-    host: Option<String>,
+/// Запрос HTTP; его разбор делят `keyfill view` и `keyfill serve`.
+pub(crate) struct Request {
+    pub path: String,
+    pub query: Vec<(String, String)>,
+    pub range: Option<String>,
+    pub host: Option<String>,
+    /// Заголовки, имена в нижнем регистре.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Request {
     /// Запрос пришёл на loopback-имя: страница с чужого сайта, переименованного DNS в
     /// 127.0.0.1 (DNS rebinding), не прочтёт файлы просмотрщика.
-    fn local(&self) -> bool {
+    pub fn local(&self) -> bool {
         let Some(host) = &self.host else { return true };
         let name = match host.strip_prefix('[') {
             Some(v6) => v6.split(']').next().unwrap_or(""),
@@ -115,7 +118,7 @@ impl Request {
 }
 
 impl Request {
-    fn q(&self, k: &str) -> Option<&str> {
+    pub fn q(&self, k: &str) -> Option<&str> {
         self.query.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str())
     }
 
@@ -149,7 +152,7 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request> {
+pub(crate) fn read_request(stream: &mut TcpStream) -> Result<Request> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -175,13 +178,15 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (decode(k), decode(v))
     });
-    Ok(Request { path: decode(path), query: query.collect(), range, host })
+    Ok(Request { path: decode(path), query: query.collect(), range, host, headers })
 }
 
-fn respond(stream: &mut TcpStream, status: u16, ctype: &str, body: &[u8], extra: &[(&str, String)]) -> Result<()> {
+pub(crate) fn respond(stream: &mut TcpStream, status: u16, ctype: &str, body: &[u8], extra: &[(&str, String)]) -> Result<()> {
     let reason = match status {
         200 => "OK",
         206 => "Partial Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         416 => "Range Not Satisfiable",

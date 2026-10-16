@@ -24,6 +24,8 @@ pub struct Config {
     pub now: Option<f64>,
     pub out: Option<PathBuf>,
     pub scenes: BTreeMap<String, PathBuf>,
+    /// Каналы `keyfill serve`: номер → файл канала (`defineChannel`).
+    pub channels: BTreeMap<u32, PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +38,8 @@ struct Raw {
     out: Option<String>,
     #[serde(default)]
     scenes: BTreeMap<String, String>,
+    #[serde(default)]
+    channels: BTreeMap<String, String>,
 }
 
 /// Ближайший `keyfill.config.ts` вверх от `dir`.
@@ -69,8 +73,14 @@ pub fn read(file: &Path) -> Result<Config> {
     if let Some(m) = raw.mode.as_deref().filter(|m| !["dev", "air"].contains(m)) {
         return Err(crate::usage(format!("{shown}: mode — dev или air, получено {m}")));
     }
+    let mut channels = BTreeMap::new();
+    for (k, v) in raw.channels {
+        let n: u32 = k.parse().ok().filter(|n| *n > 0).ok_or_else(|| crate::usage(format!("{shown}: channels — номера каналов от 1, получено {k:?}")))?;
+        channels.insert(n, dir.join(v));
+    }
     Ok(Config {
         file: Some(file.to_path_buf()),
+        channels,
         mode: raw.mode,
         bg: raw.bg,
         seed: raw.seed,

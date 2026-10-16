@@ -9,6 +9,7 @@ pub mod help;
 pub mod ops;
 pub mod output;
 pub mod scaffold;
+pub mod serve;
 pub mod session;
 pub mod sourcemap;
 pub mod suite;

@@ -31,6 +31,11 @@ keyfill — рендер TSX-сцен без браузера
                                       с альфой, .mp4 — H.264 на подложке, каталог — PNG-кадры
   keyfill view [entry] [--dir out] [--port 4747]
                                       веб-просмотрщик: галерея выводов и живая сцена
+Управлять (keyfill docs serve):
+  keyfill serve [канал.tsx ...] [--port 4748] [--host 127.0.0.1] [--token T] [--journal .keyfill/journal] [--resume]
+                                      живые каналы: команды и события по WebSocket /ws, /schema, /state,
+                                      /monitor/<N>.png, preview и take, журнал эфира; без файлов — channels
+                                      из keyfill.config.ts
 Проверить:
   keyfill check <entry> [--t a..b]       нарушения must и правил на каждом кадре диапазона
                                       (по умолчанию — весь сценарий)
@@ -87,7 +92,7 @@ keyfill --version — версия.
 4 исключение JS, 5 сбой keyfill.";
 
 const COMMANDS: &[&str] =
-    &["render", "dump", "inspect", "check", "filmstrip", "video", "view", "test", "perf", "schema", "explain", "docs", "new", "doctor", "cache"];
+    &["render", "dump", "inspect", "check", "filmstrip", "video", "view", "serve", "test", "perf", "schema", "explain", "docs", "new", "doctor", "cache"];
 /// Команды, которые не принимают сцену вторым словом.
 const SCENELESS: &[&str] = &["test", "explain", "docs", "new", "doctor", "cache"];
 
@@ -98,9 +103,9 @@ struct Args {
 
 const VALUED: &[&str] = &[
     "-o", "--scale", "--bg", "--seed", "--now", "--mode", "--t", "--cue", "--n", "--cols", "--tile", "--codec", "--dir", "--port",
-    "--props", "--set", "--path", "--depth", "--name", "--template",
+    "--props", "--set", "--path", "--depth", "--name", "--template", "--host", "--token", "--journal",
 ];
-const SWITCHES: &[&str] = &["--dump", "--json", "--update", "-h", "--help", "-V", "--version"];
+const SWITCHES: &[&str] = &["--dump", "--json", "--update", "-h", "--help", "-V", "--version", "--resume"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -461,6 +466,10 @@ fn run(raw: &[String]) -> Result<Option<Done>> {
             view_cmd(&args, &config)?;
             return Ok(None);
         }
+        "serve" => {
+            serve_cmd(&args, &config)?;
+            return Ok(None);
+        }
         "test" => test_cmd(&args, &config)?,
         _ => scene_cmd(&args, cmd, &config)?,
     };
@@ -540,6 +549,37 @@ fn test_cmd(args: &Args, config: &Config) -> Result<Done> {
     }
     o.explain = o.result.first_error_rule();
     Done::plain(o, output::test_text)
+}
+
+/// `keyfill serve`: каналы из аргументов (номера по порядку) или из `channels` конфига.
+/// Режим по умолчанию — air: это эфир, `else` применяется сам.
+fn serve_cmd(args: &Args, config: &Config) -> Result<()> {
+    let parse = || -> Result<keyfill_cli::serve::ServeOptions> {
+        let files = &args.rest[1..];
+        let channels = if files.is_empty() {
+            config.channels.clone()
+        } else {
+            files.iter().enumerate().map(|(i, f)| Ok((i as u32 + 1, config.entry(f)?))).collect::<Result<_>>()?
+        };
+        let mode = match args.value("--mode") {
+            None | Some("air") => Mode::Air,
+            Some("dev") => Mode::Dev,
+            Some(other) => bail!("--mode: ожидается dev или air, получено {other}"),
+        };
+        let background = args.value("--bg").map(ops::parse_hex).transpose()?;
+        Ok(keyfill_cli::serve::ServeOptions {
+            channels,
+            host: args.value("--host").unwrap_or("127.0.0.1").to_string(),
+            port: args.number("--port")?.unwrap_or(4748),
+            token: args.value("--token").map(String::from).or_else(|| std::env::var("KEYFILL_TOKEN").ok()).filter(|t| !t.is_empty()),
+            journal_dir: args.value("--journal").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".keyfill/journal")),
+            resume: args.flag("--resume"),
+            run: run_options(args, config)?,
+            eval: EvalOptions { mode, background },
+        })
+    };
+    let opts = parse().map_err(bad_call)?;
+    keyfill_cli::serve::serve(opts)
 }
 
 fn view_cmd(args: &Args, config: &Config) -> Result<()> {

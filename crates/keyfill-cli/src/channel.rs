@@ -30,6 +30,10 @@ pub enum Command {
         component: Option<String>,
         #[serde(default, skip_serializing_if = "Map::is_empty")]
         props: Map<String, Value>,
+        /// Сразу «в эфире»: без in, таймлайн — на первой остановке. Так канал поднимается после
+        /// сбоя и строится preview.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        instant: bool,
     },
     /// Снять остановку таймлайна: hold или цикл.
     Next { layer: u32 },
@@ -281,13 +285,13 @@ pub struct State {
 
 impl State {
     /// Команды, которые восстанавливают показанное и загруженное (уходящие уже не нужны).
-    /// Восстановленные экземпляры проигрывают `in` заново; вход сразу в «эфир» — с M4b.
+    /// Показанные встают сразу «в эфир» (`instant`): зритель не видит повторного выхода.
     pub fn to_batch(&self, frame: u64) -> Batch {
         let mut cmds = Vec::new();
         let props = |i: &Inst| i.props.as_object().cloned().unwrap_or_default();
         for (&layer, l) in &self.layers {
             if let Some(i) = &l.current {
-                cmds.push(Command::Play { layer, component: Some(i.component.clone()), props: props(i) }.into());
+                cmds.push(Command::Play { layer, component: Some(i.component.clone()), props: props(i), instant: true }.into());
             }
             if let Some(i) = &l.loaded {
                 cmds.push(Command::Load { layer, component: i.component.clone(), props: props(i) }.into());

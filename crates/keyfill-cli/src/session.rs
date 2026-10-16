@@ -50,6 +50,8 @@ pub struct Session {
     next_batch: usize,
     /// Отпущенные корни (элементы `For`, экземпляры после stop): удаляются, когда кончится уход.
     releasing: Vec<u32>,
+    /// Пачки, принятые `command` с прошлого `take_recorded`: их дописывает в журнал `serve`.
+    recorded: Vec<Batch>,
     pub logs: Vec<LogLine>,
     pub fps: f64,
     now: f64,
@@ -120,6 +122,7 @@ impl Session {
             batches: batches.to_vec(),
             next_batch: 0,
             releasing: Vec::new(),
+            recorded: Vec::new(),
             logs: first.logs,
             fps,
             now: 0.0,
@@ -283,6 +286,7 @@ impl Session {
         }
         if !kept.is_empty() {
             let frame = self.frame_index(t);
+            self.recorded.push(Batch { frame, cmds: kept.clone() });
             match self.batches.last_mut() {
                 // Две пачки на одном кадре — одна: при воспроизведении они тоже пойдут подряд.
                 Some(last) if last.frame == frame => last.cmds.extend(kept),
@@ -296,6 +300,18 @@ impl Session {
     /// Снимок канала: что на каких слоях и с какими данными.
     pub fn state(&self) -> Option<&State> {
         self.channel.as_ref()
+    }
+
+    /// Пачки, принятые живыми командами с прошлого вызова: для записи журнала по ходу эфира.
+    pub fn take_recorded(&mut self) -> Vec<Batch> {
+        std::mem::take(&mut self.recorded)
+    }
+
+    /// Когда всё запущенное к этому моменту улеглось: кончились in и уходы. Кадр preview.
+    pub fn quiet_time(&mut self) -> Result<f64> {
+        let settled = self.settled_time()?;
+        let leaving = self.releasing.iter().filter_map(|r| self.motion.hide_time(*r)).fold(settled, f64::max);
+        Ok(self.snap(leaving))
     }
 
     /// Команда слою в момент `t`.
@@ -334,11 +350,11 @@ impl Session {
                 }
                 Ok(())
             }
-            Command::Play { layer, component: Some(component), props } => {
+            Command::Play { layer, component: Some(component), props, instant } => {
                 self.layer_command(&Command::Load { layer: *layer, component: component.clone(), props: props.clone() }, t)?;
-                self.layer_command(&Command::Play { layer: *layer, component: None, props: Default::default() }, t)
+                self.layer_command(&Command::Play { layer: *layer, component: None, props: Default::default(), instant: *instant }, t)
             }
-            Command::Play { layer, component: None, props } => {
+            Command::Play { layer, component: None, props, instant } => {
                 if !props.is_empty() {
                     return reject(format!("play {layer}: пропсы передаются вместе с компонентом: play {layer} <Компонент> {{…}}; для показанного — update"));
                 }
@@ -355,7 +371,11 @@ impl Session {
                     self.leave(*layer, old, t)?;
                 }
                 self.event(t, &inst.name, "state", "playing".into());
-                self.motion.play(&self.scene, Some(&[inst.root]), t);
+                if *instant {
+                    self.motion.play_settled(&self.scene, &[inst.root], t);
+                } else {
+                    self.motion.play(&self.scene, Some(&[inst.root]), t);
+                }
                 inst.state = InstState::Playing;
                 self.layer_mut(*layer).current = Some(inst);
                 Ok(())
