@@ -292,12 +292,12 @@ fn main() -> ExitCode {
                     next: done.next,
                     repro: Some(repro(&raw, done.t.as_deref())),
                 };
-                println!("{}", serde_json::to_string(&env).unwrap_or_default());
+                out(&format!("{}\n", serde_json::to_string(&env).unwrap_or_default()));
             } else {
                 for log in &done.logs {
                     eprintln!("js {}: {}", log.level, log.message);
                 }
-                print!("{}", done.text);
+                out(&done.text);
                 for n in &done.next {
                     eprintln!("→ {n}");
                 }
@@ -311,7 +311,7 @@ fn main() -> ExitCode {
             let entry = Args::parse(&raw).ok().and_then(|a| a.rest.get(1).cloned());
             let (exit, env) = output::failure(&command, entry.as_deref(), &e);
             if json {
-                println!("{}", serde_json::to_string(&env).unwrap_or_default());
+                out(&format!("{}\n", serde_json::to_string(&env).unwrap_or_default()));
             } else if let Some(err) = env.error.as_ref().filter(|x| x.kind == "build" && !x.diagnostics.is_empty()) {
                 // Ошибки сборки — уже диагностики с местом в исходнике и строкой кода.
                 for d in &err.diagnostics {
@@ -329,6 +329,12 @@ fn main() -> ExitCode {
             ExitCode::from(exit)
         }
     }
+}
+
+/// Вывод в stdout без паники на закрытом канале (`kine dump … | head`).
+fn out(text: &str) {
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().write_all(text.as_bytes());
 }
 
 /// Строка, которая воспроизводит вызов: те же флаги, `--t` — разрешённое время.
@@ -359,11 +365,11 @@ fn bad_call(e: anyhow::Error) -> anyhow::Error {
 fn run(raw: &[String]) -> Result<Option<Done>> {
     let args = Args::parse(raw).map_err(bad_call)?;
     let Some(cmd) = args.rest.first().map(String::as_str) else {
-        println!("{USAGE}");
+        out(&format!("{USAGE}\n"));
         return Ok(None);
     };
     if cmd == "help" || args.flag("-h") || args.flag("--help") {
-        println!("{USAGE}");
+        out(&format!("{USAGE}\n"));
         return Ok(None);
     }
     if !COMMANDS.contains(&cmd) {

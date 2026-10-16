@@ -61,22 +61,28 @@ pub fn serve(opts: ViewOptions) -> Result<()> {
     let mut state = State { opts, scene, renderer: Default::default() };
     refresh(&mut state);
 
-    // Слушатели принимают соединения в своих потоках, а обработка одна: состояние сцены не делится.
-    let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
+    // Слушатели принимают соединения в своих потоках, запрос читается в потоке соединения
+    // с таймаутом (браузер открывает сокеты заранее и может молчать), а обработка одна:
+    // состояние сцены не делится.
+    let (tx, rx) = std::sync::mpsc::channel::<(TcpStream, Request)>();
     for listener in std::iter::once(v4).chain(v6) {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                if tx.send(stream).is_err() {
-                    break;
-                }
+            for mut stream in listener.incoming().flatten() {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                    let _ = stream.set_nodelay(true);
+                    if let Ok(req) = read_request(&mut stream) {
+                        let _ = tx.send((stream, req));
+                    }
+                });
             }
         });
     }
     drop(tx);
-    for mut stream in rx {
-        let _ = stream.set_nodelay(true);
-        if let Err(e) = handle(&mut state, &mut stream) {
+    for (mut stream, req) in rx {
+        if let Err(e) = handle(&mut state, &mut stream, req) {
             let _ = respond(&mut stream, 500, "text/plain; charset=utf-8", format!("{e:#}").as_bytes(), &[]);
         }
     }
@@ -89,6 +95,20 @@ struct Request {
     path: String,
     query: Vec<(String, String)>,
     range: Option<String>,
+    host: Option<String>,
+}
+
+impl Request {
+    /// Запрос пришёл на loopback-имя: страница с чужого сайта, переименованного DNS в
+    /// 127.0.0.1 (DNS rebinding), не прочтёт файлы просмотрщика.
+    fn local(&self) -> bool {
+        let Some(host) = &self.host else { return true };
+        let name = match host.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or(""),
+            None => host.split(':').next().unwrap_or(""),
+        };
+        matches!(name, "localhost" | "127.0.0.1" | "::1")
+    }
 }
 
 impl Request {
@@ -142,19 +162,24 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
     let head = String::from_utf8_lossy(&buf);
     let mut lines = head.lines();
     let target = lines.next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("/").to_string();
-    let range = lines.find_map(|l| l.strip_prefix("Range:").or_else(|| l.strip_prefix("range:")).map(|v| v.trim().to_string()));
+    let headers: Vec<(String, String)> =
+        lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))).collect();
+    let header = |name: &str| headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+    let range = header("range");
+    let host = header("host");
     let (path, qs) = target.split_once('?').unwrap_or((&target, ""));
     let query = qs.split('&').filter(|p| !p.is_empty()).map(|p| {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (decode(k), decode(v))
     });
-    Ok(Request { path: decode(path), query: query.collect(), range })
+    Ok(Request { path: decode(path), query: query.collect(), range, host })
 }
 
 fn respond(stream: &mut TcpStream, status: u16, ctype: &str, body: &[u8], extra: &[(&str, String)]) -> Result<()> {
     let reason = match status {
         200 => "OK",
         206 => "Partial Content",
+        403 => "Forbidden",
         404 => "Not Found",
         416 => "Range Not Satisfiable",
         _ => "Error",
@@ -204,8 +229,10 @@ fn kind_of(path: &Path) -> &'static str {
     }
 }
 
-fn handle(state: &mut State, stream: &mut TcpStream) -> Result<()> {
-    let req = read_request(stream)?;
+fn handle(state: &mut State, stream: &mut TcpStream, req: Request) -> Result<()> {
+    if !req.local() {
+        return respond(stream, 403, "text/plain; charset=utf-8", b"kine view: only localhost", &[]);
+    }
     match req.path.as_str() {
         "/" | "/index.html" => respond(stream, 200, "text/html; charset=utf-8", INDEX.as_bytes(), &[]),
         "/api/files" => json_response(stream, &files(&state.opts.dir)),
@@ -289,8 +316,15 @@ fn files(dir: &Path) -> Value {
     Value::Array(out)
 }
 
+/// Только имя файла внутри каталога: ни подкаталогов, ни `..`, ни путей вида `C:файл`,
+/// которые на Windows при `join` заменяют весь каталог.
+fn plain_name(name: &str) -> bool {
+    let mut parts = Path::new(name).components();
+    matches!((parts.next(), parts.next()), (Some(std::path::Component::Normal(_)), None)) && !name.contains(['/', '\\', ':'])
+}
+
 fn serve_file(stream: &mut TcpStream, dir: &Path, name: &str, range: Option<&str>) -> Result<()> {
-    if name.contains("..") || name.contains('/') || name.contains('\\') {
+    if !plain_name(name) {
         return respond(stream, 404, "text/plain; charset=utf-8", b"not found", &[]);
     }
     let path = dir.join(name);
@@ -303,8 +337,14 @@ fn serve_file(stream: &mut TcpStream, dir: &Path, name: &str, range: Option<&str
     if let Some(spec) = range.and_then(|r| r.strip_prefix("bytes=")) {
         let (a, b) = spec.split_once('-').unwrap_or((spec, ""));
         let len = data.len();
-        let start: usize = a.parse().unwrap_or(0);
-        let end: usize = if b.is_empty() { len.saturating_sub(1) } else { b.parse().unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1)) };
+        let last = len.saturating_sub(1);
+        let (start, end) = match (a.parse::<usize>(), b.parse::<usize>()) {
+            // `bytes=-N` — последние N байт.
+            (Err(_), Ok(n)) => (len.saturating_sub(n), last),
+            (Ok(s), Ok(e)) => (s, e.min(last)),
+            (Ok(s), Err(_)) => (s, last),
+            (Err(_), Err(_)) => (0, last),
+        };
         if start >= len || end < start {
             return respond(stream, 416, ctype, b"", &[("Content-Range", format!("bytes */{len}"))]);
         }
@@ -449,6 +489,14 @@ fn node_paths(scene: &Scene) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_file_names() {
+        assert!(plain_name("strip.png"));
+        for bad in ["../Cargo.toml", "C:Cargo.toml", "C:\\x", "a/b", "..", "", "/etc"] {
+            assert!(!plain_name(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn url_decoding() {

@@ -114,14 +114,23 @@ impl Job {
     }
 }
 
+/// Файл результата по `-o`: каталог, которого нет, — ошибка вызова, а не сбой kine.
+fn write_output(out: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::write(out, bytes).map_err(|e| crate::usage(format!("не удалось записать {}: {e}", out.display())))
+}
+
 /// Кадр в момент из `--t` (без него — `settled`, кадр «в эфире»), на границе кадра.
+/// Секунды и кадры округляются к ближайшему кадру, а `settled` и маркеры — вверх: кадр
+/// не должен оказаться раньше события, которое он показывает.
 pub fn frame(job: &Job, moment: Option<&Moment>) -> Result<(Session, Frame, At)> {
     let mut s = job.session()?;
     let t = match moment {
-        Some(m) => time::resolve(m, &mut s)?,
+        Some(m) => {
+            let t = time::resolve(m, &mut s)?;
+            if matches!(m, Moment::At(_)) { s.nearest_frame(t) } else { s.snap(t) }
+        }
         None => s.settled_time()?,
     };
-    let t = s.nearest_frame(t);
     let frame = s.frame_at(t, job.eval)?;
     let at = At { t, frame: s.frame_index(t) };
     job.keep(&s);
@@ -149,7 +158,7 @@ pub fn render(job: &Job, moment: Option<&Moment>, out: &Path, scale: f32, with_d
     let mut renderer = Renderer::default();
     let pixmap = renderer.render(&frame, &opts)?;
     let size = [u32::from(pixmap.width()), u32::from(pixmap.height())];
-    std::fs::write(out, kine_render::png(pixmap, Png::Small)?).with_context(|| format!("не удалось записать {}", out.display()))?;
+    write_output(out, &kine_render::png(pixmap, Png::Small)?)?;
     let dump = dump::build(&session.scene, &frame);
     let result = Rendered {
         file: crate::slash(out),
@@ -270,7 +279,7 @@ pub fn filmstrip(job: &Job, spec: Option<&TimeSpec>, out: &Path, o: &FilmstripOp
     let times = filmstrip::times(&session, &fopts);
     let strip = filmstrip::build(&mut session, &times, job.eval, &fopts)?;
     let png = kine_render::execute_png(&strip.display, &RenderOptions { scale: 1.0, background: None })?;
-    std::fs::write(out, png).with_context(|| format!("не удалось записать {}", out.display()))?;
+    write_output(out, &png)?;
     let counts = Counts::of(strip.frames.iter().flat_map(|f| &f.diagnostics.0));
     job.keep(&session);
     let result = Filmstrip {

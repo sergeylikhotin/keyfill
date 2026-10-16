@@ -7,6 +7,9 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use rquickjs::{CaughtError, CatchResultExt, Context, Function, Runtime};
@@ -20,11 +23,14 @@ pub struct RunOptions {
     /// Пропсы сцены из CLI, JSON `{ values, raw }`: `values` — из `--props`, `raw` — строки
     /// из `--set`, их приводит к типам схемы сама сцена.
     pub props: Option<String>,
+    /// Сколько JS может исполняться за один вызов (монтирование, команда сценария): бесконечный
+    /// цикл в сцене прерывается исключением, а не вешает CLI и просмотрщик.
+    pub budget: Duration,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { seed: 1, now_ms: 0.0, props: None }
+        Self { seed: 1, now_ms: 0.0, props: None, budget: Duration::from_secs(10) }
     }
 }
 
@@ -55,8 +61,39 @@ const PRELUDE: &str = r#"
     s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
     return s / 4294967296;
   };
-  Date.now = () => __KINE_NOW__;
-  globalThis.performance = { now: () => __KINE_NOW__ };
+  // Часы и часовой пояс сцены: «сейчас» — __KINE_NOW__, пояс — UTC на любой машине.
+  // Локальные методы Date становятся UTC-методами, конструктор без аргументов даёт «сейчас».
+  const NOW = __KINE_NOW__;
+  const RealDate = Date;
+  const P = RealDate.prototype;
+  const realOffset = P.getTimezoneOffset;
+  for (const n of ['FullYear', 'Month', 'Date', 'Day', 'Hours', 'Minutes', 'Seconds', 'Milliseconds']) {
+    P['get' + n] = P['getUTC' + n];
+    if (n !== 'Day') P['set' + n] = P['setUTC' + n];
+  }
+  P.getTimezoneOffset = () => 0;
+  const utc = function () { return P.toUTCString.call(this); };
+  P.toString = P.toDateString = P.toTimeString = utc;
+  P.toLocaleString = P.toLocaleDateString = P.toLocaleTimeString = utc;
+  // Строка без пояса разбирается как местное время машины — переводим её в UTC.
+  const parse = (s) => {
+    const t = RealDate.parse(s);
+    const str = String(s).trim();
+    if (Number.isNaN(t) || /(Z|[+-]\d\d:?\d\d|GMT|UTC)$/i.test(str) || /^\d{4}(-\d\d){0,2}$/.test(str)) return t;
+    return t - realOffset.call(new RealDate(t)) * 60000;
+  };
+  function KineDate(...a) {
+    if (!new.target) return P.toUTCString.call(new RealDate(NOW));
+    const v = a.length === 0 ? NOW : a.length === 1 ? (typeof a[0] === 'string' ? parse(a[0]) : a[0]) : RealDate.UTC(...a);
+    return Reflect.construct(RealDate, [v], new.target);
+  }
+  KineDate.prototype = P;
+  P.constructor = KineDate;
+  KineDate.now = () => NOW;
+  KineDate.parse = parse;
+  KineDate.UTC = RealDate.UTC;
+  globalThis.Date = KineDate;
+  globalThis.performance = { now: () => NOW };
   globalThis.__kine_props = __KINE_PROPS__;
   const noTimers = () => {
     throw new Error('kine: таймеров нет, время ведёт ядро: движение — presence/transition/timeline, смена данных — команды сценария (cues)');
@@ -73,27 +110,70 @@ pub struct JsHost {
     ctx: Context,
     _rt: Runtime,
     out: Rc<RefCell<RunOutput>>,
+    watchdog: Watchdog,
+}
+
+/// Сторож бюджета: перед каждым вызовом JS заводится срок, обработчик прерываний QuickJS
+/// останавливает исполнение после него.
+#[derive(Clone)]
+struct Watchdog {
+    deadline: Arc<Mutex<Instant>>,
+    tripped: Arc<AtomicBool>,
+    budget: Duration,
+}
+
+impl Watchdog {
+    fn new(rt: &Runtime, budget: Duration) -> Watchdog {
+        let w = Watchdog { deadline: Arc::new(Mutex::new(Instant::now() + budget)), tripped: Arc::default(), budget };
+        let (deadline, tripped) = (w.deadline.clone(), w.tripped.clone());
+        rt.set_interrupt_handler(Some(Box::new(move || {
+            let over = Instant::now() > *deadline.lock().unwrap_or_else(|e| e.into_inner());
+            if over {
+                tripped.store(true, Ordering::Relaxed);
+            }
+            over
+        })));
+        w
+    }
+
+    fn arm(&self) {
+        *self.deadline.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now() + self.budget;
+        self.tripped.store(false, Ordering::Relaxed);
+    }
+
+    /// Исключение «interrupted» после срока — понятная ошибка с подсказкой.
+    fn explain(&self, e: anyhow::Error) -> anyhow::Error {
+        if !self.tripped.load(Ordering::Relaxed) {
+            return e;
+        }
+        let mut ex = e.downcast::<JsException>().unwrap_or_else(|e| JsException { message: e.to_string(), kine: false, source: None, stack: Vec::new(), hidden: 0 });
+        ex.message = format!("JS исполнялся дольше {} с и прерван: бесконечный цикл?", self.budget.as_secs_f64());
+        anyhow::Error::new(ex)
+    }
 }
 
 impl JsHost {
     /// Запускает бандл; возвращает хост и то, что сцена отправила при монтировании.
     pub fn start(source: &str, opts: &RunOptions) -> Result<(JsHost, RunOutput)> {
         let rt = Runtime::new()?;
+        let watchdog = Watchdog::new(&rt, opts.budget);
         let ctx = Context::full(&rt)?;
         let out = Rc::new(RefCell::new(RunOutput::default()));
-        init(&ctx, &out, source, opts)?;
+        watchdog.arm();
+        init(&ctx, &out, source, opts).map_err(|e| watchdog.explain(e))?;
         let first = std::mem::take(&mut *out.borrow_mut());
-        Ok((JsHost { ctx, _rt: rt, out }, first))
+        Ok((JsHost { ctx, _rt: rt, out, watchdog }, first))
     }
 
     /// Вызывает глобальную функцию сцены с JSON-аргументом и возвращает отправленные пакеты.
     pub fn call(&mut self, name: &str, arg_json: &str) -> Result<RunOutput> {
+        self.watchdog.arm();
         let result: Result<()> = self.ctx.with(|ctx| {
             let f: Function = ctx.globals().get(name).catch(&ctx).map_err(js_error)?;
             f.call::<_, ()>((arg_json.to_string(),)).catch(&ctx).map_err(js_error)?;
             Ok(())
         });
-        result?;
+        result.map_err(|e| self.watchdog.explain(e))?;
         Ok(std::mem::take(&mut *self.out.borrow_mut()))
     }
 }
@@ -232,6 +312,20 @@ mod tests {
         let b = run_bundle(src, &opts).unwrap();
         assert_eq!(a.batches, b.batches);
         assert!(a.batches[0].starts_with("[1500,1500,"));
+    }
+
+    #[test]
+    fn date_is_fixed_and_utc() {
+        let src = "__kine_emit(JSON.stringify([new Date().toISOString(), new Date(2020, 0, 2, 3).getHours(), new Date(0).getTimezoneOffset(), Date(), new Date('2020-01-02T03:04').getHours()]));";
+        let out = run_bundle(src, &RunOptions { now_ms: 1_000.0, ..Default::default() }).unwrap();
+        assert_eq!(out.batches[0], r#"["1970-01-01T00:00:01.000Z",3,0,"Thu, 01 Jan 1970 00:00:01 GMT",3]"#);
+    }
+
+    #[test]
+    fn endless_loop_is_interrupted() {
+        let opts = RunOptions { budget: Duration::from_millis(100), ..Default::default() };
+        let err = run_bundle("while (true) {}", &opts).unwrap_err();
+        assert!(err.to_string().contains("бесконечный цикл"), "{err}");
     }
 
     #[test]

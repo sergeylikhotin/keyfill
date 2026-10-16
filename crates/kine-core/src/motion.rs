@@ -296,18 +296,43 @@ fn spring_state(k: f64, c: f64, m: f64, v0: f64, t: f64) -> (f64, f64) {
     (1.0 - x, -v)
 }
 
-/// Время, после которого пружина в пределах 0.1% от цели и почти неподвижна. Шаг 1 мс, максимум 10 с.
+/// Время, после которого пружина в пределах 0.1% от цели и почти неподвижна. Первые 10 с
+/// проверяются с шагом 1 мс; медленная пружина ищется дальше, до горизонта по скорости
+/// затухания огибающей, — без этого она обрывалась скачком на 10 с.
 fn spring_settle(k: f64, c: f64, m: f64, v0: f64) -> f64 {
-    const STEPS: u32 = 10_000;
+    let moving = |t: f64| {
+        let (p, dp) = spring_state(k, c, m, v0, t);
+        (1.0 - p).abs() > 1e-3 || dp.abs() > 1e-2
+    };
+    const FINE: u32 = 10_000;
     let mut last = 0;
-    for i in 0..=STEPS {
-        let (p, dp) = spring_state(k, c, m, v0, f64::from(i) / 1000.0);
-        if (1.0 - p).abs() > 1e-3 || dp.abs() > 1e-2 {
+    for i in 0..=FINE {
+        if moving(f64::from(i) / 1000.0) {
             last = i;
         }
     }
-    f64::from(last + 1) / 1000.0
+    if last < FINE {
+        return f64::from(last + 1) / 1000.0;
+    }
+    let w0 = (k / m).sqrt();
+    let z = c / (2.0 * (k * m).sqrt());
+    let rate = if z < 1.0 { z * w0 } else { w0 * (z - (z * z - 1.0).max(0.0).sqrt()) };
+    // ln(1000) огибающей с запасом на начальную скорость и множитель t критического режима.
+    let horizon = (((1000.0 * (1.0 + v0.abs() / w0)).ln() + 8.0) / rate.max(1e-6)).clamp(10.0, SPRING_LIMIT);
+    const COARSE: u32 = 20_000;
+    let step = (horizon - 10.0) / f64::from(COARSE);
+    let mut end = 10.0;
+    for i in 1..=COARSE {
+        let t = 10.0 + step * f64::from(i);
+        if moving(t) {
+            end = t + step;
+        }
+    }
+    end.min(SPRING_LIMIT)
 }
+
+/// Дольше пружина не считается: её движение обрывается на этом моменте.
+const SPRING_LIMIT: f64 = 3600.0;
 
 // ─── Сегменты и дорожки ─────────────────────────────────────────────────────
 
@@ -473,6 +498,11 @@ impl Compiler<'_> {
         match v.get("motion").and_then(Value::as_str) {
             Some("animate") => {
                 let easing = Easing::parse(v.get("easing").ok_or("animate без easing")?)?;
+                let settle = easing.duration(0.0);
+                if matches!(easing, Easing::Spring { .. }) && settle > 10.0 {
+                    let msg = format!("пружина успокаивается {} с: поставь stiffness выше или damping ближе к критическому", num(settle as f32));
+                    self.notes.push((Level::Warn, "motion.spring-slow", msg));
+                }
                 let targets = v.get("targets").and_then(Value::as_object).ok_or("animate без targets")?;
                 let mut segs = Vec::new();
                 for (key, raw) in targets {
@@ -604,6 +634,11 @@ impl NodeState {
     /// Запускает программу на слое presence. `continuing` — узел на экране: первый сегмент
     /// каждого канала идёт от текущего значения, пружина сохраняет скорость.
     fn start(&mut self, prog: &Program, t: f64, source: &'static str, continuing: bool) {
+        // Узел, которого не было на экране, начинает с объявленных значений: дорожки прошлого
+        // `out` (например, сдвиг) не должны пережить повторное появление.
+        if !continuing {
+            self.rel.clear();
+        }
         let mut by_channel: BTreeMap<Channel, Vec<&ProgSeg>> = BTreeMap::new();
         for s in &prog.segs {
             by_channel.entry(s.channel).or_default().push(s);
@@ -729,6 +764,9 @@ pub struct NodeValues {
     pub show: Option<bool>,
     /// Почему узел ушёл, если `show == Some(false)`.
     pub gone: Option<Gone>,
+    /// Каналы `abs`, которые сейчас ведёт presence или таймлайн (идёт их движение): кадр
+    /// рисуется с ними, а `must` проверяет графику без них — это промежуточное состояние.
+    pub staged: Vec<Channel>,
     /// Что с узлом происходит: `in 78%`, `loop`, `transition opacity 40%`.
     pub notes: Vec<Note>,
     /// Подробности по каналам для inspect.
@@ -863,6 +901,24 @@ pub struct Animated {
     pub removed: bool,
     pub clock: Option<Clock>,
     pub diagnostics: Diagnostics,
+}
+
+impl Animated {
+    /// Есть ли каналы в движении presence или таймлайна.
+    pub fn has_staged(&self) -> bool {
+        self.nodes.values().any(|n| !n.staged.is_empty())
+    }
+
+    /// Те же значения без каналов в движении presence и таймлайна: по ним проверяется `must`.
+    pub fn without_staged(&self) -> Animated {
+        let mut out = self.clone();
+        for nv in out.nodes.values_mut() {
+            for ch in std::mem::take(&mut nv.staged) {
+                nv.abs.remove(&ch);
+            }
+        }
+        out
+    }
 }
 
 impl MotionState {
@@ -1248,10 +1304,20 @@ impl MotionState {
             None => self.nodes.keys().copied().collect(),
             Some(roots) => roots.iter().flat_map(|r| Self::subtree(scene, *r)).collect(),
         };
-        if roots.is_none() && self.scene != ScenePhase::Playing {
-            self.scene = ScenePhase::Removed;
-            self.scene_event(t, "removed");
-            return;
+        if roots.is_none() {
+            match self.scene {
+                ScenePhase::Playing => {}
+                // Второй stop не обрывает идущий уход.
+                ScenePhase::Stopping { .. } | ScenePhase::Removed => {
+                    self.push_event(MotionEvent { t, source: "scene".into(), kind: "ignored", name: "stop: сцена уже уходит".into() });
+                    return;
+                }
+                ScenePhase::Loaded => {
+                    self.scene = ScenePhase::Removed;
+                    self.scene_event(t, "removed");
+                    return;
+                }
+            }
         }
         let leaving: Vec<u32> = ids
             .into_iter()
@@ -1406,6 +1472,9 @@ impl MotionState {
                     Channel::Reveal => nv.motion.reveal = f,
                     _ => {
                         nv.abs.insert(ch, v);
+                        if waiting || tr.running(t) {
+                            nv.staged.push(ch);
+                        }
                     }
                 }
                 let p = if waiting { Some(0.0) } else { progress(tr, t) };
@@ -1459,6 +1528,9 @@ impl MotionState {
                     Channel::Reveal => nv.motion.reveal *= f,
                     _ => {
                         nv.abs.insert(ch, v);
+                        if run.track((id, ch), t).is_some_and(|(tr, local)| tr.running(local)) {
+                            nv.staged.push(ch);
+                        }
                     }
                 }
                 if let Some((tr, local)) = run.track((id, ch), t) {

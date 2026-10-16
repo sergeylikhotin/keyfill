@@ -101,7 +101,10 @@ pub(crate) fn parse(v: &Value, c: &mut Compiler) -> Result<TimelineDef, Vec<Stri
         };
         for (name, raw) in k.get("targets").and_then(Value::as_object).into_iter().flatten() {
             let Some(channel) = Channel::parse(name) else {
-                errors.push(format!("keys[{i}]: канал {name} не анимируется"));
+                // Канал, которого ядро не умеет анимировать (blur), пропускается с предупреждением,
+                // как в presence: остальной таймлайн работает.
+                let what = if name == "blur" { "blur пока не анимируется" } else { "неизвестный канал" };
+                c.notes.push((crate::diag::Level::Warn, "motion.unsupported", format!("keys[{i}].{name}: {what}, пропущен")));
                 continue;
             };
             let pair = raw.as_array().filter(|p| p.len() == 2);
@@ -145,7 +148,16 @@ pub(crate) fn parse(v: &Value, c: &mut Compiler) -> Result<TimelineDef, Vec<Stri
                 errors.push(format!("loop: {to} ({b}) должен быть позже {from} ({a})"));
             } else {
                 let pingpong = l.get("mode").and_then(Value::as_str) == Some("pingpong");
-                let count = l.get("count").and_then(Value::as_u64).map(|n| n.max(1) as u32);
+                let count = match l.get("count") {
+                    None | Some(Value::Null) => None,
+                    Some(c) => match c.as_u64().filter(|n| *n >= 1) {
+                        Some(n) => Some(n as u32),
+                        None => {
+                            errors.push(format!("loop.count: ожидается целое ≥ 1, получено {c}"));
+                            None
+                        }
+                    },
+                };
                 repeat = Some(LoopDef { from, to, a, b, pingpong, count });
             }
         }
@@ -456,12 +468,17 @@ impl Run {
             Mode::Out { end } => consider(end, Stop::OutEnd),
             _ => {}
         }
-        best.map(|(x, s)| (h.t0 + (x - tau) / h.dir, s))
+        // Моменты остановок на сетке 1e-9 с: витки цикла копят погрешность сложения, и без
+        // сетки граница витка попадала то до кадра, то после него.
+        best.map(|(x, s)| (((h.t0 + (x - tau) / h.dir) * 1e9).round() / 1e9, s))
     }
 
     /// Обрабатывает остановку, которую вернул `next_stop`, в её момент.
     pub fn on_stop(&mut self, t: f64, stop: Stop) {
-        self.flush_to(t, matches!(stop, Stop::LoopEnd | Stop::SegmentEnd | Stop::OutEnd));
+        // Маркер, на котором воспроизведение останавливается или разворачивается, не считается
+        // пройденным: `out` проходится только по stop.
+        let exclusive = matches!(stop, Stop::LoopEnd | Stop::SegmentEnd | Stop::OutEnd) || stop == Stop::Hold("out".into());
+        self.flush_to(t, exclusive);
         let tau = self.head.tau(t);
         match stop {
             Stop::Hold(_) => {
@@ -482,18 +499,24 @@ impl Run {
                 if let Some(n) = &mut self.loop_left {
                     *n -= 1;
                 }
+                // Каналы снова идут по исходным ключам: после сегмента команды они были перестроены
+                // от текущих значений только вперёд, и назад (pingpong) застывали бы.
+                self.active = self.base.clone();
+                self.detached.clear();
                 if l.pingpong {
                     self.head = Head { t0: t, tau0: l.b, dir: -1.0 };
                 } else {
-                    // Повтор: цикл задуман бесшовным, поэтому каналы снова идут по исходным ключам.
-                    self.active = self.base.clone();
-                    self.detached.clear();
+                    // Повтор: цикл задуман бесшовным.
                     self.head = Head { t0: t, tau0: l.a, dir: 1.0 };
                     self.last_tau = l.a;
                     self.event(t, "marker", &l.from);
                 }
             }
-            Stop::LoopStart => self.head = Head { t0: t, tau0: tau, dir: 1.0 },
+            Stop::LoopStart => {
+                self.active = self.base.clone();
+                self.detached.clear();
+                self.head = Head { t0: t, tau0: tau, dir: 1.0 };
+            }
             Stop::End => {
                 self.head = Head { t0: t, tau0: tau, dir: 0.0 };
                 self.mode = Mode::Finished;
@@ -584,7 +607,9 @@ impl Run {
                 self.head = Head { t0: t, tau0: tau, dir: 1.0 };
                 self.set_state(t, RunState::In);
             }
-            Mode::Main if self.loop_on => {
+            // Выход из цикла — только изнутри него: ранний next, пока до цикла не дошли, не
+            // отменяет будущий цикл молча.
+            Mode::Main if self.loop_on && self.state == RunState::Loop => {
                 self.loop_on = false;
                 self.head = Head { t0: t, tau0: tau, dir: 1.0 };
                 self.set_state(t, RunState::In);
@@ -696,6 +721,19 @@ mod tests {
 
     fn lin(d: f64) -> Value {
         json!({ "kind": "tween", "duration": d, "ease": "linear" })
+    }
+
+    #[test]
+    fn fractional_loop_count_is_an_error() {
+        let theme = BTreeMap::new();
+        let v = json!({
+            "timeline": "Card",
+            "keys": [],
+            "markers": { "loop": 1, "back": 2 },
+            "loop": { "from": "loop", "to": "back", "count": 2.5 },
+        });
+        let errors = parse(&v, &mut Compiler { theme: &theme, notes: Vec::new() }).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("loop.count")), "{errors:?}");
     }
 
     /// Ключи: opacity 0→1 за [0, 1], затем 1→0.5 в цикле [2, 3], out: 1→0 за [4, 5].

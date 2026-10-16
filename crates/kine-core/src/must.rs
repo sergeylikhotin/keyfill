@@ -53,7 +53,13 @@ pub struct Hints(std::collections::HashMap<(u32, &'static str, String), String>)
 /// и уход — промежуточные кадры, а утверждения говорят о состоянии в эфире.
 pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, anim: &Animated, hints: &mut Hints) -> Result<Frame> {
     let base = build_frame_with(scene, engine, &Overrides::new(), anim)?;
-    let (violations, notes) = check(scene, &base, opts);
+    // Каналы в движении presence и таймлайна (ширина посреди появления) в `must` не участвуют:
+    // проверка идёт по кадру без них, а рисуется кадр с ними.
+    let staged = anim.has_staged();
+    let check_anim = if staged { anim.without_staged() } else { Animated::default() };
+    let check_anim = if staged { &check_anim } else { anim };
+    let check_frame = if staged { Some(build_frame_with(scene, engine, &Overrides::new(), check_anim)?) } else { None };
+    let (violations, notes) = check(scene, check_frame.as_ref().unwrap_or(&base), opts);
     if violations.is_empty() {
         let mut frame = base;
         frame.diagnostics.0.extend(notes.0);
@@ -72,7 +78,7 @@ pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, an
                         let h = if steps.is_empty() {
                             default_hint(v.rule).to_string()
                         } else {
-                            match first_fix(scene, engine, opts, anim, v.id, &Overrides::new(), &steps)? {
+                            match first_fix(scene, engine, opts, check_anim, v.id, &Overrides::new(), &steps)? {
                                 Some(step) => format!("{} это исправляет; в эфире шаг применится сам", step.label),
                                 None => format!("ни один шаг else ({} шт.) это не исправляет; {}", steps.len(), default_hint(v.rule)),
                             }
@@ -95,11 +101,12 @@ pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, an
                 if steps.is_empty() {
                     continue;
                 }
-                let chosen = first_fix(scene, engine, opts, anim, id, &overrides, &steps)?.unwrap_or_else(|| steps.last().expect("non-empty").clone());
+                let chosen = first_fix(scene, engine, opts, check_anim, id, &overrides, &steps)?.unwrap_or_else(|| steps.last().expect("non-empty").clone());
                 overrides.insert(id, chosen);
             }
             let mut frame = build_frame_with(scene, engine, &overrides, anim)?;
-            let (remaining, notes) = check(scene, &frame, opts);
+            let checked = if staged { Some(build_frame_with(scene, engine, &overrides, check_anim)?) } else { None };
+            let (remaining, notes) = check(scene, checked.as_ref().unwrap_or(&frame), opts);
             for v in &violations {
                 if let Some(step) = overrides.get(&v.id) {
                     let fixed = !remaining.iter().any(|r| r.id == v.id && r.rule == v.rule);

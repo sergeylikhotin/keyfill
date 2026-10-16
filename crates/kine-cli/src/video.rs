@@ -106,7 +106,7 @@ enum Sink {
 impl Sink {
     fn open(session: &Session, opts: &VideoOptions) -> Result<Sink> {
         if opts.codec == Codec::Png {
-            std::fs::create_dir_all(&opts.out).with_context(|| format!("не удалось создать {}", opts.out.display()))?;
+            std::fs::create_dir_all(&opts.out).map_err(|e| crate::usage(format!("не удалось создать {}: {e}", opts.out.display())))?;
             return Ok(Sink::Dir(opts.out.clone()));
         }
         if !ffmpeg_available() {

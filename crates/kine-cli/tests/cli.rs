@@ -142,4 +142,8 @@ fn usage_errors_exit_2() {
     assert_eq!(code, 2);
     let (code, _) = kine(&["dump", "examples/nope.tsx"]).unwrap();
     assert_eq!(code, 2);
+    let (code, _) = kine(&["render", "examples/lower-third/scene.tsx", "-o", "out/no-such-dir/x.png"]).unwrap();
+    assert_eq!(code, 2, "каталога для -o нет — ошибка вызова");
+    let (code, _) = kine(&["render", "examples/lower-third/scene.tsx", "--scale", "0"]).unwrap();
+    assert_eq!(code, 2);
 }

@@ -104,7 +104,14 @@ fn read_cache(file: &Path, stamp: &str) -> Option<Bundle> {
     })
 }
 
-fn write_cache(file: &Path, stamp: String, out: &Output) {
+/// Записывает бандл в кэш. Если какой-то вход изменён после начала сборки (`started`), запись
+/// пропускается: esbuild мог прочесть старое содержимое, а хэш посчитался бы от нового, и кэш
+/// навсегда отдавал бы устаревший бандл.
+fn write_cache(file: &Path, stamp: String, out: &Output, started: std::time::SystemTime) {
+    let changed = out.inputs.iter().any(|p| std::fs::metadata(p).and_then(|m| m.modified()).map_or(true, |m| m >= started));
+    if changed {
+        return;
+    }
     let inputs = out.inputs.iter().filter_map(|p| Some((p.clone(), hash_file(Path::new(p))?))).collect();
     let entry = CacheEntry { stamp, inputs, code: out.code.clone(), map: out.map.clone() };
     let Ok(json) = serde_json::to_vec(&entry) else { return };
@@ -161,6 +168,8 @@ pub fn bundle(entry: &Path) -> Result<Bundle> {
         let msg = format!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home));
         return Err(tool_error("build.setup", msg));
     }
+    // С запасом на грубое разрешение времени файловой системы.
+    let started = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
     let out = match Command::new("node").arg(&script).arg(&entry).stdin(Stdio::null()).output() {
         Ok(out) => out,
         Err(e) => return Err(tool_error("build.setup", format!("не удалось запустить node для сборки сцены: {e}"))),
@@ -173,7 +182,7 @@ pub fn bundle(entry: &Path) -> Result<Bundle> {
     }
     let parsed: Output = serde_json::from_slice(&out.stdout).context("бандлер вернул не JSON")?;
     if let Some(file) = &cache {
-        write_cache(file, stamp, &parsed);
+        write_cache(file, stamp, &parsed, started);
     }
     Ok(Bundle {
         map: SourceMap::parse(&parsed.map),
