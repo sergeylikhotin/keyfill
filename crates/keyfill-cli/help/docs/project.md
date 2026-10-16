@@ -5,7 +5,8 @@
     npm i -D @keyfill/cli typescript
 
 `@keyfill/cli` даёт команду `npx keyfill` и ставит `@keyfill/core` (API сцен, рантайм, бандлер), esbuild
-и нативный бинарь под платформу (`@keyfill/cli-win32-x64`, `-linux-x64`, `-darwin-arm64`, `-darwin-x64`).
+и нативный бинарь под платформу (`@keyfill/cli-win32-x64`, `-linux-x64`, `-darwin-arm64`). На Intel Mac
+бинаря нет — сборка из исходников: `cargo build --release -p keyfill-cli`.
 
 Новая сцена:
 

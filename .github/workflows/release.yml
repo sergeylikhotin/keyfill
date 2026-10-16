@@ -23,7 +23,6 @@ jobs:
           - { os: windows-latest, target: win32-x64, binary: target/release/keyfill.exe }
           - { os: ubuntu-latest, target: linux-x64, binary: target/release/keyfill }
           - { os: macos-14, target: darwin-arm64, binary: target/release/keyfill }
-          - { os: macos-13, target: darwin-x64, binary: target/release/keyfill }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

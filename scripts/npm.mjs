@@ -24,8 +24,12 @@ const value = (name, fallback) => {
   return i >= 0 ? args[i + 1] : fallback;
 };
 
-/** Платформы, под которые есть пакет бинаря: имя пакета — `@keyfill/cli-<платформа>`. */
-const TARGETS = ['win32-x64', 'linux-x64', 'darwin-arm64', 'darwin-x64'];
+/**
+ * Платформы, под которые есть пакет бинаря: имя пакета — `@keyfill/cli-<платформа>`.
+ * darwin-x64 (Intel Mac) не собирается: Apple Silicon вытеснил Intel, а GitHub закрыл
+ * macos-13 и уберёт Intel-раннеры в 2027. На Intel Mac — сборка из исходников.
+ */
+const TARGETS = ['win32-x64', 'linux-x64', 'darwin-arm64'];
 const target = value('--target', `${process.platform}-${process.arch}`);
 if (!TARGETS.includes(target)) throw new Error(`--target: ${target}; есть ${TARGETS.join(', ')}`);
 const [targetOs, targetCpu] = target.split('-');

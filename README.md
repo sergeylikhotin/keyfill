@@ -67,7 +67,8 @@ npx tsc -p .
 ```
 
 `@keyfill/cli` installs the `keyfill` command, `@keyfill/core` (scene API, runtime, bundler), esbuild and
-the native binary for your platform (win32-x64, linux-x64, darwin-arm64, darwin-x64). `keyfill new`
+the native binary for your platform (win32-x64, linux-x64, darwin-arm64; on an Intel Mac, build from
+source). `keyfill new`
 creates a scene from a template and, in a fresh project, `tsconfig.json`, `keyfill.config.ts` and the
 Inter font. `npx keyfill doctor` checks the environment. Video output needs `ffmpeg` in `PATH`.
 
