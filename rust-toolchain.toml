@@ -1,0 +1,6 @@
+# Одна версия Rust локально и в CI: новые проверки clippy и изменения компилятора приходят,
+# когда версию поднимают здесь, а не с очередным релизом stable.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -29,7 +29,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust из rust-toolchain.toml
+        run: rustup toolchain install
       - name: тег совпадает с версией
         if: startsWith(github.ref, 'refs/tags/v')
         run: node scripts/version.mjs --check ${{ github.ref_name }}

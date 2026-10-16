@@ -146,8 +146,8 @@ pub fn decode_png(bytes: &[u8]) -> Result<Image> {
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf.as_chunks::<2>().0.iter().flat_map(|&[g, a]| [g, g, g, a]).collect(),
         png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         other => bail!("PNG: цвет {other:?} не поддерживается"),
     };
@@ -156,9 +156,10 @@ pub fn decode_png(bytes: &[u8]) -> Result<Image> {
 
 /// PNG из картинки; без прозрачности — RGB.
 pub fn encode_png(img: &Image, speed: Png) -> Result<Vec<u8>> {
-    let opaque = img.rgba.chunks_exact(4).all(|p| p[3] == 255);
+    let pixels = img.rgba.as_chunks::<4>().0;
+    let opaque = pixels.iter().all(|p| p[3] == 255);
     let (color, data) = if opaque {
-        (png::ColorType::Rgb, img.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect())
+        (png::ColorType::Rgb, pixels.iter().flat_map(|&[r, g, b, _]| [r, g, b]).collect())
     } else {
         (png::ColorType::Rgba, img.rgba.clone())
     };
@@ -178,7 +179,7 @@ pub fn encode_png(img: &Image, speed: Png) -> Result<Vec<u8>> {
 
 /// Прямая альфа из premultiplied: PNG и кодировщики видео ждут RGBA без умножения.
 pub fn unpremultiply(px: &mut [u8]) {
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         let a = p[3] as u32;
         if a == 0 {
             p[..3].fill(0);

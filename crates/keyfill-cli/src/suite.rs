@@ -645,9 +645,10 @@ fn compare(a: &Image, b: &Image, channel: u8) -> (usize, Option<[u32; 4]>, Image
     let mut mask = Image { width: b.width, height: b.height, rgba: Vec::with_capacity(b.rgba.len()) };
     let same_size = a.width == b.width && a.height == b.height;
     let (mut n, mut x0, mut y0, mut x1, mut y1) = (0, u32::MAX, u32::MAX, 0, 0);
-    for (i, p) in b.rgba.chunks_exact(4).enumerate() {
-        let q = if same_size { &a.rgba[i * 4..i * 4 + 4] } else { &[0, 0, 0, 0][..] };
-        let differs = !same_size || p.iter().zip(q).any(|(x, y)| x.abs_diff(*y) > channel);
+    let reference = a.rgba.as_chunks::<4>().0;
+    for (i, p) in b.rgba.as_chunks::<4>().0.iter().enumerate() {
+        let q = if same_size { reference[i] } else { [0; 4] };
+        let differs = !same_size || p.iter().zip(q).any(|(x, y)| x.abs_diff(y) > channel);
         if differs {
             n += 1;
             let (x, y) = (i as u32 % b.width, i as u32 / b.width);
