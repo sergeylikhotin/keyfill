@@ -2,7 +2,7 @@ stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,5
 fonts: Inter (assets/fonts/inter/Inter-Regular.otf) · Inter (assets/fonts/inter/Inter-SemiBold.otf) · системные выключены
 time: t=1.56s · кадр 78 · сцена playing · play@0, update@1.5
 events: 0s scene state:playing
-└─ Standings#1/panel  box  (1264,54 560×276)  bg color.panel · r 14 · pad 20,24  [must inside]
+└─ Standings#1/panel  box  (1264,54 560×229.86 → 1264,54 560×276)  bg color.panel · r 14 · pad 20,24  [layout 9%]  [must inside]
    ├─ Standings#1/title  text  (1288,74 512×26)  "ТУРНИРНАЯ ТАБЛИЦА"  Inter 400 22px · color.muted
    └─ Standings#1/panel/box[0]  box grid  (1288,100 512×210)
       ├─ Standings#1/panel/box[0]/box[key=zen]  box grid  (1288,100 512×48)  pad 6,0
@@ -13,11 +13,11 @@ events: 0s scene state:playing
       │  ├─ Standings#1/panel/box[0]/box[key=spa]/text[0]  text  (1288,160 40×36)  "2"  Inter 400 30px · color.muted
       │  ├─ Standings#1/panel/box[0]/box[key=spa]/text[1]  text  (1340,160 384×36)  "Спартак"  Inter 400 30px · color.text  [must fit]
       │  └─ Standings#1/panel/box[0]/box[key=spa]/text[2]  text  (1736,160 64×36)  "40"  Inter 600 30px · color.text
-      ├─ Standings#1/panel/box[0]/box[key=kra]  box grid  (1288,208 512×48)  pad 6,0
-      │  ├─ Standings#1/panel/box[0]/box[key=kra]/text[0]  text  (1288,214 40×36)  "3"  Inter 400 30px · color.muted
-      │  ├─ Standings#1/panel/box[0]/box[key=kra]/text[1]  text  (1340,214 384×36)  "Краснодар"  Inter 400 30px · color.text  [must fit]
-      │  └─ Standings#1/panel/box[0]/box[key=kra]/text[2]  text  (1736,214 64×36)  "39"  Inter 600 30px · color.text
-      └─ Standings#1/panel/box[0]/box[key=din]  box grid  (1288,262 512×48)  pad 6,0  motion opacity×0.81  [out 30%]
-         ├─ Standings#1/panel/box[0]/box[key=din]/text[0]  text  (1288,268 40×36)  "3"  Inter 400 30px · color.muted
-         ├─ Standings#1/panel/box[0]/box[key=din]/text[1]  text  (1340,268 384×36)  "Динамо"  Inter 400 30px · color.text  [must fit]
-         └─ Standings#1/panel/box[0]/box[key=din]/text[2]  text  (1736,268 64×36)  "35"  Inter 600 30px · color.text
+      ├─ Standings#1/panel/box[0]/box[key=kra]  box grid  (1288,174.86 512×48 → 1288,208 512×48)  pad 6,0  [layout 13%]
+      │  ├─ Standings#1/panel/box[0]/box[key=kra]/text[0]  text  (1288,180.86 40×36)  "3"  Inter 400 30px · color.muted
+      │  ├─ Standings#1/panel/box[0]/box[key=kra]/text[1]  text  (1340,180.86 384×36)  "Краснодар"  Inter 400 30px · color.text  [must fit]
+      │  └─ Standings#1/panel/box[0]/box[key=kra]/text[2]  text  (1736,180.86 64×36)  "39"  Inter 600 30px · color.text
+      └─ Standings#1/panel/box[0]/box[key=din]  box grid  (1288,228.86 512×48 → 1288,262 512×48)  pad 6,0  motion opacity×0.81  [out 30%, layout 13%]
+         ├─ Standings#1/panel/box[0]/box[key=din]/text[0]  text  (1288,234.86 40×36)  "3"  Inter 400 30px · color.muted
+         ├─ Standings#1/panel/box[0]/box[key=din]/text[1]  text  (1340,234.86 384×36)  "Динамо"  Inter 400 30px · color.text  [must fit]
+         └─ Standings#1/panel/box[0]/box[key=din]/text[2]  text  (1736,234.86 64×36)  "35"  Inter 600 30px · color.text

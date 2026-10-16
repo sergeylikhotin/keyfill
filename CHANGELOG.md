@@ -40,6 +40,12 @@ package version.
   (`X-Keyfill-Frame`); a test plays a show over WebSocket and checks that replaying its journal
   gives the same frames, pixel for pixel.
 
+- Layout animation: `transition: { layout: spring.snappy }` makes a node glide to its new place when
+  the layout changes (data updates, a sibling arriving or leaving, `For` reordering); a `Box` also
+  animates its size, text only moves. Deterministic: the layout is compared at command batches and
+  when a node leaves, not on rendered frames. `must` checks the layout, not the in-between frame.
+  Dumps show `(shown → layout)  [layout 40%]`. The standings and lower-third examples use it.
+
 ### Changed
 
 - **Breaking:** `prop<T>()` is replaced by `prop.json<T>()`.

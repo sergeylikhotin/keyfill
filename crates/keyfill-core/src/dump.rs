@@ -137,8 +137,12 @@ pub struct DumpNode {
     pub instance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<LayoutInfo>,
+    /// Где узел виден в кадре.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<Box4>,
+    /// Место в новой раскладке, пока узел к нему едет (`transition.layout`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<Box4>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absent: Option<Absent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -265,6 +269,14 @@ fn absent(scene: &Scene, frame: &Frame, id: u32) -> Absent {
     }
 }
 
+/// Место в раскладке, к которому узел сам едет (`transition.layout`). Узел, который едет
+/// вместе с родителем, стрелки не получает: его место относительно родителя не меняется.
+fn target(f: &FrameNode) -> Option<Box4> {
+    f.anim.as_ref()?.geo?;
+    let (a, b) = (b4(&f.rect), b4(&f.shown));
+    (a != b).then_some(a)
+}
+
 fn keys(v: &Value) -> Vec<String> {
     v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default()
 }
@@ -281,7 +293,8 @@ fn node(scene: &Scene, frame: &Frame, id: u32) -> DumpNode {
         kind: n.kind.name(),
         instance: n.instance().map(String::from),
         layout,
-        rect: fnode.map(|f| b4(&f.rect)),
+        rect: fnode.map(|f| b4(&f.shown)),
+        target: fnode.and_then(target),
         absent: if fnode.is_none() { Some(absent(scene, frame, id)) } else { None },
         text: None,
         background: None,
@@ -487,7 +500,14 @@ fn node_lines(n: &DumpNode, prefix: &str, last: bool, out: &mut Vec<Line>) {
     }
     match (&n.rect, n.absent) {
         (Some(r), _) => {
-            let _ = write!(line, "  {}", rect(r));
+            match &n.target {
+                Some(t) => {
+                    let _ = write!(line, "  ({} → {})", plain_rect(r), plain_rect(t));
+                }
+                None => {
+                    let _ = write!(line, "  {}", rect(r));
+                }
+            }
             summary(n, &mut line);
         }
         (None, Some(a)) => {
@@ -603,6 +623,9 @@ pub struct Inspect {
     pub absent: Option<Absent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<Box4>,
+    /// Место в новой раскладке, пока узел к нему едет.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<Box4>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_else: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -680,7 +703,8 @@ pub fn inspect_build(scene: &Scene, frame: &Frame, path: &str) -> Option<Inspect
         source: node.src.clone(),
         time: frame.clock.clone(),
         absent: if f.is_none() { Some(absent(scene, frame, id)) } else { None },
-        rect: f.map(|f| b4(&f.rect)),
+        rect: f.map(|f| b4(&f.shown)),
+        target: f.and_then(target),
         applied_else: f.and_then(|f| f.applied_else.clone()),
         text: None,
         look: Vec::new(),
@@ -788,6 +812,9 @@ pub fn inspect_text(i: &Inspect) -> String {
     }
     if let Some(r) = &i.rect {
         let _ = writeln!(out, "rect      {}", plain_rect(r));
+    }
+    if let Some(t) = &i.target {
+        let _ = writeln!(out, "layout    едет к {} (transition.layout)", plain_rect(t));
     }
     if let Some(label) = &i.applied_else {
         let _ = writeln!(out, "else      применён {label}");

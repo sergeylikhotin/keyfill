@@ -113,7 +113,7 @@ impl DisplayList {
 
     fn node(&mut self, frame: &Frame, node: &FrameNode, parent: Affine) {
         let v = &node.visual;
-        let r = node.rect;
+        let r = node.shown;
         let motion = node.anim.as_ref().map(|a| a.motion).unwrap_or_default();
         let tr = parent * node_transform(v, &motion, r);
 
@@ -144,6 +144,8 @@ impl DisplayList {
 
         if let Some((index, content)) = node.text {
             let block = &frame.texts[index];
+            // Текст разложен в месте раскладки, а рисуется там, где узел виден.
+            let content = content.shifted(r.x - node.rect.x, r.y - node.rect.y);
             if block.clip {
                 self.items.push(Item::PushClip { transform: tr, rect: content });
             }
@@ -224,7 +226,7 @@ impl Affine {
 pub fn node_boxes(frame: &Frame) -> Vec<NodeBox> {
     fn walk(node: &FrameNode, parent: Affine, alpha: f32, depth: u32, out: &mut Vec<NodeBox>) {
         let v = &node.visual;
-        let r = node.rect;
+        let r = node.shown;
         let motion = node.anim.as_ref().map(|a| a.motion).unwrap_or_default();
         let tr = parent * node_transform(v, &motion, r);
         let opacity = alpha * (v.opacity * motion.opacity).clamp(0.0, 1.0);

@@ -24,6 +24,15 @@ timeline(LowerThird, ({ at }) => ({
   keys: [at(0, 'panel', { padding: [0, 10] })],
 }));
 
+// Анимация геометрии — изинг, а не флаг; animate по layout не бывает (это не канал).
+<Box look={{ transition: { layout: tween(0.3) } }} />;
+// @ts-expect-error layout — изинг, а не boolean
+<Box look={{ transition: { layout: true } }} />;
+timeline(LowerThird, ({ at }) => ({
+  // @ts-expect-error layout не канал таймлайна
+  keys: [at(0, 'panel', { layout: 1 })],
+}));
+
 // Неверный тип пропса компонента.
 // @ts-expect-error live — boolean
 <LowerThird name="x" role="y" live="yes" tags={[]} />;

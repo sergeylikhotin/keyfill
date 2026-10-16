@@ -14,7 +14,7 @@ pub mod timeline;
 pub mod text;
 
 pub use display::DisplayList;
-pub use layout::{Frame, FrameNode, Rect, build_frame_with};
+pub use layout::{Frame, FrameNode, Rect, build_frame_with, geometry};
 pub use motion::{Animated, MotionState};
 pub use must::{EvalOptions, Hints, Mode, evaluate_at};
 pub use scene::Scene;

@@ -9,7 +9,7 @@ use taffy::style_helpers::{FromFr, FromLength, FromPercent, TaffyAuto};
 
 use crate::diag::{Diagnostics, Level};
 use crate::look::{self, Look, Target, Transform, Visual};
-use crate::motion::{Animated, Channel, Clock, NodeValues, V};
+use crate::motion::{Animated, Channel, Clock, Geo, GeoMap, NodeValues, V};
 use crate::scene::{Kind, Scene};
 use crate::text::{Fit, FitThen, LoadedFont, RunSpec, TextBlock, TextEngine, TextSource};
 
@@ -47,7 +47,7 @@ impl Rect {
         other.x < self.x + self.w && other.x + other.w > self.x && other.y < self.y + self.h && other.y + other.h > self.y
     }
 
-    fn shifted(self, dx: f32, dy: f32) -> Rect {
+    pub(crate) fn shifted(self, dx: f32, dy: f32) -> Rect {
         Rect { x: self.x + dx, y: self.y + dy, ..self }
     }
 }
@@ -80,7 +80,10 @@ pub type Overrides = HashMap<u32, ElseStep>;
 
 pub struct FrameNode {
     pub id: u32,
+    /// Место в раскладке: по нему проверяются `must` и ставятся якоря.
     pub rect: Rect,
+    /// Где узел виден в этом кадре: `rect` плюс анимация геометрии (своя и предков).
+    pub shown: Rect,
     pub look: Look,
     pub visual: Visual,
     /// Индекс в `Frame::texts` и контентный блок текста.
@@ -236,7 +239,7 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
         // Корень уже размещён якорем, второй раз его двигать не нужно.
         pending.anchor = None;
         let parent = Rect { x: origin[0], y: origin[1], w: 0.0, h: 0.0 };
-        let mut root = finish(&mut ctx, &taffy, &mut pending, parent, &mut frame)?;
+        let mut root = finish(&mut ctx, &taffy, &mut pending, parent, parent, &mut frame)?;
         root.anchor = anchor;
         frame.roots.push(root);
     }
@@ -434,7 +437,9 @@ fn measure_text(block: &mut TextBlock, engine: &mut TextEngine, known: Size<Opti
     }
 }
 
-fn finish(ctx: &mut Ctx, taffy: &TaffyTree<usize>, p: &mut Pending, parent: Rect, frame: &mut Frame) -> Result<FrameNode> {
+/// Узел после раскладки. `parent` — место родителя в раскладке, `parent_shown` — где его видно:
+/// узел без своей анимации геометрии едет вместе с родителем.
+fn finish(ctx: &mut Ctx, taffy: &TaffyTree<usize>, p: &mut Pending, parent: Rect, parent_shown: Rect, frame: &mut Frame) -> Result<FrameNode> {
     let layout = taffy.layout(p.tnode)?;
     let mut rect = Rect { x: parent.x + layout.location.x, y: parent.y + layout.location.y, w: layout.size.width, h: layout.size.height };
 
@@ -456,13 +461,24 @@ fn finish(ctx: &mut Ctx, taffy: &TaffyTree<usize>, p: &mut Pending, parent: Rect
         None => None,
     };
 
+    // Текст едет, но не меняет размер: на кадрах анимации он не переразбивается.
+    let geo = p.anim.as_ref().and_then(|a| a.geo).unwrap_or_default();
+    let sized = p.text.is_none();
+    let shown = Rect {
+        x: parent_shown.x + (rect.x - parent.x) + geo[0],
+        y: parent_shown.y + (rect.y - parent.y) + geo[1],
+        w: if sized { (rect.w + geo[2]).max(0.0) } else { rect.w },
+        h: if sized { (rect.h + geo[3]).max(0.0) } else { rect.h },
+    };
+
     let mut children = Vec::with_capacity(p.children.len());
     for c in &mut p.children {
-        children.push(finish(ctx, taffy, c, rect, frame)?);
+        children.push(finish(ctx, taffy, c, rect, shown, frame)?);
     }
     Ok(FrameNode {
         id: p.id,
         rect,
+        shown,
         look: std::mem::take(&mut p.look),
         visual: p.visual.clone(),
         text,
@@ -495,19 +511,37 @@ fn apply_animated(visual: &mut Visual, a: &NodeValues) {
     }
 }
 
-fn collect_rects(node: &FrameNode, out: &mut HashMap<u32, Rect>) {
-    out.insert(node.id, node.rect);
+/// Геометрия кадра для анимации раскладки: место каждого узла относительно родителя и размер.
+pub fn geometry(frame: &Frame) -> GeoMap {
+    fn walk(node: &FrameNode, parent: Rect, out: &mut GeoMap) {
+        let r = node.rect;
+        out.insert(node.id, Geo { rel: [r.x - parent.x, r.y - parent.y, r.w, r.h], sized: node.text.is_none() });
+        for c in &node.children {
+            walk(c, r, out);
+        }
+    }
+    let mut out = GeoMap::new();
+    for root in &frame.roots {
+        walk(root, Rect::default(), &mut out);
+    }
+    out
+}
+
+fn collect_rects(node: &FrameNode, out: &mut HashMap<u32, (Rect, Rect)>) {
+    out.insert(node.id, (node.rect, node.shown));
     for c in &node.children {
         collect_rects(c, out);
     }
 }
 
-fn place_part_anchors(scene: &Scene, rects: &HashMap<u32, Rect>, node: &mut FrameNode) {
+/// Якорь к части: место — от части в раскладке, а видно узел там, где видно часть.
+fn place_part_anchors(scene: &Scene, rects: &HashMap<u32, (Rect, Rect)>, node: &mut FrameNode) {
     if let Some(to) = node.anchor.as_ref().and_then(|a| a.get("to")).filter(|t| t.is_object()) {
         let target = part_node(scene, to).and_then(|id| rects.get(&id).copied());
-        if let Some(target) = target {
+        if let Some((target, shown)) = target {
             let [x, y] = place(node.anchor.as_ref().expect("anchor"), target, node.rect.w, node.rect.h);
-            shift(node, x - node.rect.x, y - node.rect.y);
+            let (sx, sy) = (x + shown.x - target.x, y + shown.y - target.y);
+            shift(node, [x - node.rect.x, y - node.rect.y], [sx - node.shown.x, sy - node.shown.y]);
         }
     }
     for c in &mut node.children {
@@ -515,13 +549,15 @@ fn place_part_anchors(scene: &Scene, rects: &HashMap<u32, Rect>, node: &mut Fram
     }
 }
 
-fn shift(node: &mut FrameNode, dx: f32, dy: f32) {
-    node.rect = node.rect.shifted(dx, dy);
+/// Сдвигает поддерево: место в раскладке на `d`, видимое место на `ds`.
+fn shift(node: &mut FrameNode, d: [f32; 2], ds: [f32; 2]) {
+    node.rect = node.rect.shifted(d[0], d[1]);
+    node.shown = node.shown.shifted(ds[0], ds[1]);
     if let Some((_, content)) = &mut node.text {
-        *content = content.shifted(dx, dy);
+        *content = content.shifted(d[0], d[1]);
     }
     for c in &mut node.children {
-        shift(c, dx, dy);
+        shift(c, d, ds);
     }
 }
 

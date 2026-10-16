@@ -11,7 +11,9 @@ use keyfill_core::diag::Level;
 use keyfill_core::motion::Clock;
 use keyfill_core::scene::{Cue, CueCmd};
 use keyfill_core::text::{RunSpec, TextBlock, TextSource};
-use keyfill_core::{EvalOptions, Frame, Hints, MotionState, Scene, TextEngine, evaluate_at};
+use keyfill_core::layout::Overrides;
+use keyfill_core::motion::GeoMap;
+use keyfill_core::{EvalOptions, Frame, Hints, MotionState, Scene, TextEngine, build_frame_with, evaluate_at, geometry};
 use keyfill_js::{JsException, JsHost, LogLine, RunOptions};
 
 use crate::channel::{Ack, AckStatus, Batch, Command, Entry, Inst, InstState, Layer, State};
@@ -194,9 +196,18 @@ impl Session {
             self.labels = labels;
         }
         loop {
-            self.sweep(t)?;
             let cue = self.cues.get(self.next).filter(|c| c.t <= t).map(|c| c.t);
             let batch = self.batches.get(self.next_batch).map(|b| self.batch_time(b)).filter(|bt| *bt <= t + 1e-9);
+            let horizon = match (cue, batch) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b).unwrap_or(t),
+            };
+            // Узел ушёл из раскладки до следующей команды: соседи переезжают в этот момент.
+            if let Some(et) = self.motion.next_layout_event().filter(|et| *et <= horizon + 1e-9) {
+                self.layout_event(et)?;
+                continue;
+            }
+            self.sweep(horizon)?;
             match (cue, batch) {
                 (None, None) => break,
                 (Some(c), Some(b)) if b <= c => self.replay_batch()?,
@@ -217,6 +228,10 @@ impl Session {
         self.motion.advance_to(cue.t);
         self.motion.log.push(cue.label());
         let roots = cue.target.as_deref().map(|c| MotionState::roots_of(&self.scene, c));
+        self.relayout(cue.t, |s| s.cue_command(&cue, roots))
+    }
+
+    fn cue_command(&mut self, cue: &Cue, roots: Option<Vec<u32>>) -> Result<()> {
         match &cue.cmd {
             CueCmd::Play => {
                 self.motion.play(&self.scene, roots.as_deref(), cue.t);
@@ -228,14 +243,47 @@ impl Session {
             CueCmd::Next => self.motion.next(roots.as_deref(), cue.t),
             CueCmd::Update { props } => {
                 let arg = serde_json::json!({ "target": cue.target, "props": props });
-                self.call_js("__keyfill_update", &arg.to_string(), &cue)?;
+                self.call_js("__keyfill_update", &arg.to_string(), cue)?;
             }
             CueCmd::Invoke { command, props } => {
                 let arg = serde_json::json!({ "target": cue.target, "command": command, "params": props });
-                self.call_js("__keyfill_invoke", &arg.to_string(), &cue)?;
+                self.call_js("__keyfill_invoke", &arg.to_string(), cue)?;
             }
         }
         Ok(())
+    }
+
+    /// Изменение в момент `t`. Если в сцене есть `transition.layout`, раскладка снимается до
+    /// и после него, и узлы, у которых изменились место или размер, переезжают. Моменты
+    /// снятия — команды и уходы из раскладки, а не кадры: кадр по-прежнему зависит только от
+    /// момента, а не от того, какие кадры рендерились до него.
+    fn relayout<R>(&mut self, t: f64, change: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
+        if !self.motion.has_layout() {
+            return change(self);
+        }
+        let before = self.geometry(t)?;
+        let out = change(self)?;
+        let after = self.geometry(t)?;
+        self.motion.relayout(&before, &after, t);
+        Ok(out)
+    }
+
+    /// Узел уходит из раскладки (конец out, снятие экземпляра) в момент `et`.
+    fn layout_event(&mut self, et: f64) -> Result<()> {
+        self.motion.advance_before(et);
+        let before = self.geometry(et)?;
+        self.motion.advance_to(et);
+        let after = self.geometry(et)?;
+        self.motion.relayout(&before, &after, et);
+        self.sweep(et)
+    }
+
+    /// Раскладка в момент `t` без анимации геометрии.
+    fn geometry(&mut self, t: f64) -> Result<GeoMap> {
+        let mut anim = self.motion.values(t);
+        anim.clear_geo();
+        let frame = build_frame_with(&self.scene, &mut self.engine, &Overrides::new(), &anim)?;
+        Ok(geometry(&frame))
     }
 
     /// Следующая пачка из журнала. Отклонённая команда или расхождение с записью — ошибка
@@ -246,6 +294,10 @@ impl Session {
         let t = self.batch_time(&batch);
         self.motion.advance_to(t);
         self.sweep(t)?;
+        self.relayout(t, |s| s.replay_entries(&batch, t))
+    }
+
+    fn replay_entries(&mut self, batch: &Batch, t: f64) -> Result<()> {
         for entry in &batch.cmds {
             let ack = self.run_command(entry, t)?;
             let label = format!("кадр {}: {}", batch.frame, entry.cmd.label());
@@ -274,16 +326,19 @@ impl Session {
         }
         let t = self.snap(self.now);
         self.advance(t)?;
-        let mut acks = Vec::new();
-        let mut kept = Vec::new();
-        for mut entry in cmds {
-            let ack = self.run_command(&entry, t)?;
-            if ack.status != AckStatus::Rejected {
-                entry.error = (ack.status == AckStatus::Failed).then(|| ack.errors.join("; "));
-                kept.push(entry);
+        let (acks, kept) = self.relayout(t, |s| {
+            let mut acks = Vec::new();
+            let mut kept = Vec::new();
+            for mut entry in cmds {
+                let ack = s.run_command(&entry, t)?;
+                if ack.status != AckStatus::Rejected {
+                    entry.error = (ack.status == AckStatus::Failed).then(|| ack.errors.join("; "));
+                    kept.push(entry);
+                }
+                acks.push(ack);
             }
-            acks.push(ack);
-        }
+            Ok((acks, kept))
+        })?;
         if !kept.is_empty() {
             let frame = self.frame_index(t);
             self.recorded.push(Batch { frame, cmds: kept.clone() });
@@ -311,7 +366,10 @@ impl Session {
     pub fn quiet_time(&mut self) -> Result<f64> {
         let settled = self.settled_time()?;
         let leaving = self.releasing.iter().filter_map(|r| self.motion.hide_time(*r)).fold(settled, f64::max);
-        Ok(self.snap(leaving))
+        // Соседи ушедших переезжают после ухода.
+        self.advance(self.snap(leaving).max(self.now))?;
+        let moved = self.motion.layout_end().map_or(leaving, |e| e.max(leaving));
+        Ok(self.snap(moved))
     }
 
     /// Команда слою в момент `t`.

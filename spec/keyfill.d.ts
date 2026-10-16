@@ -216,7 +216,16 @@ declare module '@keyfill/core' {
   /** Целевое значение или пара [from, to]. */
   export type AnimTargets = { readonly [K in AnimKey]?: Animatable[K] | readonly [Animatable[K], Animatable[K]] };
 
-  export type Transitions = { readonly [K in AnimKey]?: Easing } & { readonly all?: Easing };
+  export type Transitions = { readonly [K in AnimKey]?: Easing } & {
+    /** Все каналы `look`, кроме `layout`. */
+    readonly all?: Easing;
+    /**
+     * Анимация геометрии: когда раскладка перестроилась (данные, соседи пришли или ушли,
+     * перестановка в `For`), узел едет к новому месту, а `Box` — ещё и к новому размеру.
+     * Без неё место меняется скачком. Текст едет, но не меняет размер.
+     */
+    readonly layout?: Easing;
+  };
 
   const motionBrand: unique symbol;
   export type Motion = { readonly [motionBrand]: true; readonly duration: number };

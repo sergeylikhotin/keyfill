@@ -1,4 +1,4 @@
-import { Box, For, Text, component, count, fade, grid, par, prop, slide, stagger, tween } from '@keyfill/core';
+import { Box, For, Text, component, count, fade, grid, par, prop, slide, spring, stagger, tween } from '@keyfill/core';
 import { theme } from '../scoreboard/theme';
 
 /** Строка таблицы: данные приходят списком, каждая строка — элемент For по id команды. */
@@ -26,7 +26,7 @@ export const Standings = component({
       name={part.panel}
       anchor={{ to: 'titleSafe', at: 'top-right' }}
       size={{ w: 560 }}
-      look={{ background: theme.color.panel, padding: [20, 24], radius: 14 }}
+      look={{ background: theme.color.panel, padding: [20, 24], radius: 14, transition: { layout: spring.gentle } }}
       must={{ inside: 'titleSafe' }}
     >
       <Text name={part.title} look={{ font: theme.font.ui, size: 22, color: theme.color.muted, case: 'upper', tracking: 0.08 }}>
@@ -42,7 +42,8 @@ export const Standings = component({
       >
         <For each={teams} by={(t) => t.id}>
           {(t, i) => (
-            <Box layout={grid({ columns: [40, { fr: 1 }, 64], gap: [12, 0] })} look={{ padding: [6, 0] }}>
+            // Строка едет на новое место: перестановка, уход соседа выше.
+            <Box layout={grid({ columns: [40, { fr: 1 }, 64], gap: [12, 0] })} look={{ padding: [6, 0], transition: { layout: spring.snappy } }}>
               <Text look={{ ...cell, color: theme.color.muted }}>{() => String(i() + 1)}</Text>
               <Text look={cell} fit={{ shrinkTo: 22, then: 'ellipsis' }} must={{ fit: true }}>{() => t().name}</Text>
               <Text look={{ ...cell, weight: 600, align: 'end' }}>{count(() => t().points)}</Text>

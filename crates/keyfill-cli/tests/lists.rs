@@ -149,3 +149,27 @@ fn lists_inside_channel_instances() {
     let frame = s.frame_at(2.5, dev()).unwrap();
     assert!(frame.diagnostics.0.iter().all(|d| d.level != Level::Error), "{:?}", frame.diagnostics);
 }
+
+#[test]
+fn journal_jump_keeps_leaving_items_until_their_out_ends() {
+    if home().is_none() {
+        return;
+    }
+    // b уходит (out 0.2 с), а следующая пачка через кадр уже меняет список: прыжок по журналу
+    // сразу далеко вперёд даёт тот же кадр, что живая сессия, прошедшая эти моменты по порядку.
+    let cmd = |v: serde_json::Value| -> Entry { serde_json::from_value(v).unwrap() };
+    let update = |names: &[&str]| cmd(json!({ "cmd": "update", "layer": 1, "props": { "names": names } }));
+    let bundle = keyfill_cli::bundle(Path::new("crates/keyfill-cli/tests/fixtures/channel/channel.tsx")).unwrap();
+    let mut live = Session::open(&bundle, &RunOptions::default(), &[], &[]).unwrap();
+    live.command(vec![cmd(json!({ "cmd": "play", "layer": 1, "component": "Names", "props": { "names": ["a", "b", "c"] } }))]).unwrap();
+    live.advance(1.0).unwrap();
+    live.command(vec![update(&["a", "c"])]).unwrap();
+    live.advance(1.04).unwrap();
+    live.command(vec![update(&["c", "a", "e"])]).unwrap();
+    let f = live.frame_at(2.0, dev()).unwrap();
+    let expected = keyfill_core::dump::dump(&live.scene, &f);
+
+    let mut replay = Session::open(&bundle, &RunOptions::default(), &[], live.batches()).unwrap();
+    let f = replay.frame_at(2.0, dev()).unwrap();
+    assert_eq!(keyfill_core::dump::dump(&replay.scene, &f), expected);
+}

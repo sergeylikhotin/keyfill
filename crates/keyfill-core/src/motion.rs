@@ -611,6 +611,12 @@ struct NodeState {
     children: Vec<u32>,
     /// Экземпляр снят адресным stop: с этого момента не рисуется.
     hide_at: Option<f64>,
+    /// Событие снятия в `hide_at` обработано: узла больше нет в кадре.
+    stopped: bool,
+    /// `transition.layout`: как узел переезжает, когда перестроилась раскладка.
+    layout: Option<Easing>,
+    /// Смещение от новой раскладки к месту, где узел был виден, затухает до нуля: x, y, w, h.
+    geo: [Option<Track>; 4],
 }
 
 impl NodeState {
@@ -708,6 +714,8 @@ impl ScenePhase {
 enum Event {
     InEnd(u32),
     OutEnd(u32),
+    /// Экземпляр, снятый адресным stop, уходит из кадра.
+    Hide(u32),
     Removed,
     /// Остановка таймлайна `runs[i]` с поколением расписания.
     Timeline(usize, u64),
@@ -779,7 +787,19 @@ pub struct NodeValues {
     pub channels: Vec<ChannelInfo>,
     /// Текст кусков `count()` и `clock()` по номеру куска.
     pub texts: BTreeMap<usize, String>,
+    /// Анимация геометрии: смещение места и размера от раскладки (x, y, w, h).
+    pub geo: Option<[f32; 4]>,
 }
+
+/// Геометрия узла в раскладке: место относительно родителя и размер (x, y, w, h).
+/// `sized` — размер анимируется; у текста только место: он не переразбивается на кадрах.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Geo {
+    pub rel: [f32; 4],
+    pub sized: bool,
+}
+
+pub type GeoMap = BTreeMap<u32, Geo>;
 
 /// Канал узла для inspect: значение, слой (`presence`, `transition`, `timeline`), изинг, прогресс.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -808,6 +828,8 @@ pub enum Note {
     Timeline { state: crate::timeline::RunState, tau: f64, marker: Option<String> },
     /// Идёт анимация `count()`.
     Count,
+    /// Узел переезжает к новой раскладке (`transition.layout`).
+    Layout { progress: Option<f64> },
 }
 
 impl std::fmt::Display for Note {
@@ -827,6 +849,7 @@ impl std::fmt::Display for Note {
                 Ok(())
             }
             Note::Count => f.write_str("count"),
+            Note::Layout { progress } => write!(f, "layout {}%", pct(*progress)),
         }
     }
 }
@@ -915,6 +938,13 @@ impl Animated {
     /// Есть ли каналы в движении presence или таймлайна.
     pub fn has_staged(&self) -> bool {
         self.nodes.values().any(|n| !n.staged.is_empty())
+    }
+
+    /// Убирает анимацию геометрии: по таким значениям снимается раскладка до и после перестройки.
+    pub fn clear_geo(&mut self) {
+        for nv in self.nodes.values_mut() {
+            nv.geo = None;
+        }
     }
 
     /// Те же значения без каналов в движении presence и таймлайна: по ним проверяется `must`.
@@ -1017,6 +1047,7 @@ impl MotionState {
                 }
             }
             st.targets = targets;
+            st.layout = transitions.get("layout").copied();
 
             let vis = visible.get(&id).copied().unwrap_or(false);
             let hidden = node.hidden();
@@ -1146,8 +1177,9 @@ impl MotionState {
                     let st = self.nodes.get_mut(&c).expect("node state");
                     st.start(&shifted, t, "out", true);
                     st.phase = Phase::Out { start: t, end };
-                    st.hide_at = Some(st.hide_at.map_or(end, |h| h.max(end)));
+                    let hide = st.hide_at.map_or(end, |h| h.max(end));
                     self.schedule(end, Event::OutEnd(c));
+                    self.hide(c, hide);
                 }
             }
         }
@@ -1226,6 +1258,14 @@ impl MotionState {
     }
 
     /// Экземпляр загружен на слой: не виден, пока его не запустит play.
+    /// Узел уходит из кадра в момент `at` (снятие экземпляра).
+    fn hide(&mut self, id: u32, at: f64) {
+        let st = self.nodes.get_mut(&id).expect("node state");
+        st.hide_at = Some(at);
+        st.stopped = false;
+        self.schedule(at, Event::Hide(id));
+    }
+
     pub fn hold_loaded(&mut self, root: u32) {
         self.pending.insert(root);
     }
@@ -1248,7 +1288,7 @@ impl MotionState {
                 run.dead = true;
             }
         }
-        self.events.retain(|(_, _, ev)| !matches!(ev, Event::InEnd(id) | Event::OutEnd(id) if ids.contains(id)));
+        self.events.retain(|(_, _, ev)| !matches!(ev, Event::InEnd(id) | Event::OutEnd(id) | Event::Hide(id) if ids.contains(id)));
     }
 
     fn scene_event(&mut self, t: f64, name: &str) {
@@ -1323,7 +1363,7 @@ impl MotionState {
         let mut transitions = BTreeMap::new();
         if let Some(map) = resolved.get("transition").and_then(Value::as_object) {
             for (key, e) in map {
-                if key != "all" && Channel::parse(key).is_none() {
+                if key != "all" && key != "layout" && Channel::parse(key).is_none() {
                     self.note(Level::Warn, "motion.unsupported", scene, id, format!("transition.{key}: канал не анимируется"));
                     continue;
                 }
@@ -1449,6 +1489,7 @@ impl MotionState {
             for id in Self::subtree(scene, root) {
                 let Some(st) = self.nodes.get_mut(&id) else { continue };
                 st.hide_at = None;
+                st.stopped = false;
                 let fresh = matches!(st.phase, Phase::Waiting | Phase::Gone);
                 if fresh && st.visible {
                     self.enter(id, t);
@@ -1472,6 +1513,7 @@ impl MotionState {
             for id in Self::subtree(scene, root) {
                 let Some(st) = self.nodes.get_mut(&id) else { continue };
                 st.hide_at = None;
+                st.stopped = false;
                 if !(matches!(st.phase, Phase::Waiting | Phase::Gone) && st.visible) {
                     continue;
                 }
@@ -1542,9 +1584,9 @@ impl MotionState {
             }
             Some(roots) => {
                 // Экземпляр снимается целиком, когда закончился последний out в нём.
-                for root in roots {
-                    if let Some(st) = self.nodes.get_mut(root) {
-                        st.hide_at = Some(until);
+                for &root in roots {
+                    if self.nodes.contains_key(&root) {
+                        self.hide(root, until);
                     }
                 }
                 self.horizon = self.horizon.max(until);
@@ -1594,8 +1636,22 @@ impl MotionState {
 
     /// Обрабатывает запланированные события до момента `t` включительно.
     pub fn advance_to(&mut self, t: f64) {
+        self.process(|et| et <= t);
+        // Маркеры и emit между остановками: их моменты известны точно, журнал дописывается до t.
+        for i in self.live_runs() {
+            self.runs[i].flush(t);
+            self.drain(i);
+        }
+    }
+
+    /// Обрабатывает события строго до момента `t`: состояние перед событиями в `t`.
+    pub fn advance_before(&mut self, t: f64) {
+        self.process(|et| et < t);
+    }
+
+    fn process(&mut self, due: impl Fn(f64) -> bool) {
         while let Some(&(et, _, ev)) = self.events.first() {
-            if et > t {
+            if !due(et) {
                 break;
             }
             self.events.remove(0);
@@ -1618,6 +1674,12 @@ impl MotionState {
                         st.phase = Phase::Gone;
                     }
                 }
+                Event::Hide(id) => {
+                    let st = self.nodes.get_mut(&id).expect("node state");
+                    if st.hide_at == Some(et) {
+                        st.stopped = true;
+                    }
+                }
                 Event::Removed => {
                     if matches!(self.scene, ScenePhase::Stopping { until } if until == et) {
                         self.scene = ScenePhase::Removed;
@@ -1634,10 +1696,50 @@ impl MotionState {
                 }
             }
         }
-        // Маркеры и emit между остановками: их моменты известны точно, журнал дописывается до t.
-        for i in self.live_runs() {
-            self.runs[i].flush(t);
-            self.drain(i);
+    }
+
+    /// Есть ли в сцене узлы с `transition.layout`: без них раскладку сверять не нужно.
+    pub fn has_layout(&self) -> bool {
+        self.nodes.values().any(|s| s.layout.is_some())
+    }
+
+    /// Когда закончатся начатые переезды раскладки.
+    pub fn layout_end(&self) -> Option<f64> {
+        self.nodes.values().flat_map(|s| s.geo.iter().flatten()).filter_map(Track::end).reduce(f64::max)
+    }
+
+    /// Ближайшее событие, после которого узел уходит из раскладки (конец `out`, снятие
+    /// экземпляра): в этот момент соседи с `transition.layout` переезжают.
+    pub fn next_layout_event(&self) -> Option<f64> {
+        if !self.has_layout() {
+            return None;
+        }
+        self.events.iter().find(|(_, _, ev)| matches!(ev, Event::OutEnd(_) | Event::Hide(_))).map(|e| e.0)
+    }
+
+    /// Раскладка в момент `t` перестроилась: `before` и `after` — геометрия до и после
+    /// (без анимации геометрии). Узел с `transition.layout`, у которого изменились место
+    /// относительно родителя или размер, едет к новому из того места, где его видно сейчас:
+    /// смещение от новой раскладки затухает до нуля, пружина сохраняет скорость.
+    pub fn relayout(&mut self, before: &GeoMap, after: &GeoMap, t: f64) {
+        for (id, a) in after {
+            let Some(b) = before.get(id) else { continue };
+            let Some(st) = self.nodes.get_mut(id) else { continue };
+            let Some(easing) = st.layout else { continue };
+            let axes = if a.sized { 4 } else { 2 };
+            for k in 0..axes {
+                let change = (b.rel[k] - a.rel[k]) as f64;
+                if change.abs() < 1e-3 {
+                    continue;
+                }
+                let track = st.geo[k].take().filter(|tr| tr.running(t));
+                let from = track.as_ref().map_or(0.0, |tr| tr.value(t).n()) + change;
+                let v0 = match (&track, easing) {
+                    (Some(tr), Easing::Spring { .. }) if from.abs() > 1e-9 => -tr.velocity(t) / from,
+                    _ => 0.0,
+                };
+                st.geo[k] = Some(Track { segs: vec![Seg::new(t, V::N(from), V::N(0.0), easing, v0, false)], source: "layout" });
+            }
         }
     }
 
@@ -1689,7 +1791,7 @@ impl MotionState {
             }
             nv.gone = match st.phase {
                 _ if self.pending.contains(&id) => Some(Gone::Loaded),
-                _ if st.hide_at.is_some_and(|h| t >= h) => Some(Gone::InstanceStopped),
+                _ if st.stopped => Some(Gone::InstanceStopped),
                 Phase::Gone => Some(Gone::OutEnded),
                 _ => None,
             };
@@ -1698,7 +1800,22 @@ impl MotionState {
                 Phase::Out { .. } if st.own_hidden => Some(true),
                 _ => None,
             };
-            if !nv.abs.is_empty() || !nv.motion.is_identity() || nv.show.is_some() || !nv.notes.is_empty() || !nv.channels.is_empty() {
+            let running = st.geo.iter().flatten().filter(|tr| tr.running(t));
+            if let Some(last) = running.max_by(|a, b| a.end().unwrap_or(0.0).total_cmp(&b.end().unwrap_or(0.0))) {
+                let geo: [f32; 4] = std::array::from_fn(|k| st.geo[k].as_ref().filter(|tr| tr.running(t)).map_or(0.0, |tr| tr.value(t).n() as f32));
+                let progress = progress(last, t);
+                nv.notes.push(Note::Layout { progress });
+                nv.channels.push(ChannelInfo {
+                    channel: "layout",
+                    layer: "layout",
+                    source: "layout",
+                    value: format!("Δ {},{} {}×{}", num(geo[0]), num(geo[1]), num(geo[2]), num(geo[3])),
+                    easing: last.easing_label(t),
+                    progress,
+                });
+                nv.geo = Some(geo);
+            }
+            if nv.geo.is_some() || !nv.abs.is_empty() || !nv.motion.is_identity() || nv.show.is_some() || !nv.notes.is_empty() || !nv.channels.is_empty() {
                 out.nodes.insert(id, nv);
             }
         }

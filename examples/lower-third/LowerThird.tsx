@@ -12,7 +12,7 @@ export const LowerThird = component({
       anchor={{ to: 'titleSafe', at: 'bottom-left' }}
       layout={row({ gap: 16, align: 'center' })}
       look={[
-        { background: theme.color.surface, padding: [16, 24], radius: 12, transition: { background: tween(0.4) } },
+        { background: theme.color.surface, padding: [16, 24], radius: 12, clip: true, transition: { background: tween(0.4), layout: spring.snappy } },
         on(live, { background: theme.color.surfaceLive, border: { width: 2, paint: theme.color.accent } }),
       ]}
       must={{ inside: 'titleSafe' }}
@@ -26,7 +26,7 @@ export const LowerThird = component({
         presence={{ loop: pulse({ period: 1.2, opacity: [1, 0.4] }), out: fade([1, 0], tween(0.2)) }}
       />
       {/* Имя и должность появляются по очереди: каскад на детях колонки. */}
-      <Box layout={column({ gap: 4 })} presence={{ in: stagger(0.08, par(fade([0, 1], tween(0.25)), slide({ y: [10, 0] }, tween(0.3, 'out')))) }}>
+      <Box layout={column({ gap: 4 })} look={{ transition: { layout: spring.snappy } }} presence={{ in: stagger(0.08, par(fade([0, 1], tween(0.25)), slide({ y: [10, 0] }, tween(0.3, 'out')))) }}>
         <Text
           name={part.title}
           look={{ font: theme.font.display, size: 56, weight: 600, color: theme.color.text }}
