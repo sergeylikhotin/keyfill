@@ -120,7 +120,7 @@ pre .sel { background: #3a2230; }
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const S = { info: null, t: 0, fps: 50, playing: false, pane: 'dump', inspect: null, dump: '', version: null, want: null, files: '' };
+const S = { info: null, t: 0, fps: 50, playing: false, pane: 'dump', inspect: null, dump: [], version: null, want: null, files: '' };
 
 const fmt = (t) => t.toFixed(2);
 function frameOf(t) { return Math.round(t * S.fps); }
@@ -150,7 +150,7 @@ async function loadInfo() {
   marks.innerHTML = '';
   const pos = (t) => `${(t / Math.max(info.end, 1e-6)) * 100}%`;
   for (const m of info.markers) addMark(marks, m.name, m.t, pos, '');
-  for (const c of info.cues) addMark(marks, c.label.split('@')[0], c.t, pos, 'cue');
+  for (const c of info.cues) addMark(marks, c.cmd, c.t, pos, 'cue');
   addMark(marks, 'settled', info.settled, pos, 'cue');
   return info;
 }
@@ -218,7 +218,7 @@ async function pump() {
     if (!S.playing && my === seq) {
       S.layout = await (await fetch(`/api/layout?t=${t}`)).json();
       showSelection();
-      S.dump = await (await fetch(`/api/dump?t=${t}`)).text();
+      S.dump = (await (await fetch(`/api/dump?t=${t}`)).json()).lines;
       if (S.inspect) S.inspectText = await (await fetch(`/api/inspect?t=${t}&path=${encodeURIComponent(S.inspect)}`)).text();
       renderPane();
     }
@@ -244,17 +244,14 @@ function renderPane() {
     return;
   }
   pane.innerHTML = '';
-  for (const line of S.dump.split('\n')) {
-    const m = /^([│ ]*[├└]─ )(\S+)(.*)$/.exec(line);
+  for (const { text, path } of S.dump || []) {
     const div = document.createElement('div');
-    if (m) {
-      div.className = 'node' + (m[2] === S.inspect ? ' sel' : '');
-      div.textContent = line;
-      div.onclick = () => openInspect(m[2]);
-      div.onmouseenter = () => setHover(m[2]);
+    div.textContent = text || ' ';
+    if (path) {
+      div.className = 'node' + (path === S.inspect ? ' sel' : '');
+      div.onclick = () => openInspect(path);
+      div.onmouseenter = () => setHover(path);
       div.onmouseleave = () => setHover(null);
-    } else {
-      div.textContent = line || ' ';
     }
     pane.appendChild(div);
   }
@@ -281,7 +278,7 @@ function showSelection() {
   if (S.hover) place($('hoverBox'), boxOf(S.hover));
 }
 
-/// Узел под точкой: последний в порядке отрисовки, чья рамка её содержит (как на сервере).
+/// Узел под точкой: последний в порядке отрисовки среди видимых, чья рамка её содержит.
 function hitAt(e) {
   if (!S.layout) return null;
   const r = $('frame').getBoundingClientRect();
@@ -316,14 +313,9 @@ document.querySelectorAll('.subtabs button').forEach((b) => b.onclick = () => { 
 
 $('frame').onclick = async (e) => {
   if (!S.info) return;
-  let path = hitAt(e)?.path;
-  if (!path) {
-    // Рамок ещё нет (кадр только что пришёл) — спросим сервер.
-    const r = $('frame').getBoundingClientRect();
-    const x = ((e.clientX - r.left) / r.width) * S.info.size[0];
-    const y = ((e.clientY - r.top) / r.height) * S.info.size[1];
-    path = (await (await fetch(`/api/hit?t=${S.t}&x=${x}&y=${y}`)).json()).path;
-  }
+  // Рамок может ещё не быть: кадр только что пришёл.
+  if (!S.layout) S.layout = await (await fetch(`/api/layout?t=${S.t}`)).json();
+  const path = hitAt(e)?.path;
   if (path) openInspect(path);
 };
 

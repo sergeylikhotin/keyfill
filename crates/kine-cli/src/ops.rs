@@ -1,25 +1,29 @@
 //! Операции агента: render, dump, inspect, check, filmstrip, video, schema.
 //!
-//! Один слой для CLI и (позже) `kine serve` и MCP. Каждая операция возвращает структуру;
-//! текст для терминала строится из неё же (`output.rs`), поэтому `--json` и текст не расходятся.
+//! Один слой для CLI и (позже) `kine serve` и MCP. Каждая операция возвращает `Outcome`:
+//! структуру результата и то, что нужно конверту (момент, диапазон, ошибки, следующий шаг).
+//! Текст для терминала строится из той же структуры (`output.rs`), поэтому `--json` и текст
+//! не расходятся.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
+pub use kine_core::diag::Counts;
 use kine_core::diag::{Diagnostic, Level};
 use kine_core::dump::{self, Dump, Inspect};
 use kine_core::look::Rgba;
+use kine_core::motion::component_of;
 use kine_core::scene::{ComponentInfo, PropInfo};
-use kine_core::{EvalOptions, Frame};
+use kine_core::timeline::LoopDef;
+use kine_core::{EvalOptions, Frame, Scene};
 use kine_js::{LogLine, RunOptions};
-use kine_render::RenderOptions;
+use kine_render::{Png, RenderOptions, Renderer};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::session::CueArg;
 use crate::time::{self, Moment, Offset, TimeSpec};
-use crate::{Bundle, Failure, Session, filmstrip, video};
+use crate::{Bundle, Session, filmstrip, video};
 
 /// Всё, что нужно, чтобы построить кадр: сцена, данные, сценарий, режим.
 pub struct Job {
@@ -39,6 +43,41 @@ pub struct At {
     pub frame: u64,
 }
 
+/// Результат операции и то, что нужно конверту вокруг него.
+pub struct Outcome<T> {
+    pub result: T,
+    /// Момент кадра: render, dump, inspect.
+    pub at: Option<At>,
+    /// Диапазон: check, filmstrip, video.
+    pub range: Option<(f64, f64)>,
+    /// В результате есть ошибки диагностики: код выхода 1.
+    pub errors: bool,
+    /// Узел первой ошибки и её момент — для подсказки `kine inspect`.
+    pub inspect: Option<(String, f64)>,
+}
+
+impl<T> Outcome<T> {
+    fn new(result: T) -> Outcome<T> {
+        Outcome { result, at: None, range: None, errors: false, inspect: None }
+    }
+
+    /// Ошибки кадра в момент `at`: код выхода и подсказка `inspect` для существующего узла.
+    fn frame(result: T, at: At, scene: &Scene, diags: &[Diagnostic]) -> Outcome<T> {
+        Outcome {
+            errors: Counts::of(diags).error > 0,
+            inspect: inspect_target(scene, diags).map(|node| (node, at.t)),
+            at: Some(at),
+            ..Outcome::new(result)
+        }
+    }
+}
+
+/// Первая ошибка, привязанная к узлу сцены: диагностики сборки, JS и таймлайнов адресуют
+/// не узлы, и `kine inspect` для них бесполезен.
+fn inspect_target<'a>(scene: &Scene, diags: impl IntoIterator<Item = &'a Diagnostic>) -> Option<String> {
+    diags.into_iter().find(|d| d.level == Level::Error && scene.find(&d.node).is_some()).map(|d| d.node.clone())
+}
+
 impl Job {
     pub fn new(entry: &Path, run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Result<Job> {
         let bundle = crate::bundle(entry)?;
@@ -54,58 +93,39 @@ impl Job {
         *self.logs.borrow_mut() = session.logs.clone();
     }
 
-    fn at(&self, session: &Session, t: f64) -> At {
-        At { t, frame: (t * session.fps).round() as u64 }
-    }
-
-    /// Момент из `--t`; без него — кадр «в эфире» (`settled`). `settled` и маркеры продвигают
-    /// сессию, поэтому момент разрешается на пробной сессии.
-    pub fn moment(&self, spec: Option<&TimeSpec>) -> Result<f64> {
-        let moment = match spec {
-            Some(TimeSpec::Moment(m)) => m.clone(),
-            Some(TimeSpec::Range(..)) => bail!("--t: здесь нужен момент, а не диапазон"),
-            None => Moment::Settled(Offset::Seconds(0.0)),
-        };
-        let mut probe = self.session()?;
-        time::resolve(&moment, &mut probe).map_err(crate::usage)
-    }
-
     /// Диапазон из `--t`: `a..b`, имя сегмента (`in`, `out`, маркер таймлайна) или один
-    /// момент; без `--t` — весь сценарий.
-    pub fn range(&self, spec: Option<&TimeSpec>) -> Result<(f64, f64)> {
-        let mut probe = self.session()?;
+    /// момент; без `--t` — весь сценарий. Границы разрешаются на той же сессии, которая
+    /// потом строит кадры: если она ушла дальше начала диапазона, то перемотается сама.
+    pub fn range(&self, spec: Option<&TimeSpec>) -> Result<(Session, f64, f64)> {
+        let mut s = self.session()?;
         let (from, to) = match spec {
-            Some(TimeSpec::Range(a, b)) => {
-                (time::resolve(a, &mut probe).map_err(crate::usage)?, time::resolve(b, &mut probe).map_err(crate::usage)?)
-            }
-            Some(TimeSpec::Moment(Moment::Marker(name, Offset::Seconds(s)))) if *s == 0.0 => {
-                time::segment(name, &mut probe).map_err(crate::usage)?
-            }
+            Some(TimeSpec::Range(a, b)) => (time::resolve(a, &mut s)?, time::resolve(b, &mut s)?),
+            Some(TimeSpec::Moment(Moment::Marker(name, Offset::Seconds(o)))) if *o == 0.0 => time::segment(name, &mut s)?,
             Some(TimeSpec::Moment(m)) => {
-                let t = time::resolve(m, &mut probe).map_err(crate::usage)?;
+                let t = time::resolve(m, &mut s)?;
                 (t, t)
             }
-            None => (0.0, probe.end_time()?),
+            None => (0.0, s.end_time()?),
         };
         if to < from {
-            return Err(anyhow::anyhow!("--t: конец диапазона {to} раньше начала {from}").context(Failure::Usage));
+            return Err(crate::usage(format!("--t: конец диапазона {to} раньше начала {from}")));
         }
-        Ok((from, to))
+        Ok((s, from, to))
     }
 }
 
-/// Кадр в момент `t` на свежей сессии.
-pub fn frame(job: &Job, t: f64) -> Result<(Session, Frame, At)> {
-    let mut session = job.session()?;
-    let t = session.nearest_frame(t);
-    let frame = session.frame_at(t, job.eval)?;
-    let at = job.at(&session, t);
-    job.keep(&session);
-    Ok((session, frame, at))
-}
-
-pub fn has_errors(diags: &[Diagnostic]) -> bool {
-    diags.iter().any(|d| d.level == Level::Error)
+/// Кадр в момент из `--t` (без него — `settled`, кадр «в эфире»), на границе кадра.
+pub fn frame(job: &Job, moment: Option<&Moment>) -> Result<(Session, Frame, At)> {
+    let mut s = job.session()?;
+    let t = match moment {
+        Some(m) => time::resolve(m, &mut s)?,
+        None => s.settled_time()?,
+    };
+    let t = s.nearest_frame(t);
+    let frame = s.frame_at(t, job.eval)?;
+    let at = At { t, frame: s.frame_index(t) };
+    job.keep(&s);
+    Ok((s, frame, at))
 }
 
 // ─── render ─────────────────────────────────────────────────────────────────
@@ -123,61 +143,48 @@ pub struct Rendered {
     pub dump: Option<Dump>,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize)]
-pub struct Counts {
-    pub error: usize,
-    pub warn: usize,
-    pub info: usize,
-}
-
-impl Counts {
-    pub fn of<'a>(diags: impl IntoIterator<Item = &'a Diagnostic>) -> Counts {
-        let mut c = Counts::default();
-        for d in diags {
-            match d.level {
-                Level::Error => c.error += 1,
-                Level::Warn => c.warn += 1,
-                Level::Info => c.info += 1,
-            }
-        }
-        c
-    }
-}
-
-pub fn render(job: &Job, t: f64, out: &Path, scale: f32, with_dump: bool) -> Result<Rendered> {
-    let (session, frame, at) = frame(job, t)?;
+pub fn render(job: &Job, moment: Option<&Moment>, out: &Path, scale: f32, with_dump: bool) -> Result<Outcome<Rendered>> {
+    let (session, frame, at) = frame(job, moment)?;
     let opts = RenderOptions { scale, background: job.eval.background };
-    let png = kine_render::render_png(&frame, &opts)?;
-    std::fs::write(out, png).with_context(|| format!("не удалось записать {}", out.display()))?;
+    let mut renderer = Renderer::default();
+    let pixmap = renderer.render(&frame, &opts)?;
+    let size = [u32::from(pixmap.width()), u32::from(pixmap.height())];
+    std::fs::write(out, kine_render::png(pixmap, Png::Small)?).with_context(|| format!("не удалось записать {}", out.display()))?;
     let dump = dump::build(&session.scene, &frame);
-    Ok(Rendered {
+    let result = Rendered {
         file: crate::slash(out),
-        size: [(frame.size[0] * scale).round() as u32, (frame.size[1] * scale).round() as u32],
+        size,
         at,
         counts: Counts::of(&dump.diagnostics),
         diagnostics: dump.diagnostics.clone(),
         dump: with_dump.then_some(dump),
-    })
+    };
+    Ok(Outcome::frame(result, at, &session.scene, &frame.diagnostics.0))
 }
 
 // ─── dump и inspect ─────────────────────────────────────────────────────────
 
-pub fn dump(job: &Job, t: f64, path: Option<&str>, depth: Option<usize>) -> Result<(Dump, At)> {
-    let (session, frame, at) = frame(job, t)?;
+pub fn dump(job: &Job, moment: Option<&Moment>, path: Option<&str>, depth: Option<usize>) -> Result<Outcome<Dump>> {
+    let (session, frame, at) = frame(job, moment)?;
     let mut d = dump::build(&session.scene, &frame);
-    d.filter(path, depth).map_err(|e| anyhow::anyhow!(e).context(Failure::Usage))?;
-    Ok((d, at))
+    d.filter(path, depth).map_err(crate::usage)?;
+    let diags = d.diagnostics.clone();
+    Ok(Outcome::frame(d, at, &session.scene, &diags))
 }
 
-pub fn inspect(job: &Job, t: f64, path: &str) -> Result<(Inspect, At)> {
-    let (session, frame, at) = frame(job, t)?;
+pub fn inspect(job: &Job, moment: Option<&Moment>, path: &str) -> Result<Outcome<Inspect>> {
+    let (session, frame, at) = frame(job, moment)?;
     match dump::inspect_build(&session.scene, &frame, path) {
-        Some(i) => Ok((i, at)),
+        Some(i) => {
+            let diags = i.diagnostics.clone();
+            // Подсказка `inspect` из inspect самого узла ничего не добавит.
+            Ok(Outcome { inspect: None, ..Outcome::frame(i, at, &session.scene, &diags) })
+        }
         None => {
             let known = dump::build(&session.scene, &frame).paths();
-            let near: Vec<&String> = known.iter().filter(|p| p.contains(path) || path.contains(p.as_str())).take(5).collect();
-            let hint = if near.is_empty() { "адреса узлов есть в `kine dump`".to_string() } else { format!("похожие: {}", near.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")) };
-            Err(anyhow::anyhow!("узел {path} не найден; {hint}").context(Failure::Usage))
+            let near: Vec<&str> = known.iter().map(String::as_str).filter(|p| p.contains(path) || path.contains(p)).take(5).collect();
+            let hint = if near.is_empty() { "адреса узлов есть в `kine dump`".to_string() } else { format!("похожие: {}", near.join(", ")) };
+            Err(crate::usage(format!("узел {path} не найден; {hint}")))
         }
     }
 }
@@ -206,14 +213,14 @@ pub struct Issue {
 }
 
 /// Все нарушения `must` и встроенных правил на каждом кадре диапазона.
-pub fn check(job: &Job, from: f64, to: f64) -> Result<Check> {
-    let mut session = job.session()?;
-    let fps = session.fps;
-    let (first, last) = ((from * fps).round() as u64, (to * fps).round() as u64);
+pub fn check(job: &Job, spec: Option<&TimeSpec>) -> Result<Outcome<Check>> {
+    let (mut session, from, to) = job.range(spec)?;
+    session.labels = false;
+    let frames = session.frames(from, to);
     let mut issues: Vec<Issue> = Vec::new();
     let mut index: BTreeMap<(Level, String, String, Option<String>), usize> = BTreeMap::new();
-    for n in first..=last {
-        let t = n as f64 / fps;
+    for n in frames.clone() {
+        let t = session.frame_time(n);
         let frame = session.frame_at(t, job.eval)?;
         let at = At { t, frame: n };
         for d in frame.diagnostics.0 {
@@ -232,7 +239,11 @@ pub fn check(job: &Job, from: f64, to: f64) -> Result<Check> {
     }
     job.keep(&session);
     issues.sort_by_key(|i| std::cmp::Reverse(i.diagnostic.level));
-    Ok(Check { from, to, frames: (last - first + 1) as usize, counts: Counts::of(issues.iter().map(|i| &i.diagnostic)), issues })
+    let counts = Counts::of(issues.iter().map(|i| &i.diagnostic));
+    let inspect = inspect_target(&session.scene, issues.iter().map(|i| &i.diagnostic))
+        .and_then(|node| issues.iter().find(|i| i.diagnostic.node == node).map(|i| (node, i.first.t)));
+    let result = Check { from, to, frames: frames.count(), counts, issues };
+    Ok(Outcome { range: Some((from, to)), errors: counts.error > 0, inspect, ..Outcome::new(result) })
 }
 
 // ─── filmstrip и video ──────────────────────────────────────────────────────
@@ -253,8 +264,8 @@ pub struct FilmstripOptions {
     pub dumps: bool,
 }
 
-pub fn filmstrip(job: &Job, from: f64, to: f64, out: &Path, o: &FilmstripOptions) -> Result<Filmstrip> {
-    let mut session = job.session()?;
+pub fn filmstrip(job: &Job, spec: Option<&TimeSpec>, out: &Path, o: &FilmstripOptions) -> Result<Outcome<Filmstrip>> {
+    let (mut session, from, to) = job.range(spec)?;
     let fopts = filmstrip::Options { from, to, count: o.count, cols: o.cols, tile: o.tile, background: job.eval.background };
     let times = filmstrip::times(&session, &fopts);
     let strip = filmstrip::build(&mut session, &times, job.eval, &fopts)?;
@@ -262,12 +273,13 @@ pub fn filmstrip(job: &Job, from: f64, to: f64, out: &Path, o: &FilmstripOptions
     std::fs::write(out, png).with_context(|| format!("не удалось записать {}", out.display()))?;
     let counts = Counts::of(strip.frames.iter().flat_map(|f| &f.diagnostics.0));
     job.keep(&session);
-    Ok(Filmstrip {
+    let result = Filmstrip {
         file: crate::slash(out),
-        frames: times.iter().map(|&t| job.at(&session, t)).collect(),
+        frames: times.iter().map(|&t| At { t, frame: session.frame_index(t) }).collect(),
         counts,
         dumps: if o.dumps { strip.dumps } else { Vec::new() },
-    })
+    };
+    Ok(Outcome { range: Some((from, to)), errors: counts.error > 0, ..Outcome::new(result) })
 }
 
 #[derive(Debug, Serialize)]
@@ -281,12 +293,14 @@ pub struct Video {
     pub frames_with_errors: usize,
 }
 
-pub fn video(job: &Job, from: f64, to: f64, out: &Path, codec: video::Codec, scale: f32) -> Result<Video> {
+pub fn video(job: &Job, spec: Option<&TimeSpec>, out: &Path, codec: video::Codec, scale: f32) -> Result<Outcome<Video>> {
+    let (mut session, from, to) = job.range(spec)?;
     let opts = video::VideoOptions { from, to, codec, scale, background: job.eval.background, out: out.to_path_buf() };
-    let mut session = job.session()?;
+    session.labels = false;
     let report = video::render(&mut session, job.eval, &opts)?;
     job.keep(&session);
-    Ok(Video { file: crate::slash(out), codec: codec.name(), from, to, frames: report.frames, frames_with_errors: report.errors })
+    let result = Video { file: crate::slash(out), codec: codec.name(), from, to, frames: report.frames, frames_with_errors: report.errors };
+    Ok(Outcome { range: Some((from, to)), errors: report.errors > 0, ..Outcome::new(result) })
 }
 
 // ─── schema ─────────────────────────────────────────────────────────────────
@@ -323,22 +337,12 @@ pub struct TimelineSchema {
     pub markers: Vec<(String, f64)>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub holds: Vec<String>,
+    /// Цикл, в том числе неявный `loop..out`.
     #[serde(rename = "loop", skip_serializing_if = "Option::is_none")]
-    pub repeat: Option<Value>,
+    pub repeat: Option<LoopDef>,
 }
 
-/// Маркеры таймлайна компонента, по возрастанию времени.
-pub fn timeline_markers(def: &Value) -> Vec<(String, f64)> {
-    let mut out: Vec<(String, f64)> = def
-        .get("markers")
-        .and_then(Value::as_object)
-        .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_f64()?))).collect())
-        .unwrap_or_default();
-    out.sort_by(|a, b| a.1.total_cmp(&b.1));
-    out
-}
-
-pub fn schema(job: &Job) -> Result<Schema> {
+pub fn schema(job: &Job) -> Result<Outcome<Schema>> {
     let session = job.session()?;
     job.keep(&session);
     let scene = &session.scene;
@@ -347,31 +351,26 @@ pub fn schema(job: &Job) -> Result<Schema> {
         .components
         .iter()
         .map(|c| {
-            let mut instances: Vec<String> = scene.nodes.values().filter_map(|n| n.instance()).filter(|i| i.split('#').next() == Some(c.name.as_str())).map(String::from).collect();
+            let mut instances: Vec<String> =
+                scene.nodes.values().filter_map(|n| n.instance()).filter(|i| component_of(i) == c.name).map(String::from).collect();
             instances.sort();
-            let timeline = scene.timelines.iter().find(|t| t.get("timeline").and_then(Value::as_str) == Some(c.name.as_str())).map(|t| TimelineSchema {
-                markers: timeline_markers(t),
-                holds: t.get("holds").and_then(Value::as_array).map(|h| h.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
-                repeat: t.get("loop").cloned(),
+            let timeline = scene.timeline(&c.name).map(|t| TimelineSchema {
+                markers: t.markers_by_time().into_iter().map(|(n, v)| (n.to_string(), v)).collect(),
+                holds: t.holds.clone(),
+                repeat: t.repeat.clone(),
             });
             ComponentSchema { info: c.clone(), instances, timeline }
         })
         .collect();
-    Ok(Schema {
+    Ok(Outcome::new(Schema {
         stage: StageSchema { size: stage.size, fps: stage.fps },
         props: scene.props.clone(),
         components,
         cues: session.cues().iter().map(|c| c.label()).collect(),
-    })
+    }))
 }
 
 /// Подложка для `--bg`.
 pub fn parse_hex(s: &str) -> Result<Rgba> {
-    let h = s.trim_start_matches('#');
-    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("--bg: ожидается #RRGGBB, получено {s:?}");
-    }
-    let n = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0);
-    let json = serde_json::json!({ "r": n(0), "g": n(2), "b": n(4) });
-    kine_core::look::parse_color(&json).map_err(anyhow::Error::msg)
+    Rgba::from_hex(s).with_context(|| format!("--bg: ожидается #RRGGBB, получено {s:?}"))
 }

@@ -43,14 +43,15 @@ pub struct Violation {
     pub message: String,
 }
 
-/// Строит статичный кадр (без часов), проверяет `must` и в режиме air применяет `else`.
-pub fn evaluate(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions) -> Result<Frame> {
-    evaluate_at(scene, engine, opts, &Animated::default())
-}
+/// Подсказки dev-режима по нарушению: какой шаг `else` его исправит. Чтобы их найти, кадр
+/// строится заново на каждый шаг, поэтому подсказка считается один раз на узел, правило и
+/// текст нарушения (в нём размеры) и живёт между кадрами сессии.
+#[derive(Debug, Default)]
+pub struct Hints(std::collections::HashMap<(u32, &'static str, String), String>);
 
-/// То же для кадра с анимациями. `must` проверяет графику без слоя presence: появление
+/// Строит кадр, проверяет `must` и в режиме air применяет `else`. `must` проверяет графику без слоя presence: появление
 /// и уход — промежуточные кадры, а утверждения говорят о состоянии в эфире.
-pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, anim: &Animated) -> Result<Frame> {
+pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, anim: &Animated, hints: &mut Hints) -> Result<Frame> {
     let base = build_frame_with(scene, engine, &Overrides::new(), anim)?;
     let (violations, notes) = check(scene, &base, opts);
     if violations.is_empty() {
@@ -63,16 +64,24 @@ pub fn evaluate_at(scene: &Scene, engine: &mut TextEngine, opts: EvalOptions, an
         Mode::Dev => {
             let mut frame = base;
             for v in &violations {
-                let steps = else_steps(scene, v.id);
-                let hint = if steps.is_empty() {
-                    Some(default_hint(v.rule).to_string())
-                } else {
-                    match first_fix(scene, engine, opts, anim, v.id, &Overrides::new(), &steps)? {
-                        Some(step) => Some(format!("{} это исправляет; в эфире шаг применится сам", step.label)),
-                        None => Some(format!("ни один шаг else ({} шт.) это не исправляет; {}", steps.len(), default_hint(v.rule))),
+                let key = (v.id, v.rule, v.message.clone());
+                let hint = match hints.0.get(&key) {
+                    Some(h) => h.clone(),
+                    None => {
+                        let steps = else_steps(scene, v.id);
+                        let h = if steps.is_empty() {
+                            default_hint(v.rule).to_string()
+                        } else {
+                            match first_fix(scene, engine, opts, anim, v.id, &Overrides::new(), &steps)? {
+                                Some(step) => format!("{} это исправляет; в эфире шаг применится сам", step.label),
+                                None => format!("ни один шаг else ({} шт.) это не исправляет; {}", steps.len(), default_hint(v.rule)),
+                            }
+                        };
+                        hints.0.insert(key, h.clone());
+                        h
                     }
                 };
-                push(&mut frame.diagnostics, scene, v, Level::Error, hint);
+                push(&mut frame.diagnostics, scene, v, Level::Error, Some(hint));
             }
             frame.diagnostics.0.extend(notes.0);
             Ok(frame)
@@ -223,7 +232,7 @@ fn node_violations(scene: &Scene, frame: &Frame, opts: EvalOptions, id: u32, not
 }
 
 fn rect(r: &Rect) -> String {
-    format!("({},{} {}×{})", num(r.x), num(r.y), num(r.w), num(r.h))
+    format!("({r})")
 }
 
 fn target_name(to: &Value) -> String {

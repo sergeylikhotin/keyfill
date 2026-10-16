@@ -10,7 +10,9 @@
 //!
 //! Разбор отделён от вычисления: момент `settled` и маркеры известны только сессии.
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
+
+use kine_core::scene::CueCmd;
 
 use crate::Session;
 
@@ -108,18 +110,18 @@ pub fn resolve(m: &Moment, session: &mut Session) -> Result<f64> {
         Moment::Marker(name, o) => session.marker_time(name)? + o.seconds(fps),
     };
     if t < 0.0 {
-        bail!("момент {t:.3} с раньше начала сцены");
+        return Err(crate::usage(format!("момент {t:.3} с раньше начала сцены")));
     }
     Ok(t)
 }
 
 /// Сегмент по имени: `in`, маркер таймлайна или `out`.
 pub fn segment(name: &str, session: &mut Session) -> Result<(f64, f64)> {
-    let markers: Vec<Vec<(String, f64)>> = session.scene.timelines.iter().map(crate::ops::timeline_markers).collect();
     // Следующий маркер того же таймлайна и длина сегмента по времени таймлайна.
-    let next = markers.iter().find_map(|ms| {
-        let i = ms.iter().position(|(n, _)| n == name)?;
-        Some(ms.get(i + 1).map(|(n, tau)| (n.clone(), tau - ms[i].1)))
+    let next = session.scene.timelines.iter().find_map(|d| {
+        let ms = d.markers_by_time();
+        let i = ms.iter().position(|(n, _)| *n == name)?;
+        Some(ms.get(i + 1).map(|(n, tau)| (n.to_string(), tau - ms[i].1)))
     });
     if let Some(next) = next {
         let start = session.marker_time(name)?;
@@ -132,22 +134,22 @@ pub fn segment(name: &str, session: &mut Session) -> Result<(f64, f64)> {
         };
         return Ok((start, end));
     }
-    let first = |cmd: &str| session.cues().iter().find(|c| c.cmd == cmd).map(|c| c.t);
+    let first = |cmd: CueCmd| session.cues().iter().find(|c| c.cmd == cmd).map(|c| c.t);
     match name {
         "in" => {
-            let play = first("play").unwrap_or(0.0);
+            let play = first(CueCmd::Play).unwrap_or(0.0);
             Ok((play, session.settled_time()?))
         }
         "out" => {
-            let stop = first("stop").context("сегмент out: в сценарии нет stop; добавь --cue \"<время> stop\"")?;
+            let stop = first(CueCmd::Stop).ok_or_else(|| crate::usage("сегмент out: в сценарии нет stop; добавь --cue \"<время> stop\""))?;
             Ok((stop, session.end_time()?))
         }
         _ => {
             let mut known = vec!["in".to_string(), "out".to_string()];
-            known.extend(markers.iter().flatten().map(|(n, _)| n.clone()));
+            known.extend(session.scene.timelines.iter().flat_map(|d| d.markers_by_time()).map(|(n, _)| n.to_string()));
             let mut seen = std::collections::HashSet::new();
             known.retain(|n| seen.insert(n.clone()));
-            bail!("нет сегмента {name:?}; есть: {}", known.join(", "))
+            Err(crate::usage(format!("нет сегмента {name:?}; есть: {}", known.join(", "))))
         }
     }
 }

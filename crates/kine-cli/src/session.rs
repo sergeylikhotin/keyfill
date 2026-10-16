@@ -1,24 +1,26 @@
-//! Сессия сцены: живой JS, дерево, сценарий и движение. Кадры запрашиваются по
-//! возрастанию времени; JS вызывается только на командах сценария, не на кадрах.
+//! Сессия сцены: живой JS, дерево, сценарий и движение. JS вызывается только на командах
+//! сценария, не на кадрах. Время сессии идёт вперёд; запрос момента раньше текущего
+//! перезапускает сессию с начала, поэтому кадр зависит только от момента, а не от пути к нему.
 
 use anyhow::{Context as _, Result, bail};
 use kine_core::look::{Rgba, TextAlign, TextCase, TextLook};
 use kine_core::diag::Level;
 use kine_core::motion::Clock;
-use kine_core::scene::Cue;
+use kine_core::scene::{Cue, CueCmd};
 use kine_core::text::{RunSpec, TextBlock, TextSource};
-use kine_core::{EvalOptions, Frame, MotionState, Scene, TextEngine, evaluate_at};
+use kine_core::{EvalOptions, Frame, Hints, MotionState, Scene, TextEngine, evaluate_at};
 use kine_js::{JsException, JsHost, LogLine, RunOptions};
 
 use crate::sourcemap::SourceMap;
 use crate::time::{self, Offset};
 use crate::{Bundle, Failure};
 
-const COMMANDS: &[&str] = &["play", "stop", "next", "update", "invoke"];
-
 pub struct Session {
     js: JsHost,
-    map: Option<SourceMap>,
+    /// Из чего сессия открыта: для перезапуска при перемотке назад.
+    bundle: Bundle,
+    opts: RunOptions,
+    extra: Vec<CueArg>,
     pub scene: Scene,
     engine: TextEngine,
     pub motion: MotionState,
@@ -29,6 +31,10 @@ pub struct Session {
     now: f64,
     /// Конец всех `in` первого play; запоминается, когда этот play обработан.
     settled: Option<f64>,
+    /// Подсказки `else` dev-режима, посчитанные на прошлых кадрах.
+    hints: Hints,
+    /// Подписывать события и команды в часах кадра: они нужны дампу, но не `check` и видео.
+    pub labels: bool,
 }
 
 impl Session {
@@ -40,8 +46,7 @@ impl Session {
             scene.apply_batch(batch)?;
         }
         if !scene.props_errors.is_empty() {
-            let msg = format!("пропсы сцены:\n  {}", scene.props_errors.join("\n  "));
-            return Err(anyhow::anyhow!(msg).context(Failure::Usage));
+            return Err(Failure::Props(scene.props_errors).into());
         }
         let fps = scene.stage.as_ref().map(|s| s.fps as f64).context("в сцене нет stage: бандл должен вызвать mount(scene)")?;
         if fps <= 0.0 {
@@ -51,26 +56,38 @@ impl Session {
         let mut motion = MotionState::default();
         motion.observe(&scene, 0.0);
 
-        let extra = extra.iter().map(|c| Cue { t: c.at.to_seconds(fps), cmd: c.cmd.clone(), target: c.target.clone(), props: None, command: None });
-        let mut cues: Vec<Cue> = scene.cues.iter().cloned().chain(extra).collect();
+        let from_flags = extra.iter().map(|c| Cue { t: c.at.to_seconds(fps), cmd: c.cmd.clone(), target: c.target.clone() });
+        let mut cues: Vec<Cue> = scene.cues.iter().cloned().chain(from_flags).collect();
         // Без play в сценарии сцена выходит в эфир в момент 0: `--cue "2 stop"` — это «показать и снять».
-        if !cues.iter().any(|c| c.cmd == "play") {
-            cues.insert(0, Cue { t: 0.0, cmd: "play".into(), target: None, props: None, command: None });
+        if !cues.iter().any(|c| c.cmd == CueCmd::Play) {
+            cues.insert(0, Cue { t: 0.0, cmd: CueCmd::Play, target: None });
         }
         for cue in &mut cues {
-            let usage = |msg: String| Err(anyhow::anyhow!(msg).context(Failure::Usage));
-            if !COMMANDS.contains(&cue.cmd.as_str()) {
-                return usage(format!("команда сценария {:?} не поддерживается; есть {}", cue.cmd, COMMANDS.join(", ")));
-            }
             if let Some(target) = &cue.target
                 && MotionState::roots_of(&scene, target).is_empty() {
-                    return usage(format!("{}: в сцене нет экземпляров {target}", cue.label()));
+                    return Err(crate::usage(format!("{}: в сцене нет экземпляров {target}", cue.label())));
                 }
             // Команды применяются на границе кадра.
             cue.t = snap(cue.t, fps);
         }
         cues.sort_by(|a, b| a.t.total_cmp(&b.t));
-        Ok(Session { js, map: bundle.map.clone(), scene, engine, motion, cues, next: 0, logs: first.logs, fps, now: 0.0, settled: None })
+        Ok(Session {
+            js,
+            bundle: bundle.clone(),
+            opts: opts.clone(),
+            extra: extra.to_vec(),
+            scene,
+            engine,
+            motion,
+            cues,
+            next: 0,
+            logs: first.logs,
+            fps,
+            now: 0.0,
+            settled: None,
+            hints: Hints::default(),
+            labels: true,
+        })
     }
 
     pub fn cues(&self) -> &[Cue] {
@@ -82,9 +99,24 @@ impl Session {
         self.now
     }
 
+    /// Номер ближайшего кадра. Одно правило округления для дампа, `check`, раскадровки и видео.
+    pub fn frame_index(&self, t: f64) -> u64 {
+        (t * self.fps).round().max(0.0) as u64
+    }
+
+    /// Момент кадра `n`.
+    pub fn frame_time(&self, n: u64) -> f64 {
+        n as f64 / self.fps
+    }
+
+    /// Номера кадров диапазона, обе границы включительно.
+    pub fn frames(&self, from: f64, to: f64) -> std::ops::RangeInclusive<u64> {
+        self.frame_index(from)..=self.frame_index(to)
+    }
+
     /// Ближайшая граница кадра.
     pub fn nearest_frame(&self, t: f64) -> f64 {
-        ((t * self.fps).round() / self.fps).max(0.0)
+        self.frame_time(self.frame_index(t))
     }
 
     /// Ближайшая граница кадра не раньше `t`.
@@ -95,31 +127,32 @@ impl Session {
     /// Обрабатывает команды и события движения до момента `t` включительно.
     pub fn advance(&mut self, t: f64) -> Result<()> {
         if t + 1e-9 < self.now {
-            bail!("время сессии идёт только вперёд: запрошено {t}, уже {}", self.now);
+            let labels = self.labels;
+            *self = Session::open(&self.bundle, &self.opts, &self.extra)?;
+            self.labels = labels;
         }
         while let Some(cue) = self.cues.get(self.next).filter(|c| c.t <= t).cloned() {
             self.next += 1;
             self.motion.advance_to(cue.t);
             self.motion.log.push(cue.label());
             let roots = cue.target.as_deref().map(|c| MotionState::roots_of(&self.scene, c));
-            match cue.cmd.as_str() {
-                "play" => {
+            match &cue.cmd {
+                CueCmd::Play => {
                     self.motion.play(&self.scene, roots.as_deref(), cue.t);
                     if self.settled.is_none() {
                         self.settled = Some(self.motion.settled_at.unwrap_or(cue.t));
                     }
                 }
-                "stop" => self.motion.stop(&self.scene, roots.as_deref(), cue.t),
-                "next" => self.motion.next(roots.as_deref(), cue.t),
-                "update" => {
-                    let arg = serde_json::json!({ "target": cue.target, "props": cue.props });
+                CueCmd::Stop => self.motion.stop(&self.scene, roots.as_deref(), cue.t),
+                CueCmd::Next => self.motion.next(roots.as_deref(), cue.t),
+                CueCmd::Update { props } => {
+                    let arg = serde_json::json!({ "target": cue.target, "props": props });
                     self.call_js("__kine_update", &arg.to_string(), &cue)?;
                 }
-                "invoke" => {
-                    let arg = serde_json::json!({ "target": cue.target, "command": cue.command, "params": cue.props });
+                CueCmd::Invoke { command, props } => {
+                    let arg = serde_json::json!({ "target": cue.target, "command": command, "params": props });
                     self.call_js("__kine_invoke", &arg.to_string(), &cue)?;
                 }
-                _ => unreachable!("команды проверены в open"),
             }
         }
         self.motion.advance_to(t);
@@ -130,14 +163,14 @@ impl Session {
     /// Вызов JS на команде сценария: пакеты применяются, изменения анимируются, а команды
     /// движения из `ctx` исполняются в тот же момент.
     fn call_js(&mut self, name: &str, arg: &str, cue: &Cue) -> Result<()> {
-        let out = self.js.call(name, arg).map_err(|e| map_js(self.map.as_ref(), e)).with_context(|| format!("команда {}", cue.label()))?;
+        let out = self.js.call(name, arg).map_err(|e| map_js(self.bundle.map.as_ref(), e)).with_context(|| format!("команда {}", cue.label()))?;
         self.logs.extend(out.logs);
         for batch in &out.batches {
             self.scene.apply_batch(batch)?;
         }
         self.motion.observe(&self.scene, cue.t);
         for m in std::mem::take(&mut self.scene.motion_cmds) {
-            if let Err(e) = self.motion.instance_cmd(&self.scene, &m.inst, &m.cmd, m.marker.as_deref(), m.name.as_deref(), cue.t) {
+            if let Err(e) = self.motion.instance_cmd(&self.scene, &m.inst, &m.action, cue.t) {
                 self.motion.diagnostics.push(Level::Error, "command.motion", &m.inst, None, format!("{}: {e}", cue.label()), None);
             }
         }
@@ -156,11 +189,11 @@ impl Session {
                 (Some(a), Some(b)) => a.min(b),
                 (a, b) => match a.or(b) {
                     Some(t) => t,
-                    None => bail!("маркер {name:?} не встретился: воспроизведение до него не доходит"),
+                    None => return Err(crate::usage(format!("маркер {name:?} не встретился: воспроизведение до него не доходит"))),
                 },
             };
             if next > LIMIT {
-                bail!("маркер {name:?} не встретился за {LIMIT} с");
+                return Err(crate::usage(format!("маркер {name:?} не встретился за {LIMIT} с")));
             }
             self.advance(next.max(self.now))?;
         }
@@ -170,20 +203,19 @@ impl Session {
     pub fn frame_at(&mut self, t: f64, eval: EvalOptions) -> Result<Frame> {
         self.advance(t)?;
         let mut anim = self.motion.values(t);
-        anim.clock = Some(Clock {
-            t,
-            frame: (t * self.fps).round() as u64,
-            scene: self.motion.scene_phase().label(),
-            log: self.motion.log.clone(),
-            events: self.motion.events_log.iter().filter(|e| e.t <= t + 1e-9).map(|e| e.label()).collect(),
-        });
-        evaluate_at(&self.scene, &mut self.engine, eval, &anim)
+        let (log, events) = if self.labels {
+            (self.motion.log.clone(), self.motion.events_log.iter().filter(|e| e.t <= t + 1e-9).map(|e| e.label()).collect())
+        } else {
+            Default::default()
+        };
+        anim.clock = Some(Clock { t, frame: self.frame_index(t), scene: self.motion.scene_phase(), log, events });
+        evaluate_at(&self.scene, &mut self.engine, eval, &anim, &mut self.hints)
     }
 
     /// Кадр «в эфире»: момент, когда закончились все `in` первого play (на границе кадра).
     pub fn settled_time(&mut self) -> Result<f64> {
         if self.settled.is_none() {
-            let Some(play) = self.cues.iter().find(|c| c.cmd == "play").map(|c| c.t) else { return Ok(0.0) };
+            let Some(play) = self.cues.iter().find(|c| c.cmd == CueCmd::Play).map(|c| c.t) else { return Ok(0.0) };
             self.advance(play)?;
         }
         Ok(self.snap(self.settled.unwrap_or(0.0)))
@@ -221,9 +253,13 @@ impl Session {
 
 /// Стек исключения JS через sourcemap: строки TSX вместо строк бандла.
 fn map_js(map: Option<&SourceMap>, e: anyhow::Error) -> anyhow::Error {
-    match (map, e.downcast_ref::<JsException>()) {
-        (Some(map), Some(ex)) => anyhow::Error::new(JsException(map.rewrite_stack(&ex.0))),
-        _ => e,
+    match (map, e.downcast::<JsException>()) {
+        (Some(map), Ok(mut ex)) => {
+            map.map_exception(&mut ex);
+            anyhow::Error::new(ex)
+        }
+        (_, Ok(ex)) => anyhow::Error::new(ex),
+        (_, Err(e)) => e,
     }
 }
 
@@ -235,7 +271,8 @@ fn snap(t: f64, fps: f64) -> f64 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CueArg {
     pub at: Offset,
-    pub cmd: String,
+    /// play, stop или next: команды с параметрами задаются в `*.cues.ts`.
+    pub cmd: CueCmd,
     /// Компонент: команда только для его экземпляров.
     pub target: Option<String>,
 }
@@ -249,16 +286,18 @@ pub fn parse_cues(spec: &str) -> Result<Vec<CueArg>> {
             bail!("--cue: ожидается \"<время> <команда>\", получено {part:?}");
         };
         let at = time::cue_time(t).with_context(|| format!("--cue {part:?}"))?;
-        match cmd {
-            "play" | "stop" | "next" => {}
+        let cmd = match cmd {
+            "play" => CueCmd::Play,
+            "stop" => CueCmd::Stop,
+            "next" => CueCmd::Next,
             "update" | "invoke" => bail!("--cue: {cmd} с параметрами задаётся в *.cues.ts: at(t, '{cmd}', Component, ...)"),
             other => bail!("--cue: команда {other:?} не поддерживается; есть play, stop, next"),
-        }
+        };
         let target = words.next().map(String::from);
         if let Some(extra) = words.next() {
             bail!("--cue: лишнее {extra:?} в {part:?}; форма: \"<время> <команда> [Компонент]\"");
         }
-        out.push(CueArg { at, cmd: cmd.into(), target });
+        out.push(CueArg { at, cmd, target });
     }
     Ok(out)
 }
@@ -280,7 +319,7 @@ mod tests {
         let cues = parse_cues("0 play; 125f stop").unwrap();
         assert_eq!(
             cues,
-            [CueArg { at: Offset::Seconds(0.0), cmd: "play".into(), target: None }, CueArg { at: Offset::Frames(125), cmd: "stop".into(), target: None }]
+            [CueArg { at: Offset::Seconds(0.0), cmd: CueCmd::Play, target: None }, CueArg { at: Offset::Frames(125), cmd: CueCmd::Stop, target: None }]
         );
         assert_eq!(parse_cues("1 next Scoreboard").unwrap()[0].target.as_deref(), Some("Scoreboard"));
         assert!(parse_cues("1 pause").is_err());

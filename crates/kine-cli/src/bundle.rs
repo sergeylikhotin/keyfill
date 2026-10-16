@@ -22,31 +22,9 @@ use crate::{Failure, kine_home, slash};
 pub struct Bundle {
     pub code: String,
     pub map: Option<SourceMap>,
-    /// Все входные файлы сборки.
+    /// Все входные файлы сборки: по ним кэш и просмотрщик узнают о правках.
     pub inputs: Vec<PathBuf>,
-    /// Взят из кэша, node не запускался.
-    pub cached: bool,
 }
-
-impl Bundle {
-    /// Бандл из готового кода, без sourcemap (для тестов хоста).
-    pub fn from_code(code: impl Into<String>) -> Bundle {
-        Bundle { code: code.into(), map: None, inputs: Vec::new(), cached: false }
-    }
-}
-
-/// Ошибки сборки как диагностики `build.*` с местом в исходнике.
-#[derive(Debug)]
-pub struct BuildErrors(pub Vec<Diagnostic>);
-
-impl std::fmt::Display for BuildErrors {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let lines: Vec<String> = self.0.iter().map(|d| d.to_string()).collect();
-        f.write_str(&lines.join("\n"))
-    }
-}
-
-impl std::error::Error for BuildErrors {}
 
 #[derive(Deserialize)]
 struct Output {
@@ -123,7 +101,6 @@ fn read_cache(file: &Path, stamp: &str) -> Option<Bundle> {
         map: SourceMap::parse(&entry.map),
         code: entry.code,
         inputs: entry.inputs.into_iter().map(|(p, _)| PathBuf::from(p)).collect(),
-        cached: true,
     })
 }
 
@@ -136,6 +113,12 @@ fn write_cache(file: &Path, stamp: String, out: &Output) {
     if std::fs::create_dir_all(file.parent().unwrap_or(Path::new("."))).is_ok() && std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, file);
     }
+}
+
+/// Сбой сборки без места в исходнике: нет node или esbuild, бандлер упал.
+fn tool_error(rule: &str, message: String) -> anyhow::Error {
+    let d = Diagnostic { level: Level::Error, rule: rule.into(), node: "build".into(), source: None, message, hint: None, detail: None };
+    Failure::Build(vec![d]).into()
 }
 
 fn build_diagnostic(e: EsbuildError) -> Diagnostic {
@@ -166,7 +149,7 @@ pub fn bundle(entry: &Path) -> Result<Bundle> {
     let home = std::path::absolute(kine_home())?;
     let entry = std::path::absolute(entry)?;
     if !entry.exists() {
-        return Err(anyhow::anyhow!("сцена {} не найдена", slash(&entry)).context(Failure::Usage));
+        return Err(crate::usage(format!("сцена {} не найдена", slash(&entry))));
     }
     let script = home.join("packages/core/bundle.mjs");
     let stamp = stamp(&script);
@@ -175,21 +158,18 @@ pub fn bundle(entry: &Path) -> Result<Bundle> {
         return Ok(hit);
     }
     if !home.join("node_modules/esbuild").exists() {
-        return Err(anyhow::anyhow!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home)).context(Failure::Build));
+        let msg = format!("esbuild не найден в {}: выполни `npm install` в корне kine", slash(&home));
+        return Err(tool_error("build.setup", msg));
     }
-    let out = Command::new("node")
-        .arg(&script)
-        .arg(&entry)
-        .stdin(Stdio::null())
-        .output()
-        .context("не удалось запустить node для сборки сцены")?;
+    let out = match Command::new("node").arg(&script).arg(&entry).stdin(Stdio::null()).output() {
+        Ok(out) => out,
+        Err(e) => return Err(tool_error("build.setup", format!("не удалось запустить node для сборки сцены: {e}"))),
+    };
     if !out.status.success() {
         if let Ok(errs) = serde_json::from_slice::<Errors>(&out.stdout) {
-            let diags = errs.errors.into_iter().map(build_diagnostic).collect();
-            return Err(anyhow::Error::new(BuildErrors(diags)).context(Failure::Build));
+            return Err(Failure::Build(errs.errors.into_iter().map(build_diagnostic).collect()).into());
         }
-        let stderr = String::from_utf8_lossy(&out.stderr).trim_end().to_string();
-        return Err(anyhow::anyhow!("{stderr}").context(Failure::Build));
+        return Err(tool_error("build.error", String::from_utf8_lossy(&out.stderr).trim_end().to_string()));
     }
     let parsed: Output = serde_json::from_slice(&out.stdout).context("бандлер вернул не JSON")?;
     if let Some(file) = &cache {
@@ -199,6 +179,5 @@ pub fn bundle(entry: &Path) -> Result<Bundle> {
         map: SourceMap::parse(&parsed.map),
         inputs: parsed.inputs.iter().map(PathBuf::from).collect(),
         code: parsed.code,
-        cached: false,
     })
 }

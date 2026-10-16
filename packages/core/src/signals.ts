@@ -1,6 +1,6 @@
 // Минимальные сигналы в духе Solid: синхронные, с автоматическим трекингом зависимостей.
 
-type Computation = { run(): void; deps: Set<Set<Computation>>; disposed: boolean };
+type Computation = { run(): void; deps: Set<Set<Computation>> };
 
 let current: Computation | null = null;
 // Пока исполняется тело view, чтение сигнала вне реактивного контекста — почти наверняка ошибка:
@@ -30,7 +30,7 @@ function drain() {
   while (pending.size) {
     const c = pending.values().next().value!;
     pending.delete(c);
-    if (!c.disposed) c.run();
+    c.run();
   }
 }
 
@@ -59,7 +59,6 @@ export function effect(fn: () => void | (() => void)): void {
   let dispose: void | (() => void);
   const c: Computation = {
     deps: new Set(),
-    disposed: false,
     run() {
       if (typeof dispose === 'function') dispose();
       cleanup(c);

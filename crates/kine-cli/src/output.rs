@@ -11,10 +11,8 @@ use kine_core::dump;
 use kine_core::look::num;
 use kine_js::{JsException, LogLine};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::Failure;
-use crate::bundle::BuildErrors;
 use crate::ops::{At, Check, Counts, Filmstrip, Rendered, Schema, Video};
 
 pub const SCHEMA: u32 = 1;
@@ -30,7 +28,7 @@ pub struct Envelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<At>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
+    pub result: Option<Box<serde_json::value::RawValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -64,77 +62,45 @@ pub struct ErrorInfo {
 
 /// Код выхода и описание ошибки: 2 — неверный вызов, 3 — сборка, 4 — исключение JS, 5 — сбой kine.
 pub fn classify(e: &anyhow::Error) -> (u8, ErrorInfo) {
-    let message = message(e);
-    if let Some(build) = e.downcast_ref::<BuildErrors>() {
-        return (3, ErrorInfo { kind: "build", message: build.to_string(), diagnostics: build.0.clone() });
-    }
+    let message = format!("{e:#}");
     if let Some(ex) = e.downcast_ref::<JsException>() {
-        return (4, ErrorInfo { kind: "js", message, diagnostics: vec![js_diagnostic(&ex.0)] });
+        return (4, ErrorInfo { kind: "js", message, diagnostics: vec![js_diagnostic(ex)] });
     }
     match e.downcast_ref::<Failure>() {
-        Some(Failure::Usage) => (2, ErrorInfo { kind: "usage", message, diagnostics: Vec::new() }),
-        Some(Failure::Build) => (3, ErrorInfo { kind: "build", message, diagnostics: Vec::new() }),
+        Some(Failure::Usage(_)) => (2, ErrorInfo { kind: "usage", message, diagnostics: Vec::new() }),
+        Some(Failure::Props(errors)) => {
+            let diagnostics = errors
+                .iter()
+                .map(|m| Diagnostic { level: Level::Error, rule: "props.invalid".into(), node: "scene".into(), source: None, message: m.clone(), hint: None, detail: None })
+                .collect();
+            (2, ErrorInfo { kind: "usage", message, diagnostics })
+        }
+        Some(Failure::Build(diags)) => (3, ErrorInfo { kind: "build", message, diagnostics: diags.clone() }),
         None => (5, ErrorInfo { kind: "internal", message, diagnostics: Vec::new() }),
     }
 }
 
-/// Исключение JS как диагностика `js.exception`: место — первый кадр стека в исходнике сцены.
-fn js_diagnostic(text: &str) -> Diagnostic {
-    let mut lines = text.lines();
-    let first = lines.next().unwrap_or_default();
-    let message = first.strip_prefix("JS: ").unwrap_or(first).to_string();
-    let source = text.lines().find_map(|l| {
-        let l = l.trim();
-        let loc = l.strip_prefix("at ")?;
-        // `at f (file:1:2)` или `at file:1:2` (место KineError).
-        let loc = match (loc.rfind('('), loc.ends_with(')')) {
-            (Some(i), true) => &loc[i + 1..loc.len() - 1],
-            _ => loc,
-        };
-        loc.contains(':').then(|| loc.to_string())
-    });
-    let stack: Vec<&str> = text.lines().skip(1).map(str::trim).filter(|l| !l.is_empty()).collect();
+/// Исключение JS как диагностика `js.exception`: место и стек — уже в исходниках сцены.
+fn js_diagnostic(ex: &JsException) -> Diagnostic {
+    let mut stack: Vec<String> = ex.stack.iter().map(|f| f.to_string()).collect();
+    if ex.hidden > 0 {
+        stack.push(format!("… ещё {} в @kine/core", ex.hidden));
+    }
     Diagnostic {
         level: Level::Error,
         rule: "js.exception".into(),
         node: "js".into(),
-        source,
-        message,
+        source: ex.source.clone(),
+        message: ex.message.clone(),
         hint: None,
         detail: (!stack.is_empty()).then(|| serde_json::json!({ "stack": stack })),
     }
 }
 
-/// Числа результата — как в текстовом дампе: до сотых, целые без `.0`. Геометрия считается
-/// в f32, и без округления в JSON попадает шум вроде `37.799995`.
-pub fn tidy(mut v: Value) -> Value {
-    fn walk(v: &mut Value) {
-        match v {
-            Value::Number(n) if n.is_f64() => {
-                let x = (n.as_f64().unwrap_or(0.0) * 100.0).round() / 100.0;
-                *v = if x.fract() == 0.0 && x.abs() < 1e15 { Value::from(x as i64) } else { Value::from(x) };
-            }
-            Value::Array(a) => a.iter_mut().for_each(walk),
-            Value::Object(o) => o.values_mut().for_each(walk),
-            _ => {}
-        }
-    }
-    walk(&mut v);
-    v
-}
-
-/// Текст ошибки без меток класса: класс виден по коду выхода и `error.kind`.
-pub fn message(e: &anyhow::Error) -> String {
-    // Метка класса — контекст `Failure`; в цепочке он виден только как текст.
-    let labels = [Failure::Usage.to_string(), Failure::Build.to_string()];
-    let parts: Vec<String> = e.chain().map(|c| c.to_string()).filter(|s| !labels.contains(s)).collect();
-    parts.join(": ")
-}
-
 pub fn failure(command: &str, entry: Option<&str>, e: &anyhow::Error) -> (u8, Envelope) {
     let (exit, error) = classify(e);
-    let next = match entry {
-        Some(entry) if error.message.starts_with("пропсы сцены") => vec![format!("kine schema {}", quote(entry))],
+    let next = match (entry, e.downcast_ref::<Failure>()) {
+        (Some(entry), Some(Failure::Props(_))) => vec![format!("kine schema {}", quote(entry))],
         _ => Vec::new(),
     };
     let env = Envelope {
@@ -166,7 +132,7 @@ pub fn frames(n: usize) -> String {
 }
 
 fn counts(c: &Counts) -> String {
-    format!("{} error, {} warn, {} info", c.error, c.warn, c.info)
+    c.to_string()
 }
 
 fn at(a: &At) -> String {
@@ -265,7 +231,9 @@ pub fn schema_text(s: &Schema) -> String {
                 let _ = writeln!(out, "    holds    {}", t.holds.join(", "));
             }
             if let Some(l) = &t.repeat {
-                let _ = writeln!(out, "    loop     {l}");
+                let kind = if l.pingpong { " pingpong" } else { "" };
+                let count = l.count.map(|n| format!(" ×{n}")).unwrap_or_default();
+                let _ = writeln!(out, "    loop     {}..{}{kind}{count}", l.from, l.to);
             }
         }
     }

@@ -30,8 +30,8 @@ const fonts = {
 };
 
 const cwd = process.cwd();
-const entryPath = path.resolve(entry).replaceAll('\\', '/');
 const slash = (p) => p.replaceAll('\\', '/');
+const entryPath = slash(path.resolve(entry));
 // Пути в выводе — относительно каталога запуска, как места в dev-JSX; вне него — абсолютные.
 const shown = (abs) => {
   const rel = path.relative(cwd, abs);

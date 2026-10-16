@@ -38,6 +38,8 @@ struct SceneState {
     entry: PathBuf,
     fingerprint: u64,
     source: Result<crate::Bundle, String>,
+    /// Входные файлы последней удачной сборки: по ним видно правки, в том числе вне каталога сцены.
+    inputs: Vec<PathBuf>,
     session: Option<Session>,
     info: Option<Value>,
 }
@@ -45,6 +47,8 @@ struct SceneState {
 struct State {
     opts: ViewOptions,
     scene: Option<SceneState>,
+    /// Буфер кадра и кэш глифов живут между запросами кадров.
+    renderer: kine_render::Renderer,
 }
 
 pub fn serve(opts: ViewOptions) -> Result<()> {
@@ -53,8 +57,9 @@ pub fn serve(opts: ViewOptions) -> Result<()> {
     let v6 = TcpListener::bind(("::1", opts.port)).ok();
     std::fs::create_dir_all(&opts.dir).ok();
     eprintln!("kine view: http://localhost:{}  (каталог {}, Ctrl+C — выход)", opts.port, opts.dir.display());
-    let scene = opts.entry.clone().map(|entry| SceneState { entry, fingerprint: 0, source: Err(String::new()), session: None, info: None });
-    let mut state = State { opts, scene };
+    let scene = opts.entry.clone().map(|entry| SceneState { entry, fingerprint: 0, source: Err(String::new()), inputs: Vec::new(), session: None, info: None });
+    let mut state = State { opts, scene, renderer: Default::default() };
+    refresh(&mut state);
 
     // Слушатели принимают соединения в своих потоках, а обработка одна: состояние сцены не делится.
     let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
@@ -211,44 +216,35 @@ fn handle(state: &mut State, stream: &mut TcpStream) -> Result<()> {
         "/api/frame.png" => {
             let t = req.num("t").unwrap_or(0.0);
             let scale = req.num("s").unwrap_or(0.5) as f32;
-            let bg = req.q("bg").and_then(parse_bg);
+            let bg = req.q("bg").and_then(Rgba::from_hex);
             let eval = EvalOptions { background: bg.or(state.opts.eval.background), ..state.opts.eval };
-            let (frame, _) = frame_at(state, t, eval)?;
-            let png = kine_render::render_png(&frame, &RenderOptions { scale, background: bg })?;
+            let (_, frame) = frame_at(state, t, eval)?;
+            let pixmap = state.renderer.render(&frame, &RenderOptions { scale, background: bg })?;
+            let png = kine_render::png(pixmap, kine_render::Png::Fast)?;
             respond(stream, 200, "image/png", &png, &[])
         }
         "/api/dump" => {
+            // Строки дампа с адресами узлов: страница делает строки узлов кликабельными.
             let t = req.num("t").unwrap_or(0.0);
             let eval = state.opts.eval;
-            let (frame, text) = frame_at(state, t, eval)?;
-            let _ = frame;
-            respond(stream, 200, "text/plain; charset=utf-8", text.as_bytes(), &[])
+            let (session, frame) = frame_at(state, t, eval)?;
+            let lines = kine_core::dump::lines(&kine_core::dump::build(&session.scene, &frame));
+            json_response(stream, &json!({ "lines": lines }))
         }
         "/api/inspect" => {
             let t = req.num("t").unwrap_or(0.0);
             let path = req.q("path").unwrap_or("").to_string();
             let eval = state.opts.eval;
-            let (frame, _) = frame_at(state, t, eval)?;
-            let scene = &state.scene.as_ref().and_then(|s| s.session.as_ref()).expect("session").scene;
-            let text = kine_core::dump::inspect(scene, &frame, &path).unwrap_or_else(|| format!("узел {path} не найден"));
+            let (session, frame) = frame_at(state, t, eval)?;
+            let text = kine_core::dump::inspect(&session.scene, &frame, &path).unwrap_or_else(|| format!("узел {path} не найден"));
             respond(stream, 200, "text/plain; charset=utf-8", text.as_bytes(), &[])
-        }
-        "/api/hit" => {
-            let t = req.num("t").unwrap_or(0.0);
-            let (x, y) = (req.num("x").unwrap_or(0.0) as f32, req.num("y").unwrap_or(0.0) as f32);
-            let eval = state.opts.eval;
-            let (frame, _) = frame_at(state, t, eval)?;
-            let scene = &state.scene.as_ref().and_then(|s| s.session.as_ref()).expect("session").scene;
-            let boxes = kine_core::display::node_boxes(&frame);
-            let hit = kine_core::display::hit(&boxes, x, y).map(|id| scene.path(id));
-            json_response(stream, &json!({ "path": hit }))
         }
         "/api/layout" => {
             // Рамки всех узлов кадра в порядке отрисовки: браузер сам находит узел под курсором.
             let t = req.num("t").unwrap_or(0.0);
             let eval = state.opts.eval;
-            let (frame, _) = frame_at(state, t, eval)?;
-            let scene = &state.scene.as_ref().and_then(|s| s.session.as_ref()).expect("session").scene;
+            let (session, frame) = frame_at(state, t, eval)?;
+            let scene = &session.scene;
             let boxes: Vec<Value> = kine_core::display::node_boxes(&frame)
                 .iter()
                 .map(|b| {
@@ -267,15 +263,6 @@ fn handle(state: &mut State, stream: &mut TcpStream) -> Result<()> {
         p if p.starts_with("/files/") => serve_file(stream, &state.opts.dir, &p["/files/".len()..], req.range.as_deref()),
         _ => respond(stream, 404, "text/plain; charset=utf-8", b"not found", &[]),
     }
-}
-
-fn parse_bg(s: &str) -> Option<Rgba> {
-    let h = s.trim_start_matches('#');
-    if h.len() != 6 {
-        return None;
-    }
-    let n = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok().map(|v| v as f32 / 255.0);
-    Some(Rgba { r: n(0)?, g: n(2)?, b: n(4)?, a: 1.0 })
 }
 
 // ─── Файлы ──────────────────────────────────────────────────────────────────
@@ -328,9 +315,20 @@ fn serve_file(stream: &mut TcpStream, dir: &Path, name: &str, range: Option<&str
 
 // ─── Сцена ──────────────────────────────────────────────────────────────────
 
-/// Отпечаток исходников рядом со сценой: размеры и времена изменения файлов.
-fn fingerprint(entry: &Path) -> u64 {
+/// Отпечаток исходников: размеры и времена изменения входных файлов последней сборки.
+/// Пока сборка ни разу не удалась, входы неизвестны — тогда смотрим каталог сцены.
+fn fingerprint(entry: &Path, inputs: &[PathBuf]) -> u64 {
     let mut h = DefaultHasher::new();
+    if !inputs.is_empty() {
+        for path in std::iter::once(entry).chain(inputs.iter().map(PathBuf::as_path)) {
+            path.hash(&mut h);
+            if let Ok(meta) = std::fs::metadata(path) {
+                meta.len().hash(&mut h);
+                meta.modified().ok().and_then(|m| m.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).hash(&mut h);
+            }
+        }
+        return h.finish();
+    }
     let root = entry.parent().unwrap_or(Path::new("."));
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -355,12 +353,17 @@ fn fingerprint(entry: &Path) -> u64 {
     h.finish()
 }
 
+/// Пересобирает сцену, если изменились её исходники. Вызывается из `/api/scene`: страница
+/// опрашивает его раз в секунду, а запросы кадров не тратят время на проверку файлов.
 fn refresh(state: &mut State) {
     let Some(sc) = &mut state.scene else { return };
-    let fp = fingerprint(&sc.entry);
+    let fp = fingerprint(&sc.entry, &sc.inputs);
     if fp != sc.fingerprint {
-        sc.fingerprint = fp;
         sc.source = crate::bundle(&sc.entry).map_err(|e| format!("{e:#}"));
+        if let Ok(b) = &sc.source {
+            sc.inputs = b.inputs.clone();
+        }
+        sc.fingerprint = fingerprint(&sc.entry, &sc.inputs);
         sc.session = None;
         sc.info = None;
     }
@@ -372,19 +375,23 @@ fn open(state: &State) -> Result<Session> {
     Session::open(source, &state.opts.run, &state.opts.extra)
 }
 
-/// Кадр и дамп в момент `t`. Сессия переиспользуется, пока время идёт вперёд.
-fn frame_at(state: &mut State, t: f64, eval: EvalOptions) -> Result<(Frame, String)> {
-    refresh(state);
-    let reuse = state.scene.as_ref().and_then(|s| s.session.as_ref()).is_some_and(|s| s.now() <= t);
-    if !reuse {
+/// Кадр в момент `t` на живой сессии: она перематывается сама, если время идёт назад.
+/// После ошибки сессия выбрасывается: её состояние после упавшей команды не равно сценарию.
+fn frame_at(state: &mut State, t: f64, eval: EvalOptions) -> Result<(&Session, Frame)> {
+    if state.scene.as_ref().is_some_and(|s| s.session.is_none()) {
         let session = open(state)?;
         state.scene.as_mut().expect("scene").session = Some(session);
     }
-    let session = state.scene.as_mut().and_then(|s| s.session.as_mut()).expect("session");
+    let sc = state.scene.as_mut().context("kine view запущен без сцены")?;
+    let session = sc.session.as_mut().expect("session");
     let t = session.nearest_frame(t);
-    let frame = session.frame_at(t, eval)?;
-    let text = kine_core::dump::dump(&session.scene, &frame);
-    Ok((frame, text))
+    match session.frame_at(t, eval) {
+        Ok(frame) => Ok((sc.session.as_ref().expect("session"), frame)),
+        Err(e) => {
+            sc.session = None;
+            Err(e)
+        }
+    }
 }
 
 fn scene_info(state: &mut State) -> Value {
@@ -421,7 +428,7 @@ fn probe(state: &State) -> Result<Value> {
         }
     }
     let events: Vec<Value> = s.motion.events_log.iter().map(|e| json!({ "t": e.t, "label": e.label() })).collect();
-    let cues: Vec<Value> = s.cues().iter().map(|c| json!({ "t": c.t, "label": c.label() })).collect();
+    let cues: Vec<Value> = s.cues().iter().map(|c| json!({ "t": c.t, "cmd": c.cmd.name(), "label": c.label() })).collect();
     let size = s.scene.stage.as_ref().map_or([1920.0, 1080.0], |st| st.size);
     Ok(json!({
         "fps": s.fps,

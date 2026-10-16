@@ -29,7 +29,13 @@ pub struct TextEngine {
     pub fonts: Vec<LoadedFont>,
     /// Ошибки загрузки шрифтов; build_frame переносит их в диагностики кадра.
     pub diagnostics: Diagnostics,
+    /// Отшейпленный текст до переноса строк: текст, стиль и кегль от кадра к кадру почти
+    /// не меняются, а шейпинг — самая дорогая часть кадра. Перенос под ширину считается заново.
+    shaped: std::collections::HashMap<u64, (Layout<Brush>, String)>,
 }
+
+/// Сколько раскладок держит кэш шейпинга; при переполнении он очищается целиком.
+const SHAPED_LIMIT: usize = 1024;
 
 impl Default for TextEngine {
     fn default() -> Self {
@@ -46,6 +52,7 @@ impl TextEngine {
             system_fonts,
             fonts: Vec::new(),
             diagnostics: Diagnostics::default(),
+            shaped: Default::default(),
         }
     }
 
@@ -88,7 +95,25 @@ impl TextEngine {
         names
     }
 
+    /// Шейпинг текста под кегль, без переноса строк; повторный запрос берётся из кэша.
     fn layout(&mut self, source: &TextSource, size: f32, truncate: Option<usize>) -> (Layout<Brush>, String) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}|{:?}", source.runs, source.look).hash(&mut h);
+        (size.to_bits(), truncate).hash(&mut h);
+        let key = h.finish();
+        if let Some((layout, content)) = self.shaped.get(&key) {
+            return (layout.clone(), content.clone());
+        }
+        let shaped = self.shape(source, size, truncate);
+        if self.shaped.len() >= SHAPED_LIMIT {
+            self.shaped.clear();
+        }
+        self.shaped.insert(key, shaped.clone());
+        shaped
+    }
+
+    fn shape(&mut self, source: &TextSource, size: f32, truncate: Option<usize>) -> (Layout<Brush>, String) {
         let (content, ranges) = source.assemble(truncate);
         let base = &source.look;
         let scale = size / base.size;

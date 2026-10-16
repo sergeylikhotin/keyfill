@@ -9,17 +9,28 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::diag::{Diagnostic, Level};
+use crate::diag::{Counts, Diagnostic};
 use crate::layout::{Frame, FrameNode, Rect};
 use crate::look::{Look, num};
-use crate::motion::RelMotion;
+use crate::motion::{ChannelInfo, Clock, Gone, Note, RelMotion};
 use crate::scene::{Kind, Scene};
 
 /// Прямоугольник `[x, y, w, h]`.
 pub type Box4 = [f32; 4];
 
+/// Геометрия считается в f32; в дамп она попадает округлённой до сотых, как в тексте, чтобы
+/// в JSON не было шума вроде `37.799995`. Время, данные сцены и прочие точные значения не
+/// округляются.
+fn r2(v: f32) -> f32 {
+    (v * 100.0).round() / 100.0
+}
+
 fn b4(r: &Rect) -> Box4 {
-    [r.x, r.y, r.w, r.h]
+    [r.x, r.y, r.w, r.h].map(r2)
+}
+
+fn rounded(m: RelMotion) -> RelMotion {
+    RelMotion { dx: r2(m.dx), dy: r2(m.dy), scale: r2(m.scale), rotate: r2(m.rotate), opacity: r2(m.opacity), reveal: r2(m.reveal) }
 }
 
 fn rect(r: &Box4) -> String {
@@ -51,7 +62,7 @@ pub struct Dump {
     pub stage: StageInfo,
     pub fonts: FontsInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<TimeInfo>,
+    pub time: Option<Clock>,
     /// Сцена снята: в кадре ничего нет.
     #[serde(skip_serializing_if = "is_false")]
     pub removed: bool,
@@ -81,18 +92,6 @@ pub struct FontFileInfo {
     pub file: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct TimeInfo {
-    pub t: f64,
-    pub frame: u64,
-    /// Фаза сцены: `loaded`, `in`, `live`, `out`, `removed`.
-    pub scene: String,
-    /// Обработанные команды сценария.
-    pub log: Vec<String>,
-    /// События до момента кадра включительно.
-    pub events: Vec<String>,
-}
-
 /// Почему узла нет в кадре.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -104,7 +103,11 @@ pub enum Absent {
     /// Ушёл вместе с родителем.
     WithParent,
     /// Закончил `out`.
-    Gone,
+    OutEnded,
+    /// Экземпляр снят адресным `stop`.
+    InstanceStopped,
+    /// Таймлайн экземпляра доиграл `out` и снял его.
+    TimelineRemoved,
 }
 
 impl Absent {
@@ -113,7 +116,9 @@ impl Absent {
             Absent::Hidden => "hidden: when=false",
             Absent::SceneRemoved => "сцена снята",
             Absent::WithParent => "вместе с родителем",
-            Absent::Gone => "ушёл после out",
+            Absent::OutEnded => "ушёл после out",
+            Absent::InstanceStopped => "экземпляр снят stop",
+            Absent::TimelineRemoved => "таймлайн снял экземпляр",
         }
     }
 }
@@ -154,7 +159,7 @@ pub struct DumpNode {
     pub motion: Option<RelMotion>,
     /// Фазы движения: `in 22%`, `loop`, `transition background 25%`, `timeline loop τ=1.8`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub phases: Vec<String>,
+    pub phases: Vec<Note>,
     /// Объявленный presence (дамп без часов).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub presence: Option<Vec<String>>,
@@ -216,9 +221,6 @@ pub struct BorderInfo {
 
 // ─── Построение дампа ───────────────────────────────────────────────────────
 
-fn time_info(frame: &Frame) -> Option<TimeInfo> {
-    frame.clock.as_ref().map(|c| TimeInfo { t: c.t, frame: c.frame, scene: c.scene.to_string(), log: c.log.clone(), events: c.events.clone() })
-}
 
 pub fn build(scene: &Scene, frame: &Frame) -> Dump {
     let nodes = match &scene.stage {
@@ -233,7 +235,7 @@ pub fn build(scene: &Scene, frame: &Frame) -> Dump {
             files: frame.fonts.iter().map(|f| FontFileInfo { families: f.families.clone(), file: f.file.clone() }).collect(),
             system: frame.system_fonts,
         },
-        time: time_info(frame),
+        time: frame.clock.clone(),
         removed: frame.removed,
         nodes,
         diagnostics,
@@ -246,10 +248,16 @@ fn absent(scene: &Scene, frame: &Frame, id: u32) -> Absent {
         Absent::Hidden
     } else if frame.removed {
         Absent::SceneRemoved
+    } else if let Some(g) = frame.gone.get(&id) {
+        match g {
+            Gone::OutEnded => Absent::OutEnded,
+            Gone::InstanceStopped => Absent::InstanceStopped,
+            Gone::TimelineRemoved => Absent::TimelineRemoved,
+        }
     } else if node.parent.is_some_and(|p| scene.node(p).kind != Kind::Stage && frame.find(p).is_none()) {
         Absent::WithParent
     } else {
-        Absent::Gone
+        Absent::OutEnded
     }
 }
 
@@ -292,9 +300,8 @@ fn node(scene: &Scene, frame: &Frame, id: u32) -> DumpNode {
         visual(frame, f, &mut out);
     }
     if let Some(a) = fnode.and_then(|f| f.anim.as_ref()) {
-        if !a.motion.is_identity() {
-            out.motion = Some(a.motion);
-        }
+        // Почти нулевое движение (scale 1.0001) после округления — не движение.
+        out.motion = Some(rounded(a.motion)).filter(|m| !m.is_identity());
         out.phases = a.notes.clone();
     } else if frame.clock.is_none() && let Some(p) = n.props.get("presence") {
         out.presence = Some(keys(p));
@@ -314,7 +321,7 @@ fn visual(frame: &Frame, f: &FrameNode, out: &mut DumpNode) {
             family,
             weight: look.weight,
             // Итоговый кегль после подбора; исходный — в fit_from.
-            size: block.size,
+            size: r2(block.size),
             fit_from: (block.size < look.size).then_some(look.size),
             truncated: block.truncated,
             clip: block.clip,
@@ -336,7 +343,7 @@ fn visual(frame: &Frame, f: &FrameNode, out: &mut DumpNode) {
         }
     });
     out.shadows = v.shadows.len();
-    out.opacity = (v.opacity < 1.0).then_some(v.opacity);
+    out.opacity = (v.opacity < 1.0).then_some(r2(v.opacity));
     out.transform = v.transform.is_some();
 }
 
@@ -407,51 +414,65 @@ pub fn dump(scene: &Scene, frame: &Frame) -> String {
 }
 
 pub fn text(d: &Dump) -> String {
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
+    let mut out: String = lines(d).iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+    out.push('\n');
+    out
+}
+
+/// Строка текстового дампа; у строк узлов — адрес узла (для кликабельного дампа в `kine view`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Line {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+fn plain(text: String) -> Line {
+    Line { text, path: None }
+}
+
+pub fn lines(d: &Dump) -> Vec<Line> {
+    let mut out = Vec::new();
+    out.push(plain(format!(
         "stage {}×{} @{}fps · actionSafe {} · titleSafe {}",
         num(d.stage.size[0]),
         num(d.stage.size[1]),
         num(d.stage.fps),
         plain_rect(&d.stage.action_safe),
         plain_rect(&d.stage.title_safe)
-    );
+    )));
     let fonts: Vec<String> = d.fonts.files.iter().map(|f| format!("{} ({})", f.families.join(", "), f.file)).collect();
-    let _ = writeln!(
-        out,
+    out.push(plain(format!(
         "fonts: {}{}",
         if fonts.is_empty() { "—".to_string() } else { fonts.join(" · ") },
         if d.fonts.system { " + системные" } else { " · системные выключены" }
-    );
+    )));
     if let Some(c) = &d.time {
         let log = if c.log.is_empty() { String::new() } else { format!(" · {}", c.log.join(", ")) };
-        let _ = writeln!(out, "time: t={}s · кадр {} · сцена {}{log}", num(c.t as f32), c.frame, c.scene);
+        out.push(plain(format!("time: t={}s · кадр {} · сцена {}{log}", num(c.t as f32), c.frame, c.scene)));
         // Последние события: что уже произошло к этому кадру (маркеры, состояния, emit).
         const SHOWN: usize = 8;
         if !c.events.is_empty() {
             let skip = c.events.len().saturating_sub(SHOWN);
             let earlier = if skip > 0 { format!(" (+{skip} ранее)") } else { String::new() };
-            let _ = writeln!(out, "events{earlier}: {}", c.events[skip..].join(" · "));
+            out.push(plain(format!("events{earlier}: {}", c.events[skip..].join(" · "))));
         }
     }
     if d.removed {
-        let _ = writeln!(out, "сцена снята: в кадре ничего нет");
+        out.push(plain("сцена снята: в кадре ничего нет".into()));
     }
     for (i, n) in d.nodes.iter().enumerate() {
         node_lines(n, "", i + 1 == d.nodes.len(), &mut out);
     }
     if !d.diagnostics.is_empty() {
-        let count = |l: Level| d.diagnostics.iter().filter(|x| x.level == l).count();
-        let _ = writeln!(out, "\ndiagnostics: {} error, {} warn, {} info", count(Level::Error), count(Level::Warn), count(Level::Info));
-        for x in &d.diagnostics {
-            let _ = writeln!(out, "{x}");
-        }
+        out.push(plain(String::new()));
+        out.push(plain(format!("diagnostics: {}", Counts::of(&d.diagnostics))));
+        out.extend(d.diagnostics.iter().map(|x| plain(x.to_string())));
     }
     out
 }
 
-fn node_lines(n: &DumpNode, prefix: &str, last: bool, out: &mut String) {
+fn node_lines(n: &DumpNode, prefix: &str, last: bool, out: &mut Vec<Line>) {
     let branch = if last { "└─ " } else { "├─ " };
     let mut line = format!("{prefix}{branch}{}  {}", n.path, n.kind);
     if let Some(l) = &n.layout {
@@ -474,7 +495,8 @@ fn node_lines(n: &DumpNode, prefix: &str, last: bool, out: &mut String) {
         let _ = write!(line, "  motion {}", m.describe().join(" · "));
     }
     if !n.phases.is_empty() {
-        let _ = write!(line, "  [{}]", n.phases.join(", "));
+        let phases: Vec<String> = n.phases.iter().map(Note::to_string).collect();
+        let _ = write!(line, "  [{}]", phases.join(", "));
     }
     if let Some(p) = &n.presence {
         let _ = write!(line, "  [presence {}]", p.join(","));
@@ -491,7 +513,7 @@ fn node_lines(n: &DumpNode, prefix: &str, last: bool, out: &mut String) {
     if n.cut > 0 {
         let _ = write!(line, "  [+{} вложенных, см. --depth]", n.cut);
     }
-    let _ = writeln!(out, "{line}");
+    out.push(Line { text: line, path: Some(n.path.clone()) });
 
     let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
     for (i, c) in n.children.iter().enumerate() {
@@ -572,7 +594,7 @@ pub struct Inspect {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<TimeInfo>,
+    pub time: Option<Clock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absent: Option<Absent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,20 +661,8 @@ pub struct LookEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InspectMotion {
-    pub phases: Vec<String>,
-    pub channels: Vec<ChannelEntry>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ChannelEntry {
-    pub channel: String,
-    pub value: String,
-    /// `presence`, `transition`, `timeline`.
-    pub layer: String,
-    pub source: String,
-    pub easing: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<f64>,
+    pub phases: Vec<Note>,
+    pub channels: Vec<ChannelInfo>,
 }
 
 pub fn inspect_build(scene: &Scene, frame: &Frame, path: &str) -> Option<Inspect> {
@@ -664,7 +674,7 @@ pub fn inspect_build(scene: &Scene, frame: &Frame, path: &str) -> Option<Inspect
         kind: node.kind.name(),
         instance: node.instance().map(String::from),
         source: node.src.clone(),
-        time: time_info(frame),
+        time: frame.clock.clone(),
         absent: if f.is_none() { Some(absent(scene, frame, id)) } else { None },
         rect: f.map(|f| b4(&f.rect)),
         applied_else: f.and_then(|f| f.applied_else.clone()),
@@ -712,10 +722,10 @@ pub fn inspect_build(scene: &Scene, frame: &Frame, path: &str) -> Option<Inspect
             content: block.content.clone(),
             family: block.resolved_family.clone().unwrap_or_else(|| "?".into()),
             requested: look.family.clone().unwrap_or_else(|| "sans-serif".into()),
-            size: block.size,
+            size: r2(block.size),
             fit_from: (block.size < look.size).then_some(look.size),
             lines: block.line_count(),
-            measured: [block.layout.width(), block.layout.height()],
+            measured: [block.layout.width(), block.layout.height()].map(r2),
             content_box: b4(&content),
             truncated: block.truncated,
             overflow: block.overflow,
@@ -735,18 +745,7 @@ pub fn inspect_build(scene: &Scene, frame: &Frame, path: &str) -> Option<Inspect
     {
         out.motion = Some(InspectMotion {
             phases: a.notes.clone(),
-            channels: a
-                .channels
-                .iter()
-                .map(|c| ChannelEntry {
-                    channel: c.channel.into(),
-                    value: c.value.clone(),
-                    layer: c.layer.into(),
-                    source: c.source.into(),
-                    easing: c.easing.clone(),
-                    progress: c.progress,
-                })
-                .collect(),
+            channels: a.channels.clone(),
         });
     }
 
@@ -833,10 +832,11 @@ pub fn inspect_text(i: &Inspect) -> String {
         }
     }
     if let Some(m) = &i.motion {
-        let _ = writeln!(out, "motion    {}", m.phases.join(", "));
+        let phases: Vec<String> = m.phases.iter().map(Note::to_string).collect();
+        let _ = writeln!(out, "motion    {}", phases.join(", "));
         for c in &m.channels {
             let progress = c.progress.map(|p| format!(" {}%", (p * 100.0).round() as i64)).unwrap_or_default();
-            let origin = if c.layer == c.source { c.layer.clone() } else { format!("{} {}", c.layer, c.source) };
+            let origin = if c.layer == c.source { c.layer.to_string() } else { format!("{} {}", c.layer, c.source) };
             let _ = writeln!(out, "  {:<11} {:<10} ← {origin} ({}){progress}", c.channel, c.value, c.easing);
         }
     }

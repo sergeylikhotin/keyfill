@@ -26,7 +26,7 @@ const LABEL: f32 = 26.0;
 const CELL: f32 = 12.0;
 
 fn rgb(r: u8, g: u8, b: u8) -> Rgba {
-    Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }
+    Rgba::from_u8(r, g, b)
 }
 
 /// Моменты раскадровки: равномерно от `from` до `to` включительно, на границах кадров.
@@ -36,8 +36,7 @@ pub fn times(session: &Session, opts: &Options) -> Vec<f64> {
         .map(|i| {
             let t = if n == 1 { opts.from } else { opts.from + (opts.to - opts.from) * i as f64 / (n - 1) as f64 };
             // Ближайший кадр, но не позже `to`.
-            let fps = session.fps;
-            ((t * fps).round() / fps).min(opts.to.max(opts.from))
+            session.nearest_frame(t).min(opts.to.max(opts.from))
         })
         .collect();
     out.dedup();

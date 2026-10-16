@@ -152,6 +152,20 @@ pub struct Rgba {
 impl Rgba {
     pub const WHITE: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
+    pub fn from_u8(r: u8, g: u8, b: u8) -> Rgba {
+        Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 }
+    }
+
+    /// `#RRGGBB` — подложка из CLI и просмотрщика.
+    pub fn from_hex(s: &str) -> Option<Rgba> {
+        let h = s.strip_prefix('#').unwrap_or(s);
+        if h.len() != 6 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let n = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+        Some(Rgba::from_u8(n(0)?, n(2)?, n(4)?))
+    }
+
     pub fn to_u8(self) -> [u8; 4] {
         let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         [c(self.r), c(self.g), c(self.b), c(self.a)]
@@ -269,13 +283,20 @@ pub struct Border {
     pub color: Rgba,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Transform {
     pub x: f32,
     pub y: f32,
     pub scale: [f32; 2],
     pub rotate: f32,
     pub origin: [f32; 2],
+}
+
+/// Нейтральная трансформация: без сдвига, поворота и масштаба, опорная точка — центр.
+impl Default for Transform {
+    fn default() -> Self {
+        Transform { x: 0.0, y: 0.0, scale: [1.0, 1.0], rotate: 0.0, origin: [0.5, 0.5] }
+    }
 }
 
 /// Всё, что нужно рендеру, уже разобранное и проверенное.
@@ -385,11 +406,11 @@ pub fn visual(look: &Look, path: &str, src: Option<&str>, diags: &mut Diagnostic
         let scale = match t.get("scale") {
             Some(Value::Array(a)) if a.len() == 2 => [parse_len(&a[0])?, parse_len(&a[1])?],
             Some(s) => [parse_len(s)?; 2],
-            None => [1.0, 1.0],
+            None => Transform::default().scale,
         };
         let origin = match t.get("origin").and_then(Value::as_array) {
             Some(o) if o.len() == 2 => [parse_len(&o[0])?, parse_len(&o[1])?],
-            _ => [0.5, 0.5],
+            _ => Transform::default().origin,
         };
         Ok(Transform { x: f("x").unwrap_or(0.0), y: f("y").unwrap_or(0.0), scale, rotate: f("rotate").unwrap_or(0.0), origin })
     });

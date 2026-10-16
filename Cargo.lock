@@ -428,6 +428,7 @@ dependencies = [
  "anyhow",
  "kine-core",
  "parley",
+ "png",
  "vello_cpu",
 ]
 

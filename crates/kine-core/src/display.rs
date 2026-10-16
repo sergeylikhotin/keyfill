@@ -4,8 +4,6 @@
 //! превращены в прямоугольники, тени, прогоны глифов и слои. Бэкенд (vello_cpu сейчас,
 //! GPU в M8) только исполняет команды и ничего не знает о дереве сцены.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 use parley::{FontData, PositionedLayoutItem};
 
@@ -73,18 +71,6 @@ pub enum Item {
 }
 
 impl Item {
-    fn kind(&self) -> &'static str {
-        match self {
-            Item::PushLayer { .. } => "layer",
-            Item::PushClip { .. } => "clip",
-            Item::Pop => "pop",
-            Item::Fill { .. } => "fill",
-            Item::Stroke { .. } => "stroke",
-            Item::Shadow { .. } => "shadow",
-            Item::Glyphs { .. } => "glyphs",
-        }
-    }
-
     fn transformed(&self, by: Affine) -> Item {
         let mut item = self.clone();
         match &mut item {
@@ -123,15 +109,6 @@ impl DisplayList {
     /// Вставляет чужой список с преобразованием (раскадровка, композиция).
     pub fn append(&mut self, other: &DisplayList, transform: Affine) {
         self.items.extend(other.items.iter().map(|i| i.transformed(transform)));
-    }
-
-    /// Счётчики команд: `fill 4 · glyphs 2 · layer 1`.
-    pub fn summary(&self) -> String {
-        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for item in &self.items {
-            *counts.entry(item.kind()).or_default() += 1;
-        }
-        counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ")
     }
 
     fn node(&mut self, frame: &Frame, node: &FrameNode, parent: Affine) {
@@ -219,27 +196,11 @@ impl DisplayList {
             }
         }
     }
-
-    /// Текстовое описание для отладки: по строке на команду.
-    pub fn describe(&self) -> String {
-        let mut out = String::new();
-        for item in &self.items {
-            let _ = match item {
-                Item::Fill { rect, color, .. } => writeln!(out, "fill {} {color}", rect_str(rect)),
-                Item::Stroke { rect, width, color, .. } => writeln!(out, "stroke {} w{width} {color}", rect_str(rect)),
-                Item::Shadow { rect, std_dev, color, .. } => writeln!(out, "shadow {} σ{std_dev} {color}", rect_str(rect)),
-                Item::Glyphs { run, .. } => writeln!(out, "glyphs ×{} {}px", run.glyphs.len(), run.size),
-                Item::PushLayer { opacity, clip, .. } => writeln!(out, "layer opacity {opacity}{}", if clip.is_some() { " clip" } else { "" }),
-                Item::PushClip { rect, .. } => writeln!(out, "clip {}", rect_str(rect)),
-                Item::Pop => writeln!(out, "pop"),
-            };
-        }
-        out
-    }
 }
 
 /// Рамка узла на экране: прямоугольник раскладки после всех трансформаций (look, presence,
-/// таймлайн), как его рисует display list. Для подсветки и попадания курсором.
+/// таймлайн), как его рисует display list. Просмотрщик по ним подсвечивает узлы и находит
+/// узел под курсором.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NodeBox {
     pub id: u32,
@@ -282,28 +243,12 @@ pub fn node_boxes(frame: &Frame) -> Vec<NodeBox> {
     out
 }
 
-/// Узел под точкой: самый поздний в порядке отрисовки среди видимых, чья рамка её содержит.
-pub fn hit(boxes: &[NodeBox], x: f32, y: f32) -> Option<u32> {
-    boxes
-        .iter()
-        .rev()
-        .find(|b| b.opacity > 0.0 && x >= b.rect.x && y >= b.rect.y && x <= b.rect.x + b.rect.w && y <= b.rect.y + b.rect.h)
-        .map(|b| b.id)
-}
-
-fn rect_str(r: &Rect) -> String {
-    format!("{},{} {}×{}", r.x, r.y, r.w, r.h)
-}
-
 /// Трансформация узла: `transform` из look плюс слой presence (сдвиг, поворот, масштаб).
 fn node_transform(v: &Visual, m: &RelMotion, r: Rect) -> Affine {
     if v.transform.is_none() && m.dx == 0.0 && m.dy == 0.0 && m.scale == 1.0 && m.rotate == 0.0 {
         return Affine::IDENTITY;
     }
-    let (x, y, scale, rotate, origin) = match &v.transform {
-        Some(t) => (t.x, t.y, t.scale, t.rotate, t.origin),
-        None => (0.0, 0.0, [1.0, 1.0], 0.0, [0.5, 0.5]),
-    };
+    let crate::look::Transform { x, y, scale, rotate, origin } = v.transform.unwrap_or_default();
     let ox = (r.x + r.w * origin[0]) as f64;
     let oy = (r.y + r.h * origin[1]) as f64;
     Affine::translate((x + m.dx) as f64, (y + m.dy) as f64)

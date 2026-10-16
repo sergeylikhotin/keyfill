@@ -24,7 +24,7 @@ pub struct Key {
     pub easing: Easing,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LoopDef {
     pub from: String,
     pub to: String,
@@ -48,6 +48,13 @@ pub struct TimelineDef {
 }
 
 impl TimelineDef {
+    /// Маркеры по возрастанию времени таймлайна.
+    pub fn markers_by_time(&self) -> Vec<(&str, f64)> {
+        let mut out: Vec<(&str, f64)> = self.markers.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        out.sort_by(|a, b| a.1.total_cmp(&b.1));
+        out
+    }
+
     fn next_marker_after(&self, x: f64) -> Option<f64> {
         self.markers.values().copied().filter(|m| *m > x + EPS).reduce(f64::min)
     }
@@ -210,7 +217,36 @@ struct Saved {
     loop_on: bool,
     loop_left: Option<u32>,
     mode: Mode,
-    state: &'static str,
+    state: RunState,
+}
+
+/// Состояние воспроизведения экземпляра: событие `state:<имя>` и пометка в дампе.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    Loaded,
+    In,
+    Hold,
+    Loop,
+    Segment,
+    Out,
+    Finished,
+    Removed,
+}
+
+impl RunState {
+    pub fn label(self) -> &'static str {
+        match self {
+            RunState::Loaded => "loaded",
+            RunState::In => "in",
+            RunState::Hold => "hold",
+            RunState::Loop => "loop",
+            RunState::Segment => "segment",
+            RunState::Out => "out",
+            RunState::Finished => "finished",
+            RunState::Removed => "removed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -245,7 +281,7 @@ pub struct Run {
     loop_left: Option<u32>,
     saved: Option<Saved>,
     last_tau: f64,
-    pub state: &'static str,
+    pub state: RunState,
     pub events: Vec<Ev>,
     pub generation: u64,
 }
@@ -286,7 +322,7 @@ impl Run {
             loop_left: None,
             saved: None,
             last_tau: 0.0,
-            state: "loaded",
+            state: RunState::Loaded,
             events: Vec::new(),
             generation: 0,
         }
@@ -305,7 +341,7 @@ impl Run {
     }
 
     pub fn is_looping(&self) -> bool {
-        self.state == "loop"
+        self.state == RunState::Loop
     }
 
     pub fn value(&self, key: KeyId, t: f64) -> Option<V> {
@@ -323,10 +359,10 @@ impl Run {
         self.active.get(&key).map(|tr| (tr, self.head.tau(t)))
     }
 
-    fn set_state(&mut self, t: f64, state: &'static str) {
+    fn set_state(&mut self, t: f64, state: RunState) {
         if self.state != state {
             self.state = state;
-            self.events.push(Ev { t, kind: "state", name: state.to_string() });
+            self.events.push(Ev { t, kind: "state", name: state.label().to_string() });
         }
     }
 
@@ -377,7 +413,7 @@ impl Run {
             let tc = self.head.t0 + (x - self.head.tau0) / self.head.dir;
             self.event(tc, kind, &name);
             if kind == "marker" && fwd && self.loop_on && self.mode == Mode::Main && loop_from.as_deref() == Some(name.as_str()) {
-                self.set_state(tc, "loop");
+                self.set_state(tc, RunState::Loop);
             }
         }
         self.last_tau = now;
@@ -430,7 +466,7 @@ impl Run {
         match stop {
             Stop::Hold(_) => {
                 self.head = Head { t0: t, tau0: tau, dir: 0.0 };
-                self.set_state(t, "hold");
+                self.set_state(t, RunState::Hold);
             }
             Stop::LoopEnd => {
                 let l = self.def.repeat.clone().expect("loop");
@@ -440,7 +476,7 @@ impl Run {
                     let stays = self.def.holds.iter().any(|h| (self.def.markers[h] - tau).abs() < EPS)
                         || self.def.markers.get("out").is_some_and(|o| (o - tau).abs() < EPS);
                     self.head = Head { t0: t, tau0: tau, dir: if stays { 0.0 } else { 1.0 } };
-                    self.set_state(t, if stays { "hold" } else { "in" });
+                    self.set_state(t, if stays { RunState::Hold } else { RunState::In });
                     return;
                 }
                 if let Some(n) = &mut self.loop_left {
@@ -461,7 +497,7 @@ impl Run {
             Stop::End => {
                 self.head = Head { t0: t, tau0: tau, dir: 0.0 };
                 self.mode = Mode::Finished;
-                self.set_state(t, "finished");
+                self.set_state(t, RunState::Finished);
             }
             Stop::SegmentEnd => {
                 let saved = self.saved.take().expect("saved");
@@ -475,7 +511,7 @@ impl Run {
             Stop::OutEnd => {
                 self.head = Head { t0: t, tau0: tau, dir: 0.0 };
                 self.mode = Mode::Removed;
-                self.set_state(t, "removed");
+                self.set_state(t, RunState::Removed);
             }
         }
     }
@@ -530,12 +566,12 @@ impl Run {
         self.loop_left = self.def.repeat.as_ref().and_then(|l| l.count);
         self.saved = None;
         self.last_tau = -1.0;
-        self.set_state(t, "in");
+        self.set_state(t, RunState::In);
         if self.next_stop().is_none() {
             self.flush(t);
             self.head.dir = 0.0;
             self.mode = Mode::Finished;
-            self.set_state(t, "finished");
+            self.set_state(t, RunState::Finished);
         }
     }
 
@@ -544,14 +580,14 @@ impl Run {
         let tau = self.head.tau(t);
         let at_out = self.def.markers.get("out").is_some_and(|o| (o - tau).abs() < EPS);
         match self.mode {
-            Mode::Main if self.head.dir == 0.0 && self.state == "hold" && !at_out => {
+            Mode::Main if self.head.dir == 0.0 && self.state == RunState::Hold && !at_out => {
                 self.head = Head { t0: t, tau0: tau, dir: 1.0 };
-                self.set_state(t, "in");
+                self.set_state(t, RunState::In);
             }
             Mode::Main if self.loop_on => {
                 self.loop_on = false;
                 self.head = Head { t0: t, tau0: tau, dir: 1.0 };
-                self.set_state(t, "in");
+                self.set_state(t, RunState::In);
             }
             _ => {
                 let why = if at_out { "next: стоим на out, дальше только stop" } else { "next: нет остановки" };
@@ -567,7 +603,7 @@ impl Run {
             Mode::Out { end } => return self.head.t0 + (end - self.head.tau0),
             Mode::Loaded => {
                 self.mode = Mode::Removed;
-                self.set_state(t, "removed");
+                self.set_state(t, RunState::Removed);
                 return t;
             }
             _ => {}
@@ -581,7 +617,7 @@ impl Run {
                 self.head.dir = 1.0;
                 self.mode = Mode::Out { end };
                 self.event(t, "marker", "out");
-                self.set_state(t, "out");
+                self.set_state(t, RunState::Out);
                 if end - out <= EPS {
                     self.on_stop(t, Stop::OutEnd);
                 }
@@ -590,7 +626,7 @@ impl Run {
             None => {
                 self.head.dir = 0.0;
                 self.mode = Mode::Removed;
-                self.set_state(t, "removed");
+                self.set_state(t, RunState::Removed);
                 t
             }
         }
@@ -616,18 +652,18 @@ impl Run {
         self.head.dir = 1.0;
         self.mode = Mode::Segment { end };
         self.event(t, "marker", marker);
-        self.set_state(t, "segment");
+        self.set_state(t, RunState::Segment);
         if end - m <= EPS {
             self.on_stop(t, Stop::SegmentEnd);
         }
         Ok(())
     }
 
-    /// Пометка для дампа: `loop τ=2.31`, `hold на ready`.
-    pub fn describe(&self, t: f64) -> String {
+    /// Пометка для дампа: `timeline loop τ=2.31`, `timeline hold τ=0.7 на ready`.
+    pub fn describe(&self, t: f64) -> crate::motion::Note {
         let tau = self.head.tau(t);
-        let place = self.marker_at(tau).map(|m| format!(" на {m}")).unwrap_or_default();
-        format!("timeline {} τ={}{place}", self.state, crate::look::num(tau as f32))
+        // τ — время; шум f64 от сложения отрезков не нужен ни в тексте, ни в JSON.
+        crate::motion::Note::Timeline { state: self.state, tau: (tau * 1e6).round() / 1e6, marker: self.marker_at(tau) }
     }
 }
 
@@ -700,13 +736,13 @@ mod tests {
         assert_eq!(op(&r, 0.0), 0.0);
         r.play(0.0);
         drive(&mut r, 1.7);
-        assert_eq!(r.state, "hold");
+        assert_eq!(r.state, RunState::Hold);
         assert!((r.tau(1.7) - 1.5).abs() < 1e-9);
         assert_eq!(op(&r, 1.7), 1.0);
         r.next(2.0);
         drive(&mut r, 4.0);
         // Вперёд до 3 (τ: 1.5 → 3 за 1.5 с, к моменту 3.5), затем назад: в 4.0 τ = 2.5.
-        assert_eq!(r.state, "loop");
+        assert_eq!(r.state, RunState::Loop);
         assert!((r.tau(4.0) - 2.5).abs() < 1e-9, "{}", r.tau(4.0));
         assert!((op(&r, 4.0) - 0.75).abs() < 1e-9);
         // Назад до 2, снова вперёд: в 5.0 τ = 2.5.
@@ -715,7 +751,7 @@ mod tests {
         // next выходит из цикла: дальше вперёд до out и стоп там.
         r.next(5.0);
         drive(&mut r, 7.0);
-        assert_eq!(r.state, "hold");
+        assert_eq!(r.state, RunState::Hold);
         assert!((r.tau(7.0) - 4.0).abs() < 1e-9);
     }
 
@@ -750,10 +786,10 @@ mod tests {
         r.play(0.0);
         drive(&mut r, 1.6);
         r.segment(1.6, "loop").unwrap();
-        assert_eq!(r.state, "segment");
+        assert_eq!(r.state, RunState::Segment);
         drive(&mut r, 3.0);
         // Сегмент loop..back длится 1 с, затем возврат к hold на ready.
-        assert_eq!(r.state, "hold");
+        assert_eq!(r.state, RunState::Hold);
         assert!((r.tau(3.0) - 1.5).abs() < 1e-9);
         assert!(r.segment(3.0, "nope").is_err());
     }

@@ -101,9 +101,10 @@ fn check_range_reports_first_and_last_frame() {
     assert_eq!(code, 0);
     assert_eq!(j["result"]["frames"], 231);
     let (_, j) = kine(&["check", "examples/lower-third/scene.cues.ts", "--t", "in"]).unwrap();
-    assert_eq!((j["result"]["from"].clone(), j["result"]["to"].clone()), (serde_json::json!(0), serde_json::json!(0.46)));
+    let range = |j: &Value| (j["result"]["from"].as_f64().unwrap(), j["result"]["to"].as_f64().unwrap());
+    assert_eq!(range(&j), (0.0, 0.46));
     let (_, j) = kine(&["check", "examples/scoreboard/scene.cues.ts", "--t", "loop"]).unwrap();
-    assert_eq!((j["result"]["from"].clone(), j["result"]["to"].clone()), (serde_json::json!(1.5), serde_json::json!(4.2)));
+    assert_eq!(range(&j), (1.5, 4.2));
 
     let (code, j) = kine(&["check", "examples/scoreboard/scene.cues.ts", "--t", "nope"]).unwrap();
     assert_eq!(code, 2);

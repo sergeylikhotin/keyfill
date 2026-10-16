@@ -21,6 +21,13 @@ pub struct Rect {
     pub h: f32,
 }
 
+/// `x,y w×h`, числа как в дампе.
+impl std::fmt::Display for Rect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{} {}×{}", look::num(self.x), look::num(self.y), look::num(self.w), look::num(self.h))
+    }
+}
+
 impl Rect {
     pub fn inset(self, frac: f32) -> Rect {
         let dx = self.w * (1.0 - frac) / 2.0;
@@ -100,6 +107,8 @@ pub struct Frame {
     pub clock: Option<Clock>,
     /// Сцена снята после stop: в кадре ничего нет.
     pub removed: bool,
+    /// Узлы, которые ушли из кадра, и почему.
+    pub gone: std::collections::BTreeMap<u32, crate::motion::Gone>,
 }
 
 impl Frame {
@@ -117,13 +126,20 @@ impl Frame {
         Rect { x: 0.0, y: 0.0, w: self.size[0], h: self.size[1] }
     }
 
+    /// Безопасная зона по имени: `actionSafe`, `titleSafe`.
+    pub fn safe_area(&self, name: &str) -> Option<Rect> {
+        match name {
+            "actionSafe" => Some(self.action_safe),
+            "titleSafe" => Some(self.title_safe),
+            _ => None,
+        }
+    }
+
     /// Прямоугольник цели якоря или `must.inside`, если она не зависит от родителя.
     pub fn named_target(&self, scene: &Scene, to: &Value) -> Option<Rect> {
         match to.as_str() {
             Some("stage") => Some(self.stage_rect()),
-            Some("actionSafe") => Some(self.action_safe),
-            Some("titleSafe") => Some(self.title_safe),
-            Some(_) => None,
+            Some(name) => self.safe_area(name),
             None => {
                 let id = part_node(scene, to)?;
                 self.find(id).map(|n| n.rect)
@@ -159,10 +175,6 @@ struct Ctx<'a> {
     anim: &'a Animated,
 }
 
-pub fn build_frame(scene: &Scene, engine: &mut TextEngine) -> Result<Frame> {
-    build_frame_with(scene, engine, &Overrides::new(), &Animated::default())
-}
-
 pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Overrides, anim: &Animated) -> Result<Frame> {
     let Some(stage) = scene.stage.clone() else {
         bail!("в сцене нет stage: бандл должен вызвать mount(scene)");
@@ -184,6 +196,7 @@ pub fn build_frame_with(scene: &Scene, engine: &mut TextEngine, overrides: &Over
         system_fonts: engine.system_fonts,
         clock: anim.clock.clone(),
         removed: anim.removed,
+        gone: Default::default(),
     };
 
     let mut ctx = Ctx { scene, engine, overrides, anim };
@@ -252,6 +265,9 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
     // Скрытый узел рисуется, пока идёт его out; ушедший после out не рисуется.
     let show = anim.and_then(|a| a.show);
     if show == Some(false) || (node.hidden() && show != Some(true)) {
+        if let Some(g) = anim.and_then(|a| a.gone) {
+            frame.gone.insert(id, g);
+        }
         return Ok(None);
     }
     let over = ctx.overrides.get(&id);
@@ -465,7 +481,7 @@ fn apply_animated(visual: &mut Visual, a: &NodeValues) {
             (Channel::Radius, V::N(r)) => visual.radius = [(r as f32).max(0.0); 4],
             (Channel::Background, V::C(_)) => visual.background = Some(v.rgba()),
             (Channel::X | Channel::Y | Channel::Scale | Channel::Rotate, V::N(n)) => {
-                let t = visual.transform.get_or_insert(Transform { x: 0.0, y: 0.0, scale: [1.0, 1.0], rotate: 0.0, origin: [0.5, 0.5] });
+                let t = visual.transform.get_or_insert_with(Transform::default);
                 let n = n as f32;
                 match ch {
                     Channel::X => t.x = n,
@@ -511,28 +527,23 @@ fn shift(node: &mut FrameNode, dx: f32, dy: f32) {
 
 /// Якорь к safe area подразумевает, что узел в ней помещается; если нет — это сразу видно в дампе.
 fn check_anchors(scene: &Scene, frame: &Frame, node: &FrameNode, diags: &mut Diagnostics) {
-    if let Some(to) = node.anchor.as_ref().and_then(|a| a.get("to")).and_then(Value::as_str) {
-        let target = match to {
-            "actionSafe" => Some(frame.action_safe),
-            "titleSafe" => Some(frame.title_safe),
-            _ => None,
-        };
-        if let Some(target) = target.filter(|t| !t.contains(&node.rect)) {
-            diags.push(
-                Level::Warn,
-                "anchor.overflow",
-                &scene.path(node.id),
-                scene.node(node.id).src.as_deref(),
-                format!(
-                    "узел {}×{} не помещается в {to} {}×{}",
-                    look::num(node.rect.w),
-                    look::num(node.rect.h),
-                    look::num(target.w),
-                    look::num(target.h)
-                ),
-                Some("ограничь размер (size/max) или уменьши содержимое"),
-            );
-        }
+    if let Some(to) = node.anchor.as_ref().and_then(|a| a.get("to")).and_then(Value::as_str)
+        && let Some(target) = frame.safe_area(to).filter(|t| !t.contains(&node.rect))
+    {
+        diags.push(
+            Level::Warn,
+            "anchor.overflow",
+            &scene.path(node.id),
+            scene.node(node.id).src.as_deref(),
+            format!(
+                "узел {}×{} не помещается в {to} {}×{}",
+                look::num(node.rect.w),
+                look::num(node.rect.h),
+                look::num(target.w),
+                look::num(target.h)
+            ),
+            Some("ограничь размер (size/max) или уменьши содержимое"),
+        );
     }
     for c in &node.children {
         check_anchors(scene, frame, c, diags);
@@ -572,10 +583,10 @@ fn stack_placement(style: &mut Style, anchor: &Value) {
     };
     style.justify_self = Some(align(at[0]));
     style.align_self = Some(align(at[1]));
-    if let Some(o) = anchor.get("offset").and_then(Value::as_array) {
-        let f = |i: usize| o.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    if anchor.get("offset").is_some() {
+        let [dx, dy] = anchor_offset(anchor);
         style.position = Position::Relative;
-        style.inset = taffy::Rect { left: length(f(0)), top: length(f(1)), right: auto(), bottom: auto() };
+        style.inset = taffy::Rect { left: length(dx), top: length(dy), right: auto(), bottom: auto() };
     }
 }
 
@@ -772,14 +783,17 @@ fn anchor_target(anchor: &Value, parent: Option<Rect>, frame: &Frame, scene: &Sc
     }
 }
 
+/// `anchor.offset` как `[dx, dy]`; недостающие значения — 0.
+fn anchor_offset(anchor: &Value) -> [f32; 2] {
+    let o = anchor.get("offset").and_then(Value::as_array);
+    let f = |i: usize| o.and_then(|o| o.get(i)).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    [f(0), f(1)]
+}
+
 fn place(anchor: &Value, target: Rect, w: f32, h: f32) -> [f32; 2] {
     let at = anchor.get("at").and_then(Value::as_str).and_then(point).unwrap_or([0.0, 0.0]);
     let selfp = anchor.get("self").and_then(Value::as_str).and_then(point).unwrap_or(at);
-    let offset = anchor
-        .get("offset")
-        .and_then(Value::as_array)
-        .map(|o| [o[0].as_f64().unwrap_or(0.0) as f32, o[1].as_f64().unwrap_or(0.0) as f32])
-        .unwrap_or([0.0, 0.0]);
+    let offset = anchor_offset(anchor);
     [
         target.x + at[0] * target.w - selfp[0] * w + offset[0],
         target.y + at[1] * target.h - selfp[1] * h + offset[1],

@@ -20,8 +20,8 @@ use serde_json::Value;
 use crate::diag::{Diagnostics, Level};
 use crate::dynamic::Dyn;
 use crate::look::{self, Rgba, num};
-use crate::scene::{Kind, Scene};
-use crate::timeline::{self, Run, TimelineDef};
+use crate::scene::{Kind, MotionAction, Scene};
+use crate::timeline::Run;
 
 // ─── Каналы и значения ──────────────────────────────────────────────────────
 
@@ -634,7 +634,8 @@ impl NodeState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize)]
+#[serde(into = "&'static str")]
 pub enum ScenePhase {
     /// Загружена, ждёт play.
     #[default]
@@ -643,6 +644,18 @@ pub enum ScenePhase {
     Stopping { until: f64 },
     /// Снята: все `out` закончились.
     Removed,
+}
+
+impl From<ScenePhase> for &'static str {
+    fn from(p: ScenePhase) -> &'static str {
+        p.label()
+    }
+}
+
+impl std::fmt::Display for ScenePhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 impl ScenePhase {
@@ -714,22 +727,76 @@ pub struct NodeValues {
     pub motion: RelMotion,
     /// `Some(true)` — рисовать, хотя узел скрыт (идёт `out`); `Some(false)` — узел ушёл.
     pub show: Option<bool>,
-    /// Короткие пометки для дампа: `in 78%`, `loop`, `transition opacity 40%`.
-    pub notes: Vec<String>,
+    /// Почему узел ушёл, если `show == Some(false)`.
+    pub gone: Option<Gone>,
+    /// Что с узлом происходит: `in 78%`, `loop`, `transition opacity 40%`.
+    pub notes: Vec<Note>,
     /// Подробности по каналам для inspect.
     pub channels: Vec<ChannelInfo>,
     /// Текст кусков `count()` и `clock()` по номеру куска.
     pub texts: BTreeMap<usize, String>,
 }
 
-#[derive(Debug, Clone)]
+/// Канал узла для inspect: значение, слой (`presence`, `transition`, `timeline`), изинг, прогресс.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChannelInfo {
     pub channel: &'static str,
+    pub value: String,
     pub layer: &'static str,
     pub source: &'static str,
-    pub value: String,
     pub easing: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<f64>,
+}
+
+/// Фаза узла в момент кадра. Текст — пометка дампа, JSON — структура с прогрессом.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Note {
+    /// Ждёт play сцены.
+    Waiting,
+    /// `progress` — доля от 0 до 1; `None` у бесконечного движения.
+    In { progress: Option<f64> },
+    Loop,
+    Out { progress: Option<f64> },
+    Gone,
+    Transition { channel: &'static str, progress: Option<f64> },
+    Timeline { state: crate::timeline::RunState, tau: f64, marker: Option<String> },
+    /// Идёт анимация `count()`.
+    Count,
+}
+
+impl std::fmt::Display for Note {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Note::Waiting => f.write_str("ждёт play"),
+            Note::In { progress } => write!(f, "in {}%", pct(*progress)),
+            Note::Loop => f.write_str("loop"),
+            Note::Out { progress } => write!(f, "out {}%", pct(*progress)),
+            Note::Gone => f.write_str("ушёл"),
+            Note::Transition { channel, progress } => write!(f, "transition {channel} {}%", pct(*progress)),
+            Note::Timeline { state, tau, marker } => {
+                write!(f, "timeline {} τ={}", state.label(), num(*tau as f32))?;
+                if let Some(m) = marker {
+                    write!(f, " на {m}")?;
+                }
+                Ok(())
+            }
+            Note::Count => f.write_str("count"),
+        }
+    }
+}
+
+/// Почему узла больше нет в кадре.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Gone {
+    /// Закончил свой `out`.
+    OutEnded,
+    /// Экземпляр снят адресным `stop`.
+    InstanceStopped,
+    /// Таймлайн экземпляра доиграл `out` и снял его.
+    TimelineRemoved,
 }
 
 /// Слой presence: сдвиги и множители поверх `look`, не участвуют в `must`.
@@ -777,11 +844,12 @@ impl RelMotion {
 }
 
 /// Время кадра для дампа.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Clock {
     pub t: f64,
     pub frame: u64,
-    pub scene: &'static str,
+    pub scene: ScenePhase,
+    /// Обработанные команды сценария.
     pub log: Vec<String>,
     /// События до момента кадра включительно.
     pub events: Vec<String>,
@@ -823,8 +891,7 @@ impl MotionState {
         let visible = effective_visibility(scene);
         let mut enter = Vec::new();
         let mut leave = Vec::new();
-        let with_timeline: Vec<String> =
-            scene.timelines.iter().filter_map(|v| v.get("timeline").and_then(Value::as_str)).map(String::from).collect();
+        let with_timeline: Vec<String> = scene.timelines.iter().map(|d| d.component.clone()).collect();
         let ids: Vec<u32> = scene.nodes.keys().copied().collect();
         for id in ids {
             let node = scene.node(id);
@@ -916,26 +983,8 @@ impl MotionState {
     }
 
     fn build_runs(&mut self, scene: &Scene) {
-        let mut defs: Vec<TimelineDef> = Vec::new();
-        for v in &scene.timelines {
-            let mut c = Compiler { theme: &scene.theme, notes: Vec::new() };
-            let name = v.get("timeline").and_then(Value::as_str).unwrap_or("?").to_string();
-            match timeline::parse(v, &mut c) {
-                Ok(d) if defs.iter().any(|x| x.component == d.component) => {
-                    self.diagnostics.push(Level::Error, "timeline.duplicate", &name, None, "у компонента два таймлайна; используется первый", None);
-                }
-                Ok(d) => defs.push(d),
-                Err(errors) => {
-                    for e in errors {
-                        self.diagnostics.push(Level::Error, "timeline.invalid", &name, None, e, None);
-                    }
-                }
-            }
-            for (level, rule, msg) in c.notes {
-                self.diagnostics.push(level, rule, &name, None, msg, None);
-            }
-        }
-        for def in &defs {
+        self.diagnostics.0.extend(scene.timeline_diagnostics.0.iter().cloned());
+        for def in &scene.timelines {
             let roots: Vec<(u32, String)> = scene
                 .nodes
                 .values()
@@ -1038,7 +1087,7 @@ impl MotionState {
         let visual = look::visual(&resolved, "", None, &mut scratch);
         let mut targets = BTreeMap::new();
         targets.insert(Channel::Opacity, V::N(visual.opacity as f64));
-        let tr = visual.transform.clone();
+        let tr = visual.transform;
         targets.insert(Channel::X, V::N(tr.as_ref().map_or(0.0, |t| t.x) as f64));
         targets.insert(Channel::Y, V::N(tr.as_ref().map_or(0.0, |t| t.y) as f64));
         targets.insert(Channel::Scale, V::N(tr.as_ref().map_or(1.0, |t| t.scale[0]) as f64));
@@ -1258,22 +1307,21 @@ impl MotionState {
     }
 
     /// Команда движения от команды компонента (`ctx.play('goal')`, `ctx.stop()`, `ctx.emit(...)`).
-    pub fn instance_cmd(&mut self, scene: &Scene, inst: &str, cmd: &str, marker: Option<&str>, name: Option<&str>, t: f64) -> Result<(), String> {
+    pub fn instance_cmd(&mut self, scene: &Scene, inst: &str, action: &MotionAction, t: f64) -> Result<(), String> {
         let root = scene.nodes.values().find(|n| n.instance() == Some(inst)).map(|n| n.id).ok_or_else(|| format!("экземпляр {inst} не найден"))?;
         let roots = [root];
-        match (cmd, marker) {
-            ("play", Some(marker)) => {
+        match action {
+            MotionAction::Play { marker: Some(marker) } => {
                 let Some(i) = self.runs_of(&roots).first().copied() else {
                     return Err(format!("ctx.play({marker:?}): у {inst} нет таймлайна; подключи его в defineScene({{ timelines }})"));
                 };
                 self.runs[i].segment(t, marker)?;
                 self.schedule_run(i);
             }
-            ("play", None) => self.play(scene, Some(&roots), t),
-            ("stop", _) => self.stop(scene, Some(&roots), t),
-            ("next", _) => self.next(Some(&roots), t),
-            ("emit", _) => self.push_event(MotionEvent { t, source: inst.into(), kind: "emit", name: name.unwrap_or("?").into() }),
-            (other, _) => return Err(format!("неизвестная команда движения {other}")),
+            MotionAction::Play { marker: None } => self.play(scene, Some(&roots), t),
+            MotionAction::Stop => self.stop(scene, Some(&roots), t),
+            MotionAction::Next => self.next(Some(&roots), t),
+            MotionAction::Emit { name } => self.push_event(MotionEvent { t, source: inst.into(), kind: "emit", name: name.clone() }),
         }
         Ok(())
     }
@@ -1341,7 +1389,7 @@ impl MotionState {
                 nv.abs.insert(ch, v);
                 if tr.running(t) {
                     let progress = progress(tr, t);
-                    nv.notes.push(format!("transition {} {}%", ch.name(), pct(progress)));
+                    nv.notes.push(Note::Transition { channel: ch.name(), progress });
                     nv.channels.push(info(ch, "transition", tr, v, t, progress));
                 }
             }
@@ -1363,17 +1411,24 @@ impl MotionState {
                 let p = if waiting { Some(0.0) } else { progress(tr, t) };
                 nv.channels.push(info(ch, "presence", tr, v, t, p));
             }
-            match st.phase {
-                Phase::Waiting => nv.notes.insert(0, "ждёт play".into()),
-                Phase::In { start, end } => nv.notes.insert(0, format!("in {}%", pct(span_progress(start, end, t)))),
-                Phase::Loop => nv.notes.insert(0, "loop".into()),
-                Phase::Out { start, end } => nv.notes.insert(0, format!("out {}%", pct(span_progress(start, end, t)))),
-                Phase::Gone => nv.notes.insert(0, "ушёл".into()),
-                Phase::Shown => {}
+            let phase = match st.phase {
+                Phase::Waiting => Some(Note::Waiting),
+                Phase::In { start, end } => Some(Note::In { progress: span_progress(start, end, t) }),
+                Phase::Loop => Some(Note::Loop),
+                Phase::Out { start, end } => Some(Note::Out { progress: span_progress(start, end, t) }),
+                Phase::Gone => Some(Note::Gone),
+                Phase::Shown => None,
+            };
+            if let Some(p) = phase {
+                nv.notes.insert(0, p);
             }
+            nv.gone = match st.phase {
+                _ if st.hide_at.is_some_and(|h| t >= h) => Some(Gone::InstanceStopped),
+                Phase::Gone => Some(Gone::OutEnded),
+                _ => None,
+            };
             nv.show = match st.phase {
-                _ if st.hide_at.is_some_and(|h| t >= h) => Some(false),
-                Phase::Gone => Some(false),
+                _ if nv.gone.is_some() => Some(false),
                 Phase::Out { .. } if st.own_hidden => Some(true),
                 _ => None,
             };
@@ -1386,7 +1441,7 @@ impl MotionState {
             nv.texts.insert(i, d.text(t));
             if let Dyn::Count { .. } = d
                 && d.running(t) {
-                    nv.notes.push("count".into());
+                    nv.notes.push(Note::Count);
                 }
         }
         // Таймлайны поверх presence: сдвиги складываются, множители перемножаются.
@@ -1410,7 +1465,7 @@ impl MotionState {
                     nv.channels.push(ChannelInfo {
                         channel: ch.name(),
                         layer: "timeline",
-                        source: run.state,
+                        source: run.state.label(),
                         value: v.show(),
                         easing: tr.easing_label(local),
                         progress: progress(tr, local),
@@ -1421,6 +1476,7 @@ impl MotionState {
             root.notes.insert(0, run.describe(t));
             if run.removed() {
                 root.show = Some(false);
+                root.gone = Some(Gone::TimelineRemoved);
             }
         }
         out

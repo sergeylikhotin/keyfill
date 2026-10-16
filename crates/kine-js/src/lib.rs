@@ -67,11 +67,6 @@ const PRELUDE: &str = r#"
 })();
 "#;
 
-/// Исполняет бандл сцены и возвращает всё, что он отправил в ядро.
-pub fn run_bundle(source: &str, opts: &RunOptions) -> Result<RunOutput> {
-    JsHost::start(source, opts).map(|(_, out)| out)
-}
-
 /// Живой JS-рантайм сцены.
 pub struct JsHost {
     // Контекст держит рантайм; рантайм должен пережить контекст.
@@ -130,38 +125,97 @@ fn init(ctx: &Context, out: &Rc<RefCell<RunOutput>>, source: &str, opts: &RunOpt
     })
 }
 
-/// Исключение в JS сцены. Отдельный тип, чтобы CLI отличал его от сбоя самого kine.
-#[derive(Debug)]
-pub struct JsException(pub String);
+/// Исключение в JS сцены. Отдельный тип, чтобы CLI отличал его от сбоя самого kine;
+/// стек разобран на кадры здесь, чтобы sourcemap и диагностика работали с полями, а не с текстом.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsException {
+    pub message: String,
+    /// Ошибка API kine (`KineError`): место в TSX известно, стек бандла не нужен.
+    pub kine: bool,
+    /// Место в исходнике: у `KineError` — из dev-JSX, иначе первый кадр стека после sourcemap.
+    pub source: Option<String>,
+    pub stack: Vec<Frame>,
+    /// Сколько кадров скрыто как внутренности `@kine/core`.
+    pub hidden: usize,
+}
+
+/// Кадр стека: функция и место, строки и столбцы с единицы.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame {
+    pub function: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl std::fmt::Display for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "at {} ({}:{}:{})", self.function, self.file, self.line, self.column)
+    }
+}
+
+impl Frame {
+    /// Строка стека QuickJS: `    at f (eval_script:12:5)` или `    at eval_script:12:5`.
+    fn parse(line: &str) -> Option<Frame> {
+        let rest = line.trim().strip_prefix("at ")?;
+        let (function, loc) = match rest.rfind(" (") {
+            Some(i) if rest.ends_with(')') => (&rest[..i], &rest[i + 2..rest.len() - 1]),
+            _ => ("<anonymous>", rest),
+        };
+        let mut parts = loc.rsplitn(3, ':');
+        let column = parts.next()?.parse().ok()?;
+        let line = parts.next()?.parse().ok()?;
+        Some(Frame { function: function.to_string(), file: parts.next()?.to_string(), line, column })
+    }
+}
 
 impl std::fmt::Display for JsException {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        if self.kine {
+            f.write_str(&self.message)?;
+            if let Some(src) = &self.source {
+                write!(f, "\n  at {src}")?;
+            }
+            return Ok(());
+        }
+        write!(f, "JS: {}", self.message)?;
+        for frame in &self.stack {
+            write!(f, "\n    {frame}")?;
+        }
+        if self.hidden > 0 {
+            write!(f, "\n    … ещё {} в @kine/core", self.hidden)?;
+        }
+        Ok(())
     }
 }
 
 impl std::error::Error for JsException {}
 
 fn js_error(e: CaughtError<'_>) -> anyhow::Error {
-    let text = match e {
+    let ex = match e {
         CaughtError::Exception(ex) => {
-            let message = ex.message().unwrap_or_default();
-            // KineError уже несёт место в TSX; стек бандла агенту ничего не добавляет.
             let name: Option<String> = ex.get("name").ok();
-            if name.as_deref() == Some("KineError") {
-                message
-            } else {
-                format!("JS: {message}\n{}", ex.stack().unwrap_or_default())
+            let kine = name.as_deref() == Some("KineError");
+            JsException {
+                message: ex.message().unwrap_or_default(),
+                kine,
+                source: if kine { ex.get::<_, Option<String>>("src").ok().flatten() } else { None },
+                stack: if kine { Vec::new() } else { ex.stack().unwrap_or_default().lines().filter_map(Frame::parse).collect() },
+                hidden: 0,
             }
         }
-        other => format!("JS: {other}"),
+        other => JsException { message: other.to_string(), kine: false, source: None, stack: Vec::new(), hidden: 0 },
     };
-    anyhow::Error::new(JsException(text))
+    anyhow::Error::new(ex)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_bundle(source: &str, opts: &RunOptions) -> Result<RunOutput> {
+        JsHost::start(source, opts).map(|(_, out)| out)
+    }
 
     #[test]
     fn collects_batches_and_logs() {

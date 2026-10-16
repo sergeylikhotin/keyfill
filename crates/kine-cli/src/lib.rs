@@ -12,40 +12,40 @@ pub mod view;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-use kine_core::{EvalOptions, Frame, Scene};
-use kine_js::{LogLine, RunOptions};
-
 pub use bundle::{Bundle, bundle};
 pub use session::Session;
 
-/// Класс ошибки для кода выхода CLI: 2 — неверный вызов, 3 — сборка. Исключение JS
-/// помечено типом `kine_js::JsException` (код 4), всё остальное — сбой kine (код 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ошибка с известным классом: его задаёт место, где ошибка возникла, а код выхода и
+/// `error.kind` берутся из него. Исключение JS — `kine_js::JsException` (код 4), всё
+/// остальное — сбой kine (код 5).
+#[derive(Debug)]
 pub enum Failure {
-    Usage,
-    Build,
+    /// Неверный вызов: флаги, время, адрес узла, сценарий (код 2).
+    Usage(String),
+    /// Данные сцены не подходят к её схеме (код 2, подсказка `kine schema`).
+    Props(Vec<String>),
+    /// Сборка сцены: диагностики `build.*` с местом в исходнике (код 3).
+    Build(Vec<kine_core::diag::Diagnostic>),
 }
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Failure::Usage => "неверный вызов",
-            Failure::Build => "сборка сцены",
-        })
+        match self {
+            Failure::Usage(m) => f.write_str(m),
+            Failure::Props(errors) => write!(f, "пропсы сцены:\n  {}", errors.join("\n  ")),
+            Failure::Build(diags) => {
+                let lines: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
+                f.write_str(&lines.join("\n"))
+            }
+        }
     }
 }
 
 impl std::error::Error for Failure {}
 
-/// Помечает ошибку как неверный вызов, если она ещё не классифицирована: исключение JS
-/// и сборка сохраняют свой класс (иначе в сообщении появился бы лишний префикс).
-pub fn usage(e: anyhow::Error) -> anyhow::Error {
-    if e.downcast_ref::<kine_js::JsException>().is_some() || e.downcast_ref::<Failure>().is_some() {
-        e
-    } else {
-        e.context(Failure::Usage)
-    }
+/// Ошибка неверного вызова.
+pub fn usage(message: impl std::fmt::Display) -> anyhow::Error {
+    Failure::Usage(message.to_string()).into()
 }
 
 /// Корень репозитория kine: там лежат `packages/core` и `node_modules/esbuild`.
@@ -56,30 +56,7 @@ pub fn kine_home() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-pub(crate) fn slash(p: &Path) -> String {
+/// Путь с прямыми слешами: одинаково на Windows и в выводе для агента.
+pub fn slash(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
-}
-
-pub struct Rendered {
-    pub scene: Scene,
-    pub frame: Frame,
-    pub logs: Vec<LogLine>,
-}
-
-/// Кадр в момент `t`; без `t` — кадр «в эфире», когда закончились все `in` первого play.
-pub fn frame_at(entry: &Path, opts: &RunOptions, eval: EvalOptions, t: Option<f64>) -> Result<Rendered> {
-    let source = bundle(entry)?;
-    let mut session = Session::open(&source, opts, &[])?;
-    let t = match t {
-        Some(t) => t,
-        None => session.settled_time()?,
-    };
-    let frame = session.frame_at(t, eval)?;
-    let Session { scene, logs, .. } = session;
-    Ok(Rendered { scene, frame, logs })
-}
-
-/// Кадр «в эфире».
-pub fn frame(entry: &Path, opts: &RunOptions, eval: EvalOptions) -> Result<Rendered> {
-    frame_at(entry, opts, eval, None)
 }

@@ -9,3 +9,4 @@ kine-core.workspace = true
 vello_cpu.workspace = true
 parley.workspace = true
 anyhow.workspace = true
+png = "0.18"

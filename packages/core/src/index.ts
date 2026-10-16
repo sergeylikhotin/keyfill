@@ -10,10 +10,13 @@ export { batch, computed, effect, signal, untrack };
 type Props = Record<string, any>;
 export type KineElement = { readonly __kine: 'element'; readonly id: number };
 
+/** Ошибка API kine: место в TSX ядро берёт из `src`, стек бандла агенту не нужен. */
 class KineError extends Error {
+  readonly src?: string;
   constructor(message: string, src?: string) {
-    super(src ? `${message}\n  at ${src}` : message);
+    super(message);
     this.name = 'KineError';
+    this.src = src;
   }
 }
 
@@ -263,6 +266,32 @@ const fitsKind = (v: unknown, kind: PropKind) =>
   kind === 'json' || (kind === 'number' ? typeof v === 'number' && Number.isFinite(v) : typeof v === kind);
 const show = (v: unknown) => JSON.stringify(v) ?? String(v);
 
+/**
+ * Ячейки пропсов компонента или сцены. Значение или аксессор лежит в сигнале в обёртке `{ v }`,
+ * чтобы функция хранилась как значение; `set` заменяет содержимое, как команда `update`.
+ * Снаружи пропс всегда аксессор.
+ */
+function propSlots(initial: Props, owner: string, src?: string) {
+  const accessors: Props = {};
+  const slots: Record<string, S.Signal<{ v: unknown }>> = {};
+  for (const k of Object.keys(initial)) {
+    const slot = signal<{ v: unknown }>({ v: initial[k] });
+    slots[k] = slot;
+    accessors[k] = () => read(slot().v);
+  }
+  const known = Object.keys(slots);
+  const list = known.length ? `есть: ${known.join(', ')}` : 'пропсов нет';
+  const set = (key: string, value: unknown) => {
+    if (!(key in slots)) throw new KineError(`update: у ${owner} нет пропса "${key}"; ${list}`, src);
+    slots[key].set({ v: value });
+  };
+  return { accessors, set };
+}
+
+/** Диагностика чтения сигнала вне реактивного контекста — для runView. */
+const untracked = (node: string, message: string, hint: string, source?: string) => () =>
+  host.emit({ op: 'diag', level: 'warn', rule: 'signal.untracked', node, source, message, hint });
+
 const counters = new Map<string, number>();
 
 /** Экземпляры компонентов: команды сценария `update` и `invoke` адресуют их по имени компонента. */
@@ -293,23 +322,13 @@ export const component: typeof S.component = (def) => {
     counters.set(def.name, n);
     const inst = `${def.name}#${n}`;
 
-    // Каждый пропс — ячейка: снаружи в неё приходит значение или аксессор, а команда
-    // `update` заменяет содержимое. Внутри компонента пропс всегда аксессор.
-    const accessors: Props = {};
-    const slots: Record<string, S.Signal<{ v: unknown }>> = {};
+    // Каждый пропс — ячейка: снаружи в неё приходит значение или аксессор.
+    const initial: Props = {};
     for (const k of Object.keys(def.props ?? {})) {
       if (!(k in p)) throw new KineError(`${def.name}: не передан пропс "${k}"`, p.__src);
-      const slot = signal<{ v: unknown }>({ v: p[k] });
-      slots[k] = slot;
-      accessors[k] = () => {
-        const { v } = slot();
-        return typeof v === 'function' ? (v as Accessor<unknown>)() : v;
-      };
+      initial[k] = p[k];
     }
-    const set = (key: string, value: unknown) => {
-      if (!(key in slots)) throw new KineError(`update: у ${def.name} нет пропса "${key}"`, p.__src);
-      slots[key].set({ v: value });
-    };
+    const { accessors, set } = propSlots(initial, def.name, p.__src);
     const commands = (def.commands ?? {}) as Record<string, { params: Props; run: (params: Props, ctx: unknown) => void }>;
     const ctx = {
       props: accessors,
@@ -340,16 +359,12 @@ export const component: typeof S.component = (def) => {
     for (const name of def.parts ?? []) parts[name] = { $part: name, inst };
 
     const root = runView(
-      () =>
-        host.emit({
-          op: 'diag',
-          level: 'warn',
-          rule: 'signal.untracked',
-          node: inst,
-          source: p.__src,
-          message: `${def.name}.view читает сигнал вне реактивного контекста: значение не будет обновляться`,
-          hint: 'оберни чтение в аксессор () => …, on(signal, layer) или when={signal}; если так задумано — untrack(() => …)',
-        }),
+      untracked(
+        inst,
+        `${def.name}.view читает сигнал вне реактивного контекста: значение не будет обновляться`,
+        'оберни чтение в аксессор () => …, on(signal, layer) или when={signal}; если так задумано — untrack(() => …)',
+        p.__src,
+      ),
       () => def.view(brand(accessors), brand(parts)),
     );
     if (!isElement(root)) throw new KineError(`${def.name}.view должен вернуть один элемент`, p.__src);
@@ -367,9 +382,12 @@ export const defineScene: typeof S.defineScene = (def) => def;
 
 type CueItem = { t: number; cmd: string; target?: string; props?: Record<string, unknown>; command?: string };
 
+const CUE_COMMANDS = ['play', 'stop', 'next', 'update', 'invoke'];
+
 export const cues: typeof S.cues = (scene, build) => {
   const at = (t: number, cmd: string, target?: unknown, a?: unknown, b?: unknown): CueItem => {
     if (typeof t !== 'number' || !(t >= 0)) throw new KineError(`cues: время должно быть числом ≥ 0, получено ${t}`);
+    if (!CUE_COMMANDS.includes(cmd)) throw new KineError(`cues: команда "${cmd}" не поддерживается; есть ${CUE_COMMANDS.join(', ')}`);
     const name = (target as { kineName?: string } | undefined)?.kineName;
     // update без компонента — пропсы самой сцены: at(t, 'update', { name: 'Иван' }).
     if (cmd === 'update' && !name) {
@@ -401,8 +419,7 @@ function sceneProps(scene: Props): { accessors: Props; errors: string[] } {
   for (const k of [...Object.keys(input.values ?? {}), ...Object.keys(input.raw ?? {})]) {
     if (!(k in schema)) errors.push(`у сцены нет пропса "${k}"; ${list}`);
   }
-  const accessors: Props = {};
-  const slots: Record<string, S.Signal<unknown>> = {};
+  const values: Props = {};
   for (const k of known) {
     const kind = kindOf(schema[k]);
     const raw = input.raw && k in input.raw ? input.raw[k] : undefined;
@@ -429,14 +446,10 @@ function sceneProps(scene: Props): { accessors: Props; errors: string[] } {
       errors.push(`пропс "${k}": ожидается ${kind}, получено ${raw ?? show(v)}`);
       continue;
     }
-    const slot = signal<unknown>(v);
-    slots[k] = slot;
-    accessors[k] = () => slot();
+    values[k] = v;
   }
-  sceneSet = (key, value) => {
-    if (!(key in slots)) throw new KineError(`update: у сцены нет пропса "${key}"; ${list}`);
-    slots[key].set(value);
-  };
+  const { accessors, set } = propSlots(values, 'сцены');
+  sceneSet = set;
   host.emit({
     op: 'schema',
     props: known.map((name) => ({
@@ -458,16 +471,10 @@ const instancesOf = (target: string, what: string) => {
 /** Команда `update` из ядра: новые значения пропсов всех экземпляров компонента. */
 (globalThis as any).__kine_update = (json: string) => {
   const { target, props } = JSON.parse(json) as { target: string | null; props: Record<string, unknown> };
-  if (target === null) {
-    batch(() => {
-      for (const [k, v] of Object.entries(props ?? {})) sceneSet!(k, v);
-    });
-    host.flush();
-    return;
-  }
-  const found = instancesOf(target, 'update');
+  // Без компонента — пропсы самой сцены.
+  const setters = target === null ? [sceneSet!] : instancesOf(target, 'update').map((i) => i.set);
   batch(() => {
-    for (const i of found) for (const [k, v] of Object.entries(props ?? {})) i.set(k, v);
+    for (const set of setters) for (const [k, v] of Object.entries(props ?? {})) set(k, v);
   });
   host.flush();
 };
@@ -498,15 +505,11 @@ export function mount(entry: Props) {
     systemFonts: scene.systemFonts ?? true,
   });
   const root = runView(
-    () =>
-      host.emit({
-        op: 'diag',
-        level: 'warn',
-        rule: 'signal.untracked',
-        node: 'stage',
-        message: 'scene.root читает сигнал вне реактивного контекста: значение не будет обновляться',
-        hint: 'передавай сигнал в пропс целиком (live={live}), а не его значение (live={live()})',
-      }),
+    untracked(
+      'stage',
+      'scene.root читает сигнал вне реактивного контекста: значение не будет обновляться',
+      'передавай сигнал в пропс целиком (live={live}), а не его значение (live={live()})',
+    ),
     () => scene.root(accessors),
   );
   if (!isElement(root)) throw new KineError('scene.root должен вернуть элемент');

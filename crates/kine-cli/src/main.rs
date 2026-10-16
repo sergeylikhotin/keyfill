@@ -1,18 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
-use kine_cli::ops::{self, At, Job};
+use kine_cli::ops::{self, At, Job, Outcome};
 use kine_cli::output::{self, Envelope, Log, quote};
 use kine_cli::session::{CueArg, parse_cues};
 use kine_cli::time::{self, TimeSpec};
-use kine_cli::Failure;
-use kine_core::diag::{Diagnostic, Level};
+use kine_cli::video::Codec;
 use kine_core::dump;
-use kine_core::look::num;
 use kine_core::{EvalOptions, Mode};
 use kine_js::RunOptions;
 use serde::Serialize;
+use serde_json::value::RawValue;
 
 const USAGE: &str = "\
 kine — рендер TSX-сцен без браузера
@@ -167,30 +166,107 @@ fn cues(args: &Args) -> Result<Vec<CueArg>> {
     Ok(args.value("--cue").map(parse_cues).transpose()?.unwrap_or_default())
 }
 
+/// Что сделать: команда с уже разобранными и проверенными флагами.
+enum Command {
+    Render { out: PathBuf, scale: f32, dump: bool },
+    Dump { path: Option<String>, depth: Option<usize> },
+    Inspect { path: String },
+    Check,
+    Filmstrip { out: PathBuf, opts: ops::FilmstripOptions },
+    Video { out: PathBuf, codec: Codec, scale: f32 },
+    Schema,
+}
+
+/// Разобранный вызов. Любая ошибка разбора — неверный вызов (код 2).
+struct Request {
+    entry: PathBuf,
+    run: RunOptions,
+    cues: Vec<CueArg>,
+    eval: EvalOptions,
+    time: Option<TimeSpec>,
+    command: Command,
+}
+
+/// Положительное число из флага: масштаб, ширина плитки, число кадров.
+fn positive<T: std::str::FromStr + PartialOrd + Default + Copy + std::fmt::Display>(args: &Args, name: &str, default: T) -> Result<T> {
+    let v = args.number(name)?.unwrap_or(default);
+    // NaN несравнимо с нулём и тоже отвергается.
+    if v.partial_cmp(&T::default()) != Some(std::cmp::Ordering::Greater) {
+        bail!("{name}: ожидается число больше 0, получено {v}");
+    }
+    Ok(v)
+}
+
+fn request(args: &Args, cmd: &str) -> Result<Request> {
+    let entry = args.entry()?;
+    let time = args.value("--t").map(time::parse).transpose().context("--t")?;
+    let takes_range = matches!(cmd, "check" | "filmstrip" | "video");
+    if !takes_range && let Some(TimeSpec::Range(..)) = time {
+        bail!("--t: {cmd} принимает момент; диапазон — для check, filmstrip и video");
+    }
+    let command = match cmd {
+        "render" => Command::Render {
+            out: args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("png")),
+            scale: positive(args, "--scale", 1.0)?,
+            dump: args.flag("--dump"),
+        },
+        "dump" => Command::Dump { path: args.value("--path").map(String::from), depth: args.number("--depth")? },
+        "inspect" => Command::Inspect { path: args.rest.get(2).cloned().context("не указан адрес узла, например LowerThird#1/title; адреса — в kine dump")? },
+        "check" => Command::Check,
+        "filmstrip" => Command::Filmstrip {
+            out: args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("strip.png")),
+            opts: ops::FilmstripOptions {
+                count: positive(args, "--n", 8)?,
+                cols: positive(args, "--cols", 4)?,
+                tile: positive(args, "--tile", 480.0)?,
+                dumps: args.flag("--dump"),
+            },
+        },
+        "video" => {
+            let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("mov"));
+            let codec = match args.value("--codec") {
+                Some(c) => Codec::parse(c)?,
+                None => Codec::for_path(&out)?,
+            };
+            Command::Video { out, codec, scale: positive(args, "--scale", 1.0)? }
+        }
+        "schema" => Command::Schema,
+        _ => unreachable!("команда проверена в run"),
+    };
+    Ok(Request { entry, run: run_options(args)?, cues: cues(args)?, eval: eval_options(args)?, time, command })
+}
+
 /// Результат команды: структура для `--json` и текст для терминала.
 struct Done {
     exit: u8,
-    entry: Option<String>,
+    entry: String,
     at: Option<At>,
-    result: serde_json::Value,
+    result: Box<RawValue>,
     text: String,
     logs: Vec<Log>,
     next: Vec<String>,
-    /// `--t` для строки воспроизведения.
+    /// `--t` для строки воспроизведения: разрешённый момент или диапазон.
     t: Option<String>,
 }
 
 impl Done {
-    fn new<T: Serialize>(job: &Job, result: &T, text: String, errors: bool) -> Result<Done> {
+    fn new<T: Serialize>(job: &Job, o: Outcome<T>, text: impl FnOnce(&T) -> String) -> Result<Done> {
+        let entry = kine_cli::slash(&job.entry);
+        let next = o.inspect.iter().map(|(node, t)| format!("kine inspect {} {} --t {t}", quote(&entry), quote(node))).collect();
+        let t = match (o.at, o.range) {
+            (Some(at), _) => Some(at.t.to_string()),
+            (_, Some((from, to))) => Some(format!("{from}..{to}")),
+            _ => None,
+        };
         Ok(Done {
-            exit: if errors { 1 } else { 0 },
-            entry: Some(job.entry.to_string_lossy().replace('\\', "/")),
-            at: None,
-            result: output::tidy(serde_json::to_value(result)?),
-            text,
-            logs: Vec::new(),
-            next: Vec::new(),
-            t: None,
+            exit: u8::from(o.errors),
+            text: text(&o.result),
+            result: serde_json::value::to_raw_value(&o.result)?,
+            entry,
+            at: o.at,
+            logs: job.logs.borrow().iter().map(Log::from).collect(),
+            next,
+            t,
         })
     }
 }
@@ -208,7 +284,7 @@ fn main() -> ExitCode {
                     command,
                     ok: true,
                     exit: done.exit,
-                    entry: done.entry,
+                    entry: Some(done.entry),
                     at: done.at,
                     result: Some(done.result),
                     error: None,
@@ -245,7 +321,7 @@ fn main() -> ExitCode {
                     }
                 }
             } else {
-                eprintln!("error: {}", output::message(&e));
+                eprintln!("error: {e:#}");
                 for n in &env.next {
                     eprintln!("→ {n}");
                 }
@@ -275,18 +351,13 @@ fn repro(raw: &[String], t: Option<&str>) -> String {
     out.join(" ")
 }
 
-/// Следующий шаг при ошибке в кадре: inspect узла в тот же момент.
-fn next_for(job: &Job, diags: &[&Diagnostic], t: f64) -> Vec<String> {
-    let entry = quote(&job.entry.to_string_lossy().replace('\\', "/"));
-    diags
-        .iter()
-        .find(|d| d.level == Level::Error && !matches!(d.node.as_str(), "stage" | "build" | "js" | ""))
-        .map(|d| vec![format!("kine inspect {entry} {} --t {}", quote(&d.node), num(t as f32))])
-        .unwrap_or_default()
+/// Ошибка разбора вызова — неверный вызов (код 2).
+fn bad_call(e: anyhow::Error) -> anyhow::Error {
+    kine_cli::usage(format!("{e:#}"))
 }
 
 fn run(raw: &[String]) -> Result<Option<Done>> {
-    let args = Args::parse(raw).context(Failure::Usage)?;
+    let args = Args::parse(raw).map_err(bad_call)?;
     let Some(cmd) = args.rest.first().map(String::as_str) else {
         println!("{USAGE}");
         return Ok(None);
@@ -296,127 +367,45 @@ fn run(raw: &[String]) -> Result<Option<Done>> {
         return Ok(None);
     }
     if !COMMANDS.contains(&cmd) {
-        return Err(anyhow::anyhow!("неизвестная команда {cmd}; команды: {}", COMMANDS.join(", ")).context(Failure::Usage));
+        return Err(kine_cli::usage(format!("неизвестная команда {cmd}; команды: {}", COMMANDS.join(", "))));
     }
     if cmd == "view" {
         view_cmd(&args)?;
         return Ok(None);
     }
-    let (entry, run, cues, eval, spec) = (|| -> Result<_> {
-        let spec = args.value("--t").map(time::parse).transpose().context("--t")?;
-        Ok((args.entry()?, run_options(&args)?, cues(&args)?, eval_options(&args)?, spec))
-    })()
-    .context(Failure::Usage)?;
-    if !entry.exists() {
-        return Err(anyhow::anyhow!("сцена {} не найдена", entry.display()).context(Failure::Usage));
-    }
-    let job = Job::new(&entry, run, cues, eval)?;
-    let mut done = match cmd {
-        "render" | "dump" | "inspect" => {
-            if let Some(TimeSpec::Range(..)) = spec {
-                return Err(anyhow::anyhow!("--t: {cmd} принимает момент; диапазон — для check, filmstrip и video").context(Failure::Usage));
-            }
-            let t = job.moment(spec.as_ref())?;
-            match cmd {
-                "render" => {
-                    let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("png"));
-                    let scale = args.number("--scale").context(Failure::Usage)?.unwrap_or(1.0);
-                    let r = ops::render(&job, t, &out, scale, args.flag("--dump"))?;
-                    let mut done = Done::new(&job, &r, output::render_text(&r), r.counts.error > 0)?;
-                    done.next = next_for(&job, &r.diagnostics.iter().collect::<Vec<_>>(), r.at.t);
-                    done.at = Some(r.at);
-                    done
-                }
-                "dump" => {
-                    let depth = args.number("--depth").context(Failure::Usage)?;
-                    let (d, at) = ops::dump(&job, t, args.value("--path"), depth)?;
-                    let errors = d.diagnostics.iter().any(|x| x.level == Level::Error);
-                    let mut done = Done::new(&job, &d, dump::text(&d), errors)?;
-                    done.next = next_for(&job, &d.diagnostics.iter().collect::<Vec<_>>(), at.t);
-                    done.at = Some(at);
-                    done
-                }
-                _ => {
-                    let path = args.rest.get(2).context("не указан адрес узла, например LowerThird#1/title; адреса — в kine dump").context(Failure::Usage)?;
-                    let (i, at) = ops::inspect(&job, t, path)?;
-                    let errors = i.diagnostics.iter().any(|x| x.level == Level::Error);
-                    let mut done = Done::new(&job, &i, dump::inspect_text(&i), errors)?;
-                    done.at = Some(at);
-                    done
-                }
-            }
-        }
-        "check" | "filmstrip" | "video" => {
-            let (from, to) = job.range(spec.as_ref())?;
-            let mut done = match cmd {
-                "check" => {
-                    let c = ops::check(&job, from, to)?;
-                    let mut done = Done::new(&job, &c, output::check_text(&c), c.counts.error > 0)?;
-                    if let Some(first) = c.issues.iter().find(|i| i.diagnostic.level == Level::Error) {
-                        done.next = next_for(&job, &[&first.diagnostic], first.first.t);
-                    }
-                    done
-                }
-                "filmstrip" => {
-                    let o = ops::FilmstripOptions {
-                        count: args.number("--n").context(Failure::Usage)?.unwrap_or(8),
-                        cols: args.number("--cols").context(Failure::Usage)?.unwrap_or(4),
-                        tile: args.number("--tile").context(Failure::Usage)?.unwrap_or(480.0),
-                        dumps: args.flag("--dump"),
-                    };
-                    let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| strip_path(&entry));
-                    let f = ops::filmstrip(&job, from, to, &out, &o)?;
-                    Done::new(&job, &f, output::filmstrip_text(&f), f.counts.error > 0)?
-                }
-                _ => {
-                    let out = args.value("-o").map(PathBuf::from).unwrap_or_else(|| entry.with_extension("mov"));
-                    let codec = match args.value("--codec") {
-                        Some(c) => kine_cli::video::Codec::parse(c),
-                        None => kine_cli::video::Codec::for_path(&out),
-                    }
-                    .context(Failure::Usage)?;
-                    let scale = args.number("--scale").context(Failure::Usage)?.unwrap_or(1.0);
-                    let v = ops::video(&job, from, to, &out, codec, scale)?;
-                    Done::new(&job, &v, output::video_text(&v), v.frames_with_errors > 0)?
-                }
-            };
-            done.t = Some(format!("{}..{}", num(from as f32), num(to as f32)));
-            done
-        }
-        "schema" => {
-            let s = ops::schema(&job)?;
-            Done::new(&job, &s, output::schema_text(&s), false)?
-        }
-        _ => unreachable!(),
+    let req = request(&args, cmd).map_err(bad_call)?;
+    let job = Job::new(&req.entry, req.run, req.cues, req.eval)?;
+    let spec = req.time.as_ref();
+    let moment = match spec {
+        Some(TimeSpec::Moment(m)) => Some(m),
+        _ => None,
     };
-    if let Some(at) = done.at
-        && done.t.is_none()
-    {
-        done.t = Some(num(at.t as f32));
-    }
-    done.logs = job.logs.borrow().iter().map(Log::from).collect();
+    let done = match &req.command {
+        Command::Render { out, scale, dump } => Done::new(&job, ops::render(&job, moment, out, *scale, *dump)?, output::render_text)?,
+        Command::Dump { path, depth } => Done::new(&job, ops::dump(&job, moment, path.as_deref(), *depth)?, dump::text)?,
+        Command::Inspect { path } => Done::new(&job, ops::inspect(&job, moment, path)?, dump::inspect_text)?,
+        Command::Check => Done::new(&job, ops::check(&job, spec)?, output::check_text)?,
+        Command::Filmstrip { out, opts } => Done::new(&job, ops::filmstrip(&job, spec, out, opts)?, output::filmstrip_text)?,
+        Command::Video { out, codec, scale } => Done::new(&job, ops::video(&job, spec, out, *codec, *scale)?, output::video_text)?,
+        Command::Schema => Done::new(&job, ops::schema(&job)?, output::schema_text)?,
+    };
     Ok(Some(done))
 }
 
 fn view_cmd(args: &Args) -> Result<()> {
-    let (run, extra, eval, port) = (|| -> Result<_> { Ok((run_options(args)?, cues(args)?, eval_options(args)?, args.number("--port")?.unwrap_or(4747))) })()
-        .context(Failure::Usage)?;
-    let opts = kine_cli::view::ViewOptions {
-        entry: args.rest.get(1).map(PathBuf::from),
-        dir: PathBuf::from(args.value("--dir").unwrap_or("out")),
-        port,
-        run,
-        extra,
-        eval,
+    let parse = || -> Result<kine_cli::view::ViewOptions> {
+        Ok(kine_cli::view::ViewOptions {
+            entry: args.rest.get(1).map(PathBuf::from),
+            dir: PathBuf::from(args.value("--dir").unwrap_or("out")),
+            port: args.number("--port")?.unwrap_or(4747),
+            run: run_options(args)?,
+            extra: cues(args)?,
+            eval: eval_options(args)?,
+        })
     };
-    if let Some(entry) = &opts.entry
-        && !entry.exists()
-    {
-        return Err(anyhow::anyhow!("сцена {} не найдена", entry.display()).context(Failure::Usage));
+    let opts = parse().map_err(bad_call)?;
+    if let Some(entry) = opts.entry.as_ref().filter(|e| !e.exists()) {
+        return Err(kine_cli::usage(format!("сцена {} не найдена", entry.display())));
     }
     kine_cli::view::serve(opts)
-}
-
-fn strip_path(entry: &Path) -> PathBuf {
-    entry.with_extension("strip.png")
 }

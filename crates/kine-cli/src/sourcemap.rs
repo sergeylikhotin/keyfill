@@ -1,6 +1,7 @@
 //! Sourcemap бандла (v3): переводит строку и столбец бандла в место в исходнике TSX.
 //! Нужен для исключений JS: стек QuickJS указывает на бандл, а агенту нужен его файл.
 
+use kine_js::JsException;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -92,32 +93,27 @@ impl SourceMap {
         Some(Origin { file: self.sources.get(seg.source as usize)?.clone(), line: seg.line + 1, column: seg.src_col + 1 })
     }
 
-    /// Переписывает стек QuickJS: `at f (eval_script:250:12)` → `at f (scene.tsx:5:12)`.
-    /// Кадры из реализации `@kine/core` и обвязки бандла убираются: агенту нужен свой код.
-    pub fn rewrite_stack(&self, text: &str) -> String {
-        let mut out = Vec::new();
-        let mut dropped = 0;
-        for line in text.lines() {
-            let Some(start) = line.find("(eval_script:") else {
-                out.push(line.to_string());
+    /// Переводит кадры стека бандла (`eval_script:250:12`) в места TSX. Кадры реализации
+    /// `@kine/core` и обвязки бандла скрываются: агенту нужен свой код. Без места у исключения
+    /// оно берётся из первого оставшегося кадра.
+    pub fn map_exception(&self, ex: &mut JsException) {
+        let frames = std::mem::take(&mut ex.stack);
+        for mut frame in frames {
+            if frame.file != "eval_script" {
+                ex.stack.push(frame);
                 continue;
-            };
-            let inner = &line[start + 1..line.rfind(')').unwrap_or(line.len())];
-            let mut parts = inner.rsplitn(3, ':');
-            let (Some(c), Some(l)) = (parts.next().and_then(|c| c.parse().ok()), parts.next().and_then(|l| l.parse().ok())) else {
-                out.push(line.to_string());
-                continue;
-            };
-            match self.lookup(l, c) {
-                Some(o) if o.file.contains("packages/core/") || o.file.ends_with("kine-entry.ts") => dropped += 1,
-                Some(o) => out.push(format!("{}({o})", &line[..start])),
-                None => dropped += 1,
+            }
+            match self.lookup(frame.line, frame.column) {
+                Some(o) if !(o.file.contains("packages/core/") || o.file.ends_with("kine-entry.ts")) => {
+                    (frame.file, frame.line, frame.column) = (o.file, o.line, o.column);
+                    ex.stack.push(frame);
+                }
+                _ => ex.hidden += 1,
             }
         }
-        if dropped > 0 {
-            out.push(format!("    … ещё {dropped} в @kine/core"));
+        if ex.source.is_none() {
+            ex.source = ex.stack.first().map(|f| format!("{}:{}:{}", f.file, f.line, f.column));
         }
-        out.join("\n")
     }
 }
 

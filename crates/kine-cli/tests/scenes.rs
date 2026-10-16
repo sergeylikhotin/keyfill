@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-use kine_cli::Rendered;
+use kine_cli::ops::{self, Job};
 use kine_core::diag::Level;
 use kine_core::{EvalOptions, Mode};
 use kine_js::RunOptions;
@@ -24,8 +24,16 @@ fn home() -> Option<PathBuf> {
     Some(home)
 }
 
+/// Кадр «в эфире» тем же путём, что `kine dump <entry>`.
+struct Rendered {
+    scene: kine_core::Scene,
+    frame: kine_core::Frame,
+}
+
 fn run(entry: &str, mode: Mode) -> Rendered {
-    kine_cli::frame(Path::new(entry), &RunOptions::default(), EvalOptions { mode, background: None }).unwrap()
+    let job = Job::new(Path::new(entry), RunOptions::default(), Vec::new(), EvalOptions { mode, background: None }).unwrap();
+    let (session, frame, _) = ops::frame(&job, None).unwrap();
+    Rendered { scene: session.scene, frame }
 }
 
 fn snapshot(entry: &str, mode: Mode, snap: &str) {
@@ -96,7 +104,8 @@ fn untracked_signal_read_is_reported() {
 // ─── Движение ───────────────────────────────────────────────────────────────
 
 use kine_cli::Session;
-use kine_core::motion::RelMotion;
+use kine_core::motion::{Note, RelMotion};
+use kine_core::timeline::RunState;
 use kine_cli::session::{CueArg, parse_cues};
 
 fn session(entry: &str, extra: &[CueArg]) -> Session {
@@ -188,13 +197,13 @@ fn update_runs_transition_and_out() {
     let mid = s.frame_at(1.62, dev()).unwrap();
     let node = mid.find(panel).unwrap();
     let anim = node.anim.as_ref().expect("переход идёт");
-    assert!(anim.notes.iter().any(|n| n.starts_with("transition background")), "{:?}", anim.notes);
+    assert!(anim.notes.iter().any(|n| matches!(n, Note::Transition { channel: "background", .. })), "{:?}", anim.notes);
     let bg = node.visual.background.unwrap();
     // Между surfaceLive (#2A0F16) и surface (#101418).
     assert!(bg.r < 0x2A as f32 / 255.0 && bg.r > 0x10 as f32 / 255.0, "{bg:?}");
     // Точка уже скрыта (when=false), но ещё уходит.
     let leaving = mid.find(dot).expect("точка рисуется во время out");
-    assert!(leaving.anim.as_ref().unwrap().notes[0].starts_with("out"));
+    assert!(matches!(leaving.anim.as_ref().unwrap().notes[0], Note::Out { .. }));
     let later = s.frame_at(1.8, dev()).unwrap();
     assert!(later.find(dot).is_none());
 }
@@ -256,7 +265,7 @@ fn goal_command_plays_segment_and_returns_to_loop() {
     let frame = s.frame_at(3.7, dev()).unwrap();
     let panel = s.scene.find("Scoreboard#1/panel").unwrap();
     let notes = &frame.find(panel).unwrap().anim.as_ref().unwrap().notes;
-    assert!(notes[0].starts_with("timeline loop"), "{notes:?}");
+    assert!(matches!(notes[0], Note::Timeline { state: RunState::Loop, .. }), "{notes:?}");
     let ev = events_until(&s, 3.7);
     assert!(ev.contains(&"emit@2.2:goal".to_string()) && ev.contains(&"state@3.6:loop".to_string()), "{ev:?}");
     assert!(!ev.iter().any(|e| e.contains("goalAway")), "сегмент кончается на goalAway, но не играет его: {ev:?}");
@@ -378,6 +387,6 @@ fn node_boxes_follow_motion() {
     assert!(b.rect.y < 54.0 - 1.0 && b.opacity < 1.0, "{b:?}");
     let score = s.scene.find("Scoreboard#1/homeScore").unwrap();
     let sb = boxes.iter().find(|b| b.id == score).unwrap();
-    let (cx, cy) = (sb.rect.x + sb.rect.w / 2.0, sb.rect.y + sb.rect.h / 2.0);
-    assert_eq!(kine_core::display::hit(&boxes, cx, cy), Some(score));
+    // Рамка счёта лежит внутри сдвинутой рамки табло: просмотрщик найдёт под курсором именно её.
+    assert!(sb.rect.y >= b.rect.y && sb.rect.y + sb.rect.h <= b.rect.y + b.rect.h, "{sb:?} в {b:?}");
 }

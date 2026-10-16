@@ -6,7 +6,9 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Diagnostics, Level};
+use crate::motion::Compiler;
+use crate::timeline::{self, TimelineDef};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
@@ -92,38 +94,79 @@ pub struct ComponentInfo {
     pub commands: Vec<CommandInfo>,
 }
 
-/// Команда движения, которую отправила команда компонента; ядро исполняет её в момент команды сценария.
+/// Команда движения, которую отправила команда компонента (`ctx.play/next/stop/emit`); ядро
+/// исполняет её в момент команды сценария.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct MotionCmd {
     pub inst: String,
-    pub cmd: String,
-    #[serde(default)]
-    pub marker: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
+    #[serde(flatten)]
+    pub action: MotionAction,
 }
 
-/// Команда сценария: `play`, `stop`, `update` (новые пропсы экземпляров компонента).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum MotionAction {
+    /// Без маркера — play экземпляра; с маркером — сегмент таймлайна от маркера до следующего.
+    Play {
+        #[serde(default)]
+        marker: Option<String>,
+    },
+    Next,
+    Stop,
+    /// Своё событие для пульта и журнала.
+    Emit { name: String },
+}
+
+/// Команда сценария (`*.cues.ts`, `--cue`).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Cue {
     pub t: f64,
-    pub cmd: String,
+    /// Компонент: команда только для его экземпляров; у `update` без компонента — пропсы сцены.
     #[serde(default)]
     pub target: Option<String>,
-    #[serde(default)]
-    pub props: Option<Value>,
-    /// Имя команды компонента у `invoke`.
-    #[serde(default)]
-    pub command: Option<String>,
+    #[serde(flatten)]
+    pub cmd: CueCmd,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "cmd", rename_all = "lowercase")]
+pub enum CueCmd {
+    Play,
+    Stop,
+    Next,
+    /// Новые значения пропсов: экземпляров компонента или самой сцены.
+    Update {
+        #[serde(default)]
+        props: Option<Value>,
+    },
+    /// Команда компонента с параметрами.
+    Invoke {
+        command: String,
+        #[serde(default)]
+        props: Option<Value>,
+    },
+}
+
+impl CueCmd {
+    pub fn name(&self) -> &'static str {
+        match self {
+            CueCmd::Play => "play",
+            CueCmd::Stop => "stop",
+            CueCmd::Next => "next",
+            CueCmd::Update { .. } => "update",
+            CueCmd::Invoke { .. } => "invoke",
+        }
+    }
 }
 
 impl Cue {
     pub fn label(&self) -> String {
         let t = crate::look::num(self.t as f32);
-        match (&self.target, &self.command) {
-            (Some(target), Some(command)) => format!("{}@{t} {target}.{command}", self.cmd),
-            (Some(target), None) => format!("{}@{t} {target}", self.cmd),
-            _ => format!("{}@{t}", self.cmd),
+        let cmd = self.cmd.name();
+        match (&self.target, &self.cmd) {
+            (Some(target), CueCmd::Invoke { command, .. }) => format!("{cmd}@{t} {target}.{command}"),
+            (Some(target), _) => format!("{cmd}@{t} {target}"),
+            _ => format!("{cmd}@{t}"),
         }
     }
 }
@@ -228,7 +271,10 @@ pub struct Scene {
     pub theme: BTreeMap<String, Value>,
     pub js_diagnostics: Vec<Diagnostic>,
     pub cues: Vec<Cue>,
-    pub timelines: Vec<Value>,
+    /// Таймлайны из `defineScene({ timelines })`, разобранные один раз при монтировании.
+    pub timelines: Vec<TimelineDef>,
+    /// Ошибки и замечания разбора таймлайнов.
+    pub timeline_diagnostics: Diagnostics,
     /// Команды движения от JS, ещё не исполненные: их забирает сессия после каждого пакета.
     pub motion_cmds: Vec<MotionCmd>,
     /// Пропсы сцены (`defineScene({ props, defaults })`).
@@ -279,7 +325,7 @@ impl Scene {
             }
             Cmd::Diag(d) => self.js_diagnostics.push(d),
             Cmd::Cues { items } => self.cues.extend(items),
-            Cmd::Timelines { items } => self.timelines.extend(items),
+            Cmd::Timelines { items } => self.add_timelines(&items),
             Cmd::Motion(m) => self.motion_cmds.push(m),
             Cmd::Schema { props, errors } => {
                 self.props = props;
@@ -303,6 +349,34 @@ impl Scene {
             }
         }
         Ok(())
+    }
+
+    /// Разбирает таймлайны: значения ключей компилируются по теме, ошибки становятся диагностиками.
+    fn add_timelines(&mut self, items: &[Value]) {
+        for v in items {
+            let mut c = Compiler { theme: &self.theme, notes: Vec::new() };
+            let name = v.get("timeline").and_then(Value::as_str).unwrap_or("?").to_string();
+            let diags = &mut self.timeline_diagnostics;
+            match timeline::parse(v, &mut c) {
+                Ok(d) if self.timelines.iter().any(|x| x.component == d.component) => {
+                    diags.push(Level::Error, "timeline.duplicate", &name, None, "у компонента два таймлайна; используется первый", None);
+                }
+                Ok(d) => self.timelines.push(d),
+                Err(errors) => {
+                    for e in errors {
+                        diags.push(Level::Error, "timeline.invalid", &name, None, e, None);
+                    }
+                }
+            }
+            for (level, rule, msg) in c.notes {
+                diags.push(level, rule, &name, None, msg, None);
+            }
+        }
+    }
+
+    /// Таймлайн компонента.
+    pub fn timeline(&self, component: &str) -> Option<&TimelineDef> {
+        self.timelines.iter().find(|t| t.component == component)
     }
 
     fn node_mut(&mut self, id: u32) -> Result<&mut Node> {

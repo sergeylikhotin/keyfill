@@ -45,6 +45,35 @@ impl fmt::Display for Diagnostic {
     }
 }
 
+/// Сколько диагностик каждого уровня.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Counts {
+    pub error: usize,
+    pub warn: usize,
+    pub info: usize,
+}
+
+impl Counts {
+    pub fn of<'a>(diags: impl IntoIterator<Item = &'a Diagnostic>) -> Counts {
+        let mut c = Counts::default();
+        for d in diags {
+            match d.level {
+                Level::Error => c.error += 1,
+                Level::Warn => c.warn += 1,
+                Level::Info => c.info += 1,
+            }
+        }
+        c
+    }
+}
+
+/// `1 error, 0 warn, 2 info`.
+impl fmt::Display for Counts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} error, {} warn, {} info", self.error, self.warn, self.info)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Diagnostics(pub Vec<Diagnostic>);
 
