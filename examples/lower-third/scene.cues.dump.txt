@@ -10,7 +10,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -25,7 +25,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -40,7 +40,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -55,7 +55,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -70,7 +70,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -85,7 +85,7 @@ events: 0s scene state:playing
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972
@@ -100,7 +100,7 @@ events: 0s scene state:playing · 3.5s scene state:stopping
 
 diagnostics: 0 error, 0 warn, 1 info
 info must.contrast LowerThird#1/title: контраст не проверить: под текстом прозрачность
-    at examples/lower-third/LowerThird.tsx:29:9
+    at examples/lower-third/LowerThird.tsx:30:9
     hint: передай подложку эфира через --bg #RRGGBB
 
 stage 1920×1080 @50fps · actionSafe 67.2,37.8 1785.6×1004.4 · titleSafe 96,54 1728×972

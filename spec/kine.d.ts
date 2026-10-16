@@ -485,14 +485,77 @@ declare module '@kine/core' {
   }
 
   const cuesBrand: unique symbol;
-  export type Cues = { readonly [cuesBrand]: true };
+  /** Сценарий сцены со схемой пропсов `S`: по ней tsc проверяет `props` в тестах. */
+  export type Cues<S extends PropSchema = any> = { readonly [cuesBrand]: S };
 
   /**
    * Сценарий команд для рендера в файл и проверок: `kine render scene.cues.ts --t 2.4`.
    * Команда применяется на границе кадра (время округляется вверх до кадра).
    * Без сценария сцена получает play в момент 0.
    */
-  export function cues<S extends PropSchema>(scene: SceneDef<S>, build: (b: CueBuilder<InferProps<S>>) => readonly Cue[]): Cues;
+  export function cues<S extends PropSchema>(scene: SceneDef<S>, build: (b: CueBuilder<InferProps<S>>) => readonly Cue[]): Cues<S>;
+
+  // ─── Тесты (*.kine.test.ts) ───────────────────────────────────────────────
+
+  /**
+   * Момент по грамматике времени kine: секунды (`1.2`), кадры (`'60f'`), `'settled'`, маркер
+   * таймлайна (`'out'`), смещение (`'out+0.1'`, `'settled-5f'`). Диапазон (`'0..4'`, сегмент `'in'`)
+   * проверяется только на `clean`: снапшот снимается в момент.
+   */
+  export type TestTime = number | string;
+
+  export interface TestExpect {
+    /** Нет ошибок диагностики в каждом моменте и на каждом кадре диапазонов. По умолчанию true. */
+    readonly clean?: boolean;
+    /**
+     * Снапшоты момента в `__snapshots__/<файл>/<случай>@<t>.dump.txt|.png` рядом с тестом.
+     * Нет файла — kine его пишет; расходится — тест падает, `kine test --update` перезаписывает.
+     */
+    readonly snapshot?: 'dump' | 'png' | readonly ('dump' | 'png')[];
+    /**
+     * Допуск сравнения пикселей: `channel` — на сколько (0..255) может отличаться канал пикселя,
+     * `pixels` — доля пикселей, которым можно отличаться сильнее. По умолчанию 2 и 0.001.
+     */
+    readonly tolerance?: { readonly channel?: number; readonly pixels?: number };
+  }
+
+  export interface TestCase<S extends PropSchema> {
+    /** Сцена или сценарий; без сценария сцена получает play в 0. */
+    readonly scene: SceneDef<S> | Cues<S>;
+    /** Данные сцены поверх `defaults`; проверяются по схеме сцены. */
+    readonly props?: NoInfer<Partial<InferProps<S>>>;
+    /** Моменты проверки; по умолчанию `['settled']`. */
+    readonly t?: readonly TestTime[];
+    /** Режим `must`; по умолчанию dev, как `--mode`. */
+    readonly mode?: 'dev' | 'air';
+    /** Подложка, как `--bg`: рисуется под сценой и нужна для проверки контраста. */
+    readonly bg?: `#${string}`;
+    /** Масштаб PNG-снапшота, как `--scale`; 0.5 — файл вчетверо меньше. */
+    readonly scale?: number;
+    readonly expect?: TestExpect;
+  }
+
+  /** Случай теста в `*.kine.test.ts`; запуск — `kine test`. Имя уникально в файле. */
+  export function test<S extends PropSchema>(name: string, c: TestCase<S>): void;
+
+  // ─── Конфиг (kine.config.ts) ──────────────────────────────────────────────
+
+  /** Значения по умолчанию для команд kine; флаги их перекрывают. Ищется вверх от каталога запуска. */
+  export interface KineConfig {
+    /** Режим `must` по умолчанию, как `--mode`. */
+    readonly mode?: 'dev' | 'air';
+    /** Подложка по умолчанию, как `--bg`. */
+    readonly bg?: `#${string}`;
+    readonly seed?: number;
+    /** `Date.now()` сцены в миллисекундах, как `--now`. */
+    readonly now?: number;
+    /** Каталог для render, filmstrip, video без `-o` и для `kine view`; от каталога конфига. */
+    readonly out?: string;
+    /** Именованные сцены: `kine render lower`. Пути — от каталога конфига. */
+    readonly scenes?: { readonly [name: string]: string };
+  }
+
+  export function defineConfig(c: KineConfig): KineConfig;
 
   export const source: {
     json<T>(path: string, o?: { watch?: boolean }): Accessor<T | undefined>;

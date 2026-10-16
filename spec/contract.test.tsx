@@ -1,6 +1,6 @@
 // Контракт API: каждая строка с @ts-expect-error — ошибка, которую tsc обязан поймать
 // до рендера. Если ошибка перестаёт ловиться, tsc ругается на неиспользованный expect-error.
-import { Box, Text, clock, component, count, cues, defineScene, hex, stagger, timeline, tween } from '@kine/core';
+import { Box, Text, clock, component, count, cues, defineConfig, defineScene, hex, stagger, test, timeline, tween } from '@kine/core';
 import { LowerThird } from '../examples/lower-third/LowerThird';
 import { Scoreboard } from '../examples/scoreboard/Scoreboard';
 
@@ -148,3 +148,21 @@ defineScene({
   // @ts-expect-error guest — аксессор, а не строка
   root: (p) => <LowerThird name={p.guest.toUpperCase()} role="" live={true} tags={[]} />,
 });
+
+// Тесты: пропсы случая проверяются по схеме сцены, в том числе через сценарий.
+const showCues = cues(show, ({ at }) => [at(0, 'play')]);
+test('пропсы по схеме', { scene: show, props: { guest: 'Иван' }, t: ['settled', 1.2], expect: { snapshot: ['dump', 'png'] } });
+test('через сценарий', { scene: showCues, props: { score: 3 } });
+// @ts-expect-error score — число
+test('тип пропса', { scene: show, props: { score: '3' } });
+// @ts-expect-error у сцены нет пропса guests
+test('лишний пропс', { scene: showCues, props: { guests: 'Иван' } });
+// @ts-expect-error снапшот — dump или png
+test('вид снапшота', { scene: show, expect: { snapshot: 'svg' } });
+
+// Конфиг: только известные ключи.
+defineConfig({ mode: 'air', bg: '#101820', out: 'out', scenes: { lower: 'examples/lower-third/scene.cues.ts' } });
+// @ts-expect-error профилей выходов нет
+defineConfig({ profiles: {} });
+// @ts-expect-error подложка — #RRGGBB
+defineConfig({ bg: 'black' });

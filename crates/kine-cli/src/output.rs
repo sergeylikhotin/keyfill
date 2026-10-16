@@ -13,7 +13,9 @@ use kine_js::{JsException, LogLine};
 use serde::Serialize;
 
 use crate::Failure;
-use crate::ops::{At, Check, Counts, Filmstrip, Rendered, Schema, Video};
+use crate::help::{RuleDoc, Topic};
+use crate::ops::{At, Check, Counts, Filmstrip, Perf, Rendered, Schema, Video};
+use crate::suite::{self, Report, SnapStatus};
 
 pub const SCHEMA: u32 = 1;
 
@@ -25,6 +27,9 @@ pub struct Envelope {
     pub exit: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    /// `kine.config.ts`, если он задал значения по умолчанию.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<At>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +114,7 @@ pub fn failure(command: &str, entry: Option<&str>, e: &anyhow::Error) -> (u8, En
         ok: false,
         exit,
         entry: entry.map(String::from),
+        config: None,
         at: None,
         result: None,
         error: Some(error),
@@ -121,14 +127,19 @@ pub fn failure(command: &str, entry: Option<&str>, e: &anyhow::Error) -> (u8, En
 
 // ─── Текст ──────────────────────────────────────────────────────────────────
 
-/// `1 кадр`, `3 кадра`, `231 кадр`, `11 кадров`.
-pub fn frames(n: usize) -> String {
+/// Число со словом в нужной форме: `[кадр, кадра, кадров]` → `1 кадр`, `3 кадра`, `11 кадров`.
+fn plural(n: usize, [one, few, many]: [&str; 3]) -> String {
     let word = match (n % 10, n % 100) {
-        (1, r) if r != 11 => "кадр",
-        (2..=4, r) if !(12..=14).contains(&r) => "кадра",
-        _ => "кадров",
+        (1, r) if r != 11 => one,
+        (2..=4, r) if !(12..=14).contains(&r) => few,
+        _ => many,
     };
     format!("{n} {word}")
+}
+
+/// `1 кадр`, `3 кадра`, `231 кадр`, `11 кадров`.
+pub fn frames(n: usize) -> String {
+    plural(n, ["кадр", "кадра", "кадров"])
 }
 
 fn counts(c: &Counts) -> String {
@@ -241,6 +252,158 @@ pub fn schema_text(s: &Schema) -> String {
         let _ = writeln!(out, "cues  {}", s.cues.join(" · "));
     }
     out
+}
+
+pub fn perf_text(p: &Perf) -> String {
+    let mut out = format!(
+        "perf {}..{} с · {} · бюджет {} мс ({} fps) · {} сборка · запуск {} мс\n",
+        num(p.from as f32),
+        num(p.to as f32),
+        frames(p.frames),
+        p.budget_ms,
+        p.fps,
+        p.build,
+        p.mount_ms
+    );
+    out.push_str("  стадия      mean     p50     p95     max  мс\n");
+    for s in &p.stages {
+        let _ = writeln!(out, "  {:<8} {:>7.3} {:>7.3} {:>7.3} {:>7.3}", s.stage, s.mean_ms, s.p50_ms, s.p95_ms, s.max_ms);
+    }
+    let _ = writeln!(out, "дольше бюджета: {}", frames(p.over_budget));
+    let slow: Vec<String> = p.slowest.iter().map(|s| format!("кадр {} ({} с) {} мс", s.at.frame, num(s.at.t as f32), s.ms)).collect();
+    if !slow.is_empty() {
+        let _ = writeln!(out, "самые долгие: {}", slow.join(" · "));
+    }
+    for d in &p.diagnostics {
+        let _ = writeln!(out, "{d}");
+    }
+    out
+}
+
+pub fn rule_text(r: &RuleDoc) -> String {
+    format!("{} — {} · {}\n\n{}\n", r.rule, r.level, r.title, r.body)
+}
+
+pub fn rules_text(rules: &Vec<RuleDoc>) -> String {
+    let width = rules.iter().map(|r| r.rule.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for r in rules {
+        let _ = writeln!(out, "{:<width$}  {:<5}  {}", r.rule, r.level, r.title);
+    }
+    out.push_str("\nподробно: kine explain <правило>\n");
+    out
+}
+
+pub fn topic_text(t: &Topic) -> String {
+    format!("{} — {}\n\n{}\n", t.topic, t.title, t.body)
+}
+
+pub fn topics_text(topics: &Vec<Topic>) -> String {
+    let width = topics.iter().map(|t| t.topic.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for t in topics {
+        let _ = writeln!(out, "{:<width$}  {}", t.topic, t.title);
+    }
+    out.push_str("\nтема: kine docs <тема>; правила диагностики: kine explain\n");
+    out
+}
+
+pub fn test_text(r: &Report) -> String {
+    let mut out = String::new();
+    let mut file = "";
+    for c in &r.cases {
+        if c.file != file {
+            file = &c.file;
+            let _ = writeln!(out, "{file}");
+        }
+        let times: Vec<&str> = c.moments.iter().map(|m| m.t.as_str()).collect();
+        let name = if c.name.is_empty() { "(файл)".to_string() } else { c.name.clone() };
+        let _ = writeln!(out, "  {}  {name}  @ {}", if c.ok { "ok  " } else { "FAIL" }, times.join(", "));
+        if let Some(e) = &c.error {
+            error_lines(&mut out, e);
+        }
+        for m in &c.moments {
+            if let Some(e) = &m.error {
+                let _ = writeln!(out, "      @{}:", m.t);
+                error_lines(&mut out, e);
+            }
+            for check in &m.checks {
+                check_lines(&mut out, &m.t, check);
+            }
+        }
+    }
+    let k = &r.counts;
+    let mut summary = format!("{} · {} ok, {} fail", plural(r.files, ["файл", "файла", "файлов"]), k.passed, k.failed);
+    if k.written > 0 {
+        let _ = write!(summary, ", новых снапшотов: {}", k.written);
+    }
+    if k.updated > 0 {
+        let _ = write!(summary, ", перезаписано снапшотов: {}", k.updated);
+    }
+    let _ = writeln!(out, "{summary}");
+    out
+}
+
+fn error_lines(out: &mut String, e: &ErrorInfo) {
+    if e.diagnostics.is_empty() {
+        let _ = writeln!(out, "      {}", e.message.replace('\n', "\n      "));
+    }
+    for d in &e.diagnostics {
+        let _ = writeln!(out, "      {}", d.to_string().replace('\n', "\n      "));
+    }
+}
+
+fn check_lines(out: &mut String, t: &str, check: &suite::Check) {
+    match check {
+        suite::Check::Clean { ok: false, issues } => {
+            for i in issues {
+                let _ = writeln!(out, "      @{t} {}", i.diagnostic.to_string().replace('\n', "\n        "));
+            }
+        }
+        suite::Check::Clean { .. } => {}
+        suite::Check::Dump { status, file, diff, more } => {
+            snap_line(out, t, "dump", *status, file);
+            for d in diff {
+                let node = d.node.as_deref().unwrap_or("");
+                match (d.op, &d.old, &d.new) {
+                    ("~", Some(old), Some(new)) => {
+                        let _ = writeln!(out, "        ~ {node}\n          - {old}\n          + {new}");
+                    }
+                    (op, old, new) => {
+                        let body = new.as_deref().or(old.as_deref()).unwrap_or("");
+                        let _ = writeln!(out, "        {op} {}{body}", if node.is_empty() { String::new() } else { format!("{node}  ") });
+                    }
+                }
+            }
+            if *more > 0 {
+                let _ = writeln!(out, "        … ещё {more} строк разницы");
+            }
+        }
+        suite::Check::Png { status, file, pixels } => {
+            snap_line(out, t, "png", *status, file);
+            if let Some(p) = pixels {
+                let share = p.differing as f64 / p.total.max(1) as f64 * 100.0;
+                let mut line = format!("        отличаются {} из {} пикселей ({share:.3}%)", p.differing, p.total);
+                if let Some([x, y, w, h]) = p.bbox {
+                    let _ = write!(line, " в {x},{y} {w}×{h}");
+                }
+                if let Some((a, b)) = p.size {
+                    let _ = write!(line, "; размер {}×{} → {}×{}", a[0], a[1], b[0], b[1]);
+                }
+                let _ = writeln!(out, "{line}\n        новый кадр {} · маска {}", p.actual, p.mask);
+            }
+        }
+    }
+}
+
+fn snap_line(out: &mut String, t: &str, kind: &str, status: SnapStatus, file: &str) {
+    let what = match status {
+        SnapStatus::Same => return,
+        SnapStatus::Written => "записан",
+        SnapStatus::Updated => "перезаписан",
+        SnapStatus::Changed => "изменился",
+    };
+    let _ = writeln!(out, "      @{t} {kind} {what}: {file}");
 }
 
 /// Аргумент для командной строки в кавычках, если нужно.

@@ -1,5 +1,7 @@
 // Бандлер сцены для kine: `node bundle.mjs <scene.tsx>` печатает в stdout JSON
 // `{ code, map, inputs }` — IIFE-бандл, его sourcemap и все входные файлы (для кэша kine).
+// Точка входа — сцена, сценарий, файл тестов или kine.config.ts; что с ней делать, решает
+// `__kine_main` из `@kine/core`.
 // При ошибке печатает `{ errors: [{ file, line, column, text, lineText }] }` и выходит с кодом 1.
 //
 // JSX собирается в dev-режиме (у элементов есть место в исходнике), `@kine/core` указывает
@@ -41,7 +43,8 @@ const shown = (abs) => {
 try {
   const result = await build({
     stdin: {
-      contents: `import scene from ${JSON.stringify(entryPath)};\nimport { mount } from '@kine/core';\nmount(scene);\n`,
+      // У файла тестов нет экспорта по умолчанию: берём модуль целиком.
+      contents: `import * as m from ${JSON.stringify(entryPath)};\nimport { __kine_main } from '@kine/core';\n__kine_main(m.default);\n`,
       resolveDir: cwd,
       sourcefile: 'kine-entry.ts',
       loader: 'ts',

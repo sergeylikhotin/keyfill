@@ -118,16 +118,52 @@ pub enum Png {
 
 /// PNG из буфера кадра: прямая альфа; без прозрачности — RGB.
 pub fn png(pixmap: &Pixmap, speed: Png) -> Result<Vec<u8>> {
-    let mut px = pixmap.data_as_u8_slice().to_vec();
-    let opaque = px.chunks_exact(4).all(|p| p[3] == 255);
+    encode_png(&image(pixmap), speed)
+}
+
+/// Картинка RGBA8 с прямой альфой: то, что лежит в PNG. Для сравнения снапшотов.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Буфер кадра как картинка с прямой альфой.
+pub fn image(pixmap: &Pixmap) -> Image {
+    let mut rgba = pixmap.data_as_u8_slice().to_vec();
+    unpremultiply(&mut rgba);
+    Image { width: u32::from(pixmap.width()), height: u32::from(pixmap.height()), rgba }
+}
+
+/// PNG 8 бит на канал (RGB, RGBA, серый) как картинка RGBA.
+pub fn decode_png(bytes: &[u8]) -> Result<Image> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info()?;
+    let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+    let info = reader.next_frame(&mut buf)?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        other => bail!("PNG: цвет {other:?} не поддерживается"),
+    };
+    Ok(Image { width: info.width, height: info.height, rgba })
+}
+
+/// PNG из картинки; без прозрачности — RGB.
+pub fn encode_png(img: &Image, speed: Png) -> Result<Vec<u8>> {
+    let opaque = img.rgba.chunks_exact(4).all(|p| p[3] == 255);
     let (color, data) = if opaque {
-        (png::ColorType::Rgb, px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect())
+        (png::ColorType::Rgb, img.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect())
     } else {
-        unpremultiply(&mut px);
-        (png::ColorType::Rgba, px)
+        (png::ColorType::Rgba, img.rgba.clone())
     };
     let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, u32::from(pixmap.width()), u32::from(pixmap.height()));
+    let mut encoder = png::Encoder::new(&mut out, img.width, img.height);
     encoder.set_color(color);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(match speed {
@@ -224,6 +260,15 @@ mod tests {
         r.execute(&a, &opts).unwrap();
         let reused = r.execute(&b, &opts).unwrap().data_as_u8_slice().to_vec();
         assert_eq!(reused, execute(&b, &opts).unwrap().data_as_u8_slice(), "буфер прошлого кадра протёк в новый");
+    }
+
+    #[test]
+    fn png_round_trip() {
+        let pixmap = execute(&list(4.0, Rgba { r: 1.0, g: 0.0, b: 0.0, a: 0.5 }), &RenderOptions::default()).unwrap();
+        let img = image(&pixmap);
+        assert_eq!(decode_png(&png(&pixmap, Png::Fast).unwrap()).unwrap(), img);
+        let opaque = image(&execute(&list(4.0, Rgba::WHITE), &RenderOptions { scale: 1.0, background: Some(Rgba::WHITE) }).unwrap());
+        assert_eq!(decode_png(&encode_png(&opaque, Png::Small).unwrap()).unwrap(), opaque, "RGB-файл читается как непрозрачный RGBA");
     }
 
     #[test]

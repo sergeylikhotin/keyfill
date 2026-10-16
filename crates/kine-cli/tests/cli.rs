@@ -147,3 +147,103 @@ fn usage_errors_exit_2() {
     let (code, _) = kine(&["render", "examples/lower-third/scene.tsx", "--scale", "0"]).unwrap();
     assert_eq!(code, 2);
 }
+
+#[test]
+fn explain_and_docs_are_built_in() {
+    let Some((code, j)) = kine(&["explain", "must.fit"]) else { return };
+    assert_eq!(code, 0);
+    assert_eq!(j["result"]["level"], "error");
+    assert!(j["result"]["body"].as_str().unwrap().contains("shrinkTo"));
+    let (code, j) = kine(&["explain", "must.fitt"]).unwrap();
+    assert_eq!(code, 2);
+    assert!(j["error"]["message"].as_str().unwrap().contains("похожие: must.fit"), "{j}");
+    assert!(j.get("entry").is_none(), "имя правила — не сцена: {j}");
+    let (_, j) = kine(&["docs"]).unwrap();
+    let topics: Vec<&str> = j["result"].as_array().unwrap().iter().map(|t| t["topic"].as_str().unwrap()).collect();
+    assert!(topics.contains(&"time") && topics.contains(&"test"), "{topics:?}");
+    let (code, _) = kine(&["docs", "nope"]).unwrap();
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn next_suggests_explain_for_first_error() {
+    let Some((_, j)) = kine(&["check", "examples/scoreboard/overflow.tsx"]) else { return };
+    assert_eq!(j["next"][1], "kine explain must.fit", "{}", j["next"]);
+}
+
+#[test]
+fn config_names_scenes_and_output() {
+    // kine.config.ts в корне: lower — сценарий плашки, out — каталог вывода.
+    let Some((code, j)) = kine(&["render", "lower"]) else { return };
+    assert_eq!(code, 0, "{j}");
+    assert_eq!(j["entry"], "examples/lower-third/scene.cues.ts");
+    assert_eq!(j["config"], "kine.config.ts");
+    assert_eq!(j["result"]["file"], "out/examples/lower-third/scene.cues.png");
+    let (code, j) = kine(&["dump", "lowr"]).unwrap();
+    assert_eq!(code, 2);
+    assert!(j["error"]["message"].as_str().unwrap().contains("именованные сцены: lower, score"), "{j}");
+}
+
+#[test]
+fn examples_tests_pass_without_new_snapshots() {
+    let Some((code, j)) = kine(&["test", "examples"]) else { return };
+    assert_eq!(code, 0, "{j}");
+    let counts = &j["result"]["counts"];
+    assert_eq!(counts["failed"], 0);
+    assert_eq!(counts["written"], 0, "снапшоты примеров лежат в репозитории");
+    assert!(counts["passed"].as_u64().unwrap() >= 6);
+}
+
+#[test]
+fn failing_tests_report_what_broke() {
+    let Some((code, j)) = kine(&["test", "crates/kine-cli/tests/fixtures/suite/failing.suite.ts"]) else { return };
+    assert_eq!(code, 1);
+    let cases = j["result"]["cases"].as_array().unwrap();
+    let case = |name: &str| cases.iter().find(|c| c["name"] == name).unwrap_or_else(|| panic!("нет случая {name}: {j}"));
+    assert!(cases.iter().all(|c| c["ok"] == false), "{j}");
+
+    let clean = &case("ошибка must")["moments"][0]["checks"][0];
+    assert_eq!(clean["check"], "clean");
+    assert_eq!(clean["issues"][0]["rule"], "must.fit");
+
+    let dump = &case("снапшот разошёлся")["moments"][0]["checks"][1];
+    assert_eq!(dump["status"], "changed");
+    assert_eq!(dump["diff"][0], serde_json::json!({
+        "op": "~",
+        "node": "LowerThird#1/title",
+        "old": "text  (154,902 437×68)  \"Иван Петров\"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]",
+        "new": "text  (154,902 437×68)  \"Анна Смирнова\"  Inter 600 56px · color.text  [must fit,contrast]  [else×3]",
+    }));
+
+    let moments = case("неверный момент")["moments"].as_array().unwrap();
+    assert_eq!(moments[0]["error"]["kind"], "usage");
+    assert_eq!(moments[1]["ok"], true, "ошибка одного момента не мешает остальным");
+
+    assert_eq!(case("неверные пропсы")["moments"][0]["error"]["diagnostics"][0]["rule"], "props.invalid");
+    let next: Vec<&str> = j["next"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(next, ["kine test crates/kine-cli/tests/fixtures/suite/failing.suite.ts --update", "kine explain must.fit"]);
+}
+
+#[test]
+fn perf_reports_stages_against_budget() {
+    let Some((code, j)) = kine(&["perf", "examples/lower-third/scene.tsx", "--t", "0..0.2"]) else { return };
+    assert_eq!(code, 0, "perf — замер, а не проверка: {j}");
+    let r = &j["result"];
+    assert_eq!(r["frames"], 11);
+    assert_eq!(r["budget_ms"], 20.0);
+    let stages: Vec<&str> = r["stages"].as_array().unwrap().iter().map(|s| s["stage"].as_str().unwrap()).collect();
+    assert_eq!(stages, ["script", "motion", "layout", "raster", "frame"]);
+}
+
+#[test]
+fn bad_config_is_usage_error() {
+    let Some(home) = home() else { return };
+    let dir = home.join("out/config-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let core = kine_cli::slash(&home.join("packages/core/src/index.ts"));
+    std::fs::write(dir.join("kine.config.ts"), format!("import {{ defineConfig }} from '{core}';\nexport default defineConfig({{ profiles: {{}} }} as never);\n")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_kine")).args(["schema", "../../examples/lower-third/scene.tsx", "--json"]).current_dir(&dir).output().unwrap();
+    let j: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{j}");
+    assert!(j["error"]["message"].as_str().unwrap().contains("profiles"), "{j}");
+}

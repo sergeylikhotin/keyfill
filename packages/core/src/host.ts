@@ -23,7 +23,11 @@ export type Cmd =
   /** Схема пропсов сцены и ошибки входных данных из CLI. */
   | { op: 'schema'; props: PropInfo[]; errors: string[] }
   /** Описание компонента для `kine schema` и пульта. */
-  | { op: 'component'; name: string; props: PropInfo[]; parts: string[]; commands: { name: string; params: PropInfo[] }[] };
+  | { op: 'component'; name: string; props: PropInfo[]; parts: string[]; commands: { name: string; params: PropInfo[] }[] }
+  /** Случаи файла тестов без сцен и пропсов: их ядро монтирует по одному. */
+  | { op: 'tests'; items: Record<string, unknown>[] }
+  /** Значения kine.config.ts. */
+  | { op: 'config'; value: Record<string, unknown> };
 
 export type PropInfo = { name: string; type: string; default?: unknown; required?: boolean };
 

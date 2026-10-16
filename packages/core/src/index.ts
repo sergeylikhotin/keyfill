@@ -409,8 +409,7 @@ let sceneSet: ((key: string, value: unknown) => void) | undefined;
 /** Пропсы из CLI: `values` — из --props, `raw` — строки из --set, приводятся к типу схемы. */
 type PropsInput = { values?: Record<string, unknown>; raw?: Record<string, string> };
 
-function sceneProps(scene: Props): { accessors: Props; errors: string[] } {
-  const input = ((globalThis as any).__kine_props ?? {}) as PropsInput;
+function sceneProps(scene: Props, input: PropsInput): { accessors: Props; errors: string[] } {
   const schema: Props = scene.props ?? {};
   const defaults: Props = scene.defaults ?? {};
   const errors: string[] = [];
@@ -486,9 +485,10 @@ const instancesOf = (target: string, what: string) => {
   host.flush();
 };
 
-export function mount(entry: Props) {
+/** Монтирует сцену или сценарий. Пропсы — из CLI (`--props`, `--set`) или из случая теста. */
+export function mount(entry: Props, input: PropsInput = (globalThis as any).__kine_props ?? {}) {
   const scene = entry.$cues ? entry.scene : entry;
-  const { accessors, errors } = sceneProps(scene);
+  const { accessors, errors } = sceneProps(scene, input);
   if (errors.length) {
     // Неверные входные данные — ошибка вызова: сцену не строим, ядро покажет ошибки и схему.
     host.flush();
@@ -517,6 +517,53 @@ export function mount(entry: Props) {
   if (scene.timelines?.length) host.emit({ op: 'timelines', items: scene.timelines });
   if (entry.$cues) host.emit({ op: 'cues', items: entry.items });
   host.flush();
+}
+
+// ─── Тесты и конфиг ─────────────────────────────────────────────────────────
+
+type TestItem = { name: string; scene: Props; props?: Props; [k: string]: unknown };
+const tests: TestItem[] = [];
+
+export const test: typeof S.test = (name, c) => {
+  if (typeof name !== 'string' || !name.trim()) throw new KineError('test: нужно имя случая');
+  const scene = (c as Props | undefined)?.scene as Props | undefined;
+  if (!scene || !(scene.$cues || scene.root)) throw new KineError(`test "${name}": scene — defineScene(...) или cues(scene, ...)`);
+  if (tests.some((x) => x.name === name)) throw new KineError(`test: два случая с именем "${name}"`);
+  tests.push({ ...(c as Props), name, scene });
+};
+
+export const defineConfig: typeof S.defineConfig = (c) => brand({ ...c, $config: true });
+
+/**
+ * Точка входа бандла. Что делать с файлом, говорит ядро (`__kine_entry`): `'tests'` — отдать
+ * список случаев теста, номер — смонтировать сцену случая с его пропсами; иначе файл — сцена,
+ * сценарий или kine.config.ts, по тому, что он экспортирует.
+ */
+export function __kine_main(value: unknown) {
+  const entry = (globalThis as any).__kine_entry as 'tests' | number | null;
+  if (entry === 'tests') {
+    host.emit({ op: 'tests', items: tests.map(({ scene: _s, props: _p, ...rest }) => rest) });
+    host.flush();
+    return;
+  }
+  if (typeof entry === 'number') {
+    const c = tests[entry];
+    if (!c) throw new KineError(`в файле нет случая №${entry}`);
+    mount(c.scene, { values: c.props ?? {} });
+    return;
+  }
+  const v = value as Props | undefined;
+  if (v?.$config) {
+    const { $config: _, ...config } = v;
+    host.emit({ op: 'config', value: config });
+    host.flush();
+    return;
+  }
+  if (!v && tests.length) throw new KineError('это файл тестов: запускай kine test <файл>');
+  if (!v || !(v.$cues || v.root)) {
+    throw new KineError('файл не экспортирует сцену: export default defineScene({ ... }) или cues(scene, ...)');
+  }
+  mount(v);
 }
 
 const notYet = (name: string) => (): never => {

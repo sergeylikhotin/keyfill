@@ -26,11 +26,25 @@ pub struct RunOptions {
     /// Сколько JS может исполняться за один вызов (монтирование, команда сценария): бесконечный
     /// цикл в сцене прерывается исключением, а не вешает CLI и просмотрщик.
     pub budget: Duration,
+    /// Что бандл делает с файлом точки входа.
+    pub entry: EntryMode,
+}
+
+/// Что делает бандл с файлом точки входа (`__kine_main` в `@kine/core`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EntryMode {
+    /// Сцена, сценарий или `kine.config.ts`: по тому, что экспортирует файл.
+    #[default]
+    Default,
+    /// Файл тестов: отдать список случаев, ничего не монтируя.
+    Tests,
+    /// Файл тестов: смонтировать сцену случая с его пропсами.
+    Case(usize),
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { seed: 1, now_ms: 0.0, props: None, budget: Duration::from_secs(10) }
+        Self { seed: 1, now_ms: 0.0, props: None, budget: Duration::from_secs(10), entry: EntryMode::Default }
     }
 }
 
@@ -95,6 +109,7 @@ const PRELUDE: &str = r#"
   globalThis.Date = KineDate;
   globalThis.performance = { now: () => NOW };
   globalThis.__kine_props = __KINE_PROPS__;
+  globalThis.__kine_entry = __KINE_ENTRY__;
   const noTimers = () => {
     throw new Error('kine: таймеров нет, время ведёт ядро: движение — presence/transition/timeline, смена данных — команды сценария (cues)');
   };
@@ -198,7 +213,15 @@ fn init(ctx: &Context, out: &Rc<RefCell<RunOutput>>, source: &str, opts: &RunOpt
         let prelude = PRELUDE
             .replace("__KINE_SEED__", &opts.seed.to_string())
             .replace("__KINE_NOW__", &format!("{:?}", opts.now_ms))
-            .replace("__KINE_PROPS__", opts.props.as_deref().unwrap_or("null"));
+            .replace("__KINE_PROPS__", opts.props.as_deref().unwrap_or("null"))
+            .replace(
+                "__KINE_ENTRY__",
+                &match opts.entry {
+                    EntryMode::Default => "null".to_string(),
+                    EntryMode::Tests => "'tests'".to_string(),
+                    EntryMode::Case(i) => i.to_string(),
+                },
+            );
         ctx.eval::<(), _>(prelude).catch(&ctx).map_err(js_error)?;
         ctx.eval::<(), _>(source).catch(&ctx).map_err(js_error)?;
         Ok(())

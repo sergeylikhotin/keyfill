@@ -1,4 +1,4 @@
-//! Операции агента: render, dump, inspect, check, filmstrip, video, schema.
+//! Операции агента: render, dump, inspect, check, filmstrip, video, schema, perf.
 //!
 //! Один слой для CLI и (позже) `kine serve` и MCP. Каждая операция возвращает `Outcome`:
 //! структуру результата и то, что нужно конверту (момент, диапазон, ошибки, следующий шаг).
@@ -54,22 +54,32 @@ pub struct Outcome<T> {
     pub errors: bool,
     /// Узел первой ошибки и её момент — для подсказки `kine inspect`.
     pub inspect: Option<(String, f64)>,
+    /// Правило первой ошибки — для подсказки `kine explain`.
+    pub explain: Option<String>,
+    /// Другие команды следующего шага, уже готовые.
+    pub next: Vec<String>,
 }
 
 impl<T> Outcome<T> {
-    fn new(result: T) -> Outcome<T> {
-        Outcome { result, at: None, range: None, errors: false, inspect: None }
+    pub fn new(result: T) -> Outcome<T> {
+        Outcome { result, at: None, range: None, errors: false, inspect: None, explain: None, next: Vec::new() }
     }
 
-    /// Ошибки кадра в момент `at`: код выхода и подсказка `inspect` для существующего узла.
+    /// Ошибки кадра в момент `at`: код выхода и подсказки `inspect` и `explain`.
     fn frame(result: T, at: At, scene: &Scene, diags: &[Diagnostic]) -> Outcome<T> {
         Outcome {
             errors: Counts::of(diags).error > 0,
             inspect: inspect_target(scene, diags).map(|node| (node, at.t)),
+            explain: first_error(diags),
             at: Some(at),
             ..Outcome::new(result)
         }
     }
+}
+
+/// Правило первой ошибки.
+pub fn first_error<'a>(diags: impl IntoIterator<Item = &'a Diagnostic>) -> Option<String> {
+    diags.into_iter().find(|d| d.level == Level::Error).map(|d| d.rule.clone())
 }
 
 /// Первая ошибка, привязанная к узлу сцены: диагностики сборки, JS и таймлайнов адресуют
@@ -80,8 +90,12 @@ fn inspect_target<'a>(scene: &Scene, diags: impl IntoIterator<Item = &'a Diagnos
 
 impl Job {
     pub fn new(entry: &Path, run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Result<Job> {
-        let bundle = crate::bundle(entry)?;
-        Ok(Job { entry: entry.to_path_buf(), bundle, run, cues, eval, logs: Default::default() })
+        Ok(Job::with_bundle(entry, crate::bundle(entry)?, run, cues, eval))
+    }
+
+    /// Задача на уже собранном бандле: случаи одного файла тестов делят его сборку.
+    pub fn with_bundle(entry: &Path, bundle: Bundle, run: RunOptions, cues: Vec<CueArg>, eval: EvalOptions) -> Job {
+        Job { entry: entry.to_path_buf(), bundle, run, cues, eval, logs: Default::default() }
     }
 
     pub fn session(&self) -> Result<Session> {
@@ -251,8 +265,9 @@ pub fn check(job: &Job, spec: Option<&TimeSpec>) -> Result<Outcome<Check>> {
     let counts = Counts::of(issues.iter().map(|i| &i.diagnostic));
     let inspect = inspect_target(&session.scene, issues.iter().map(|i| &i.diagnostic))
         .and_then(|node| issues.iter().find(|i| i.diagnostic.node == node).map(|i| (node, i.first.t)));
+    let explain = first_error(issues.iter().map(|i| &i.diagnostic));
     let result = Check { from, to, frames: frames.count(), counts, issues };
-    Ok(Outcome { range: Some((from, to)), errors: counts.error > 0, inspect, ..Outcome::new(result) })
+    Ok(Outcome { range: Some((from, to)), errors: counts.error > 0, inspect, explain, ..Outcome::new(result) })
 }
 
 // ─── filmstrip и video ──────────────────────────────────────────────────────
@@ -310,6 +325,130 @@ pub fn video(job: &Job, spec: Option<&TimeSpec>, out: &Path, codec: video::Codec
     job.keep(&session);
     let result = Video { file: crate::slash(out), codec: codec.name(), from, to, frames: report.frames, frames_with_errors: report.errors };
     Ok(Outcome { range: Some((from, to)), errors: report.errors > 0, ..Outcome::new(result) })
+}
+
+// ─── perf ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct Perf {
+    pub from: f64,
+    pub to: f64,
+    pub frames: usize,
+    pub fps: f64,
+    /// Бюджет кадра `1/fps`, мс.
+    pub budget_ms: f64,
+    /// Сборка kine: в debug замеры в разы медленнее release.
+    pub build: &'static str,
+    pub scale: f32,
+    /// Запуск сцены: исполнение бандла и монтирование, мс.
+    pub mount_ms: f64,
+    /// По стадиям и `frame` — кадр целиком.
+    pub stages: Vec<StageStats>,
+    /// Кадров дольше бюджета.
+    pub over_budget: usize,
+    /// Самые долгие кадры.
+    pub slowest: Vec<SlowFrame>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StageStats {
+    pub stage: &'static str,
+    pub mean_ms: f64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub max_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SlowFrame {
+    pub at: At,
+    pub ms: f64,
+}
+
+fn ms(d: std::time::Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
+/// Миллисекунды до тысячных: замер не точнее.
+fn r3(v: f64) -> f64 {
+    (v * 1000.0).round() / 1000.0
+}
+
+fn stats(stage: &'static str, values: &[f64]) -> StageStats {
+    let mut v = values.to_vec();
+    v.sort_by(f64::total_cmp);
+    let pick = |q: f64| v.get(((v.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0.0);
+    let mean = if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+    StageStats { stage, mean_ms: r3(mean), p50_ms: r3(pick(0.5)), p95_ms: r3(pick(0.95)), max_ms: r3(pick(1.0)) }
+}
+
+/// Время кадра по стадиям на каждом кадре диапазона: script (команды и JS), motion, layout
+/// (раскладка, текст, `must`), raster (рисование). p95 кадра больше `1/fps` — `perf.budget`.
+pub fn perf(job: &Job, spec: Option<&TimeSpec>, scale: f32) -> Result<Outcome<Perf>> {
+    let (resolved, from, to) = job.range(spec)?;
+    // Границы диапазона разрешены; кадры меряются на свежей сессии, чтобы перемотка назад
+    // не попала в первый кадр.
+    drop(resolved);
+    let start = std::time::Instant::now();
+    let mut session = job.session()?;
+    let mount_ms = r3(ms(start.elapsed()));
+    session.labels = false;
+    let opts = RenderOptions { scale, background: job.eval.background };
+    let mut renderer = Renderer::default();
+    let names = ["script", "motion", "layout", "raster", "frame"];
+    let mut columns: [Vec<f64>; 5] = Default::default();
+    let mut frames = Vec::new();
+    for n in session.frames(from, to) {
+        let t = session.frame_time(n);
+        let (frame, times) = session.frame_timed(t, job.eval)?;
+        let raster_start = std::time::Instant::now();
+        renderer.render(&frame, &opts)?;
+        let raster = ms(raster_start.elapsed());
+        let row = [ms(times.script), ms(times.motion), ms(times.layout), raster];
+        let total: f64 = row.iter().sum();
+        for (col, v) in columns.iter_mut().zip(row.iter().chain([total].iter())) {
+            col.push(*v);
+        }
+        frames.push((At { t, frame: n }, total));
+    }
+    job.keep(&session);
+    let budget_ms = 1000.0 / session.fps;
+    let stages: Vec<StageStats> = names.iter().zip(&columns).map(|(n, c)| stats(n, c)).collect();
+    let over_budget = frames.iter().filter(|(_, t)| *t > budget_ms).count();
+    frames.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let slowest = frames.iter().take(3).map(|(at, t)| SlowFrame { at: *at, ms: r3(*t) }).collect();
+    let build = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let mut diagnostics = Vec::new();
+    let total = &stages[4];
+    if total.p95_ms > budget_ms {
+        let worst = stages[..4].iter().max_by(|a, b| a.p95_ms.total_cmp(&b.p95_ms)).map_or("", |s| s.stage);
+        let debug = if build == "debug" { "; замер debug-сборки — проверь на release (cargo build --release)" } else { "" };
+        diagnostics.push(Diagnostic {
+            level: Level::Warn,
+            rule: "perf.budget".into(),
+            node: "scene".into(),
+            source: None,
+            message: format!("кадр p95 {} мс при бюджете {} мс ({} fps)", total.p95_ms, r3(budget_ms), session.fps),
+            hint: Some(format!("больше всего времени уходит на {worst}{debug}")),
+            detail: None,
+        });
+    }
+    let result = Perf {
+        from,
+        to,
+        frames: columns[4].len(),
+        fps: session.fps,
+        budget_ms: r3(budget_ms),
+        build,
+        scale,
+        mount_ms,
+        stages,
+        over_budget,
+        slowest,
+        diagnostics,
+    };
+    Ok(Outcome { range: Some((from, to)), ..Outcome::new(result) })
 }
 
 // ─── schema ─────────────────────────────────────────────────────────────────

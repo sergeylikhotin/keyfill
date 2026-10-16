@@ -2,6 +2,8 @@
 //! сценария, не на кадрах. Время сессии идёт вперёд; запрос момента раньше текущего
 //! перезапускает сессию с начала, поэтому кадр зависит только от момента, а не от пути к нему.
 
+use std::time::{Duration, Instant};
+
 use anyhow::{Context as _, Result, bail};
 use kine_core::look::{Rgba, TextAlign, TextCase, TextLook};
 use kine_core::diag::Level;
@@ -14,6 +16,17 @@ use kine_js::{JsException, JsHost, LogLine, RunOptions};
 use crate::sourcemap::SourceMap;
 use crate::time::{self, Offset};
 use crate::{Bundle, Failure};
+
+/// Время стадий построения кадра.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StageTimes {
+    /// Команды сценария и вызовы JS до момента кадра.
+    pub script: Duration,
+    /// Значения движения в момент кадра.
+    pub motion: Duration,
+    /// Раскладка, текст, `must` и `else`.
+    pub layout: Duration,
+}
 
 pub struct Session {
     js: JsHost,
@@ -201,7 +214,14 @@ impl Session {
 
     /// Кадр в момент `t`: раскладка, `must`/`else` и движение.
     pub fn frame_at(&mut self, t: f64, eval: EvalOptions) -> Result<Frame> {
+        self.frame_timed(t, eval).map(|(frame, _)| frame)
+    }
+
+    /// Кадр и время его стадий — для `kine perf`.
+    pub fn frame_timed(&mut self, t: f64, eval: EvalOptions) -> Result<(Frame, StageTimes)> {
+        let start = Instant::now();
         self.advance(t)?;
+        let script = start.elapsed();
         let mut anim = self.motion.values(t);
         let (log, events) = if self.labels {
             (self.motion.log.clone(), self.motion.events_log.iter().filter(|e| e.t <= t + 1e-9).map(|e| e.label()).collect())
@@ -209,7 +229,10 @@ impl Session {
             Default::default()
         };
         anim.clock = Some(Clock { t, frame: self.frame_index(t), scene: self.motion.scene_phase(), log, events });
-        evaluate_at(&self.scene, &mut self.engine, eval, &anim, &mut self.hints)
+        let motion = start.elapsed() - script;
+        let frame = evaluate_at(&self.scene, &mut self.engine, eval, &anim, &mut self.hints)?;
+        let layout = start.elapsed() - script - motion;
+        Ok((frame, StageTimes { script, motion, layout }))
     }
 
     /// Кадр «в эфире»: момент, когда закончились все `in` первого play (на границе кадра).
@@ -252,7 +275,7 @@ impl Session {
 }
 
 /// Стек исключения JS через sourcemap: строки TSX вместо строк бандла.
-fn map_js(map: Option<&SourceMap>, e: anyhow::Error) -> anyhow::Error {
+pub(crate) fn map_js(map: Option<&SourceMap>, e: anyhow::Error) -> anyhow::Error {
     match (map, e.downcast::<JsException>()) {
         (Some(map), Ok(mut ex)) => {
             map.map_exception(&mut ex);

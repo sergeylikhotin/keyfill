@@ -356,7 +356,7 @@ impl Reader<'_> {
 
     fn unsupported(&mut self, key: &str, what: &str) {
         if self.look.props.contains_key(key) {
-            self.diags.push(Level::Info, "m0.unsupported", self.path, self.src, format!("{key}: {what}"), None);
+            self.diags.push(Level::Info, "look.unsupported", self.path, self.src, format!("{key}: {what}"), None);
         }
     }
 }
@@ -367,7 +367,7 @@ pub fn visual(look: &Look, path: &str, src: Option<&str>, diags: &mut Diagnostic
 
     if let Some((color, gradient)) = r.read("background", parse_paint) {
         if gradient {
-            r.diags.push(Level::Info, "m0.unsupported", path, src, "градиент нарисован первым стопом", None);
+            r.diags.push(Level::Info, "look.unsupported", path, src, "градиент нарисован первым стопом", None);
         }
         v.background = Some(color);
     }

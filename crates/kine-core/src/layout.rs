@@ -347,7 +347,7 @@ fn build_node(ctx: &mut Ctx, id: u32, parent_layout: Option<&str>, taffy: &mut T
         }
         Kind::Box | Kind::Image | Kind::Shape | Kind::Stage => {
             if matches!(node.kind, Kind::Image | Kind::Shape) {
-                frame.diagnostics.push(Level::Info, "unsupported", &path, src, format!("{} пока не рисуется", node.kind.name()), None);
+                frame.diagnostics.push(Level::Info, "render.unsupported", &path, src, format!("{} пока не рисуется", node.kind.name()), None);
             }
             let my_layout = node.props.get("layout").and_then(|l| l.get("kind")).and_then(Value::as_str);
             let mut children = Vec::new();

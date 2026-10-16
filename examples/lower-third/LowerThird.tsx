@@ -21,6 +21,7 @@ export const LowerThird = component({
         name={part.dot}
         when={live}
         size={{ w: 16, h: 16 }}
+        shrink={0}
         look={{ background: theme.color.accent, radius: 8 }}
         presence={{ loop: pulse({ period: 1.2, opacity: [1, 0.4] }), out: fade([1, 0], tween(0.2)) }}
       />
